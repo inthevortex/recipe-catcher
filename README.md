@@ -45,7 +45,7 @@ Recipe Catcher fixes both. Share a link from any app, and a few seconds later yo
 | --- | --- |
 | **Private by design** | Single user, single phone. No accounts, no server, no analytics, no telemetry. `android:allowBackup="false"` keeps data out of Google's cloud backup. |
 | **Offline-first** | The library, search, viewer and cooking mode run entirely from the local database and image files. Only page fetches and LLM calls touch the network. |
-| **You own the data** | Recipes live in a local SQLite database. The planned zip backup format is a documented data contract any future desktop or web client can read. |
+| **You own the data** | Recipes live in a local SQLite database. The zip backup format is a documented data contract any future desktop or web client can read. |
 | **Pennies, not subscriptions** | You bring your own Anthropic API key. Extraction costs about US$0.0006 per recipe (roughly US$0.06 per 100), and the in-app AI spend panel tracks every call. |
 | **Nothing is ever lost** | Every capture writes a database row first and fills it in afterwards. Failed captures wait in a Pending section for retry, and the raw source text is always kept. |
 
@@ -60,23 +60,23 @@ Status key: ✅ available · 🚧 in progress · 🗓️ planned
 | Source | How it works | Status |
 | --- | --- | --- |
 | **Instagram** posts, reels and `/tv/` links | Three fetch strategies tried in order: official oEmbed → `/embed/captioned/` page → post-page meta tags. The thumbnail is downloaded immediately because Instagram CDN links expire. | ✅ |
-| **Recipe websites** | schema.org `Recipe` JSON-LD first (walks arrays and `@graph`, normalises `HowToStep` / `HowToSection`, image and yield quirks), readable-text fallback capped at 12,000 characters, and a direct-mapping fallback so a JSON-LD recipe is never lost. `og:image` and `og:site_name` for cover and author. | 🚧 parsers in `:core`; capture wiring next |
-| **YouTube** videos and Shorts | Parses `ytInitialPlayerResponse` for title, channel and full description, falls back to `og:` meta tags, and follows up to 2 linked recipe pages when the description itself has no recipe. | 🚧 parsers in `:core`; capture wiring next |
+| **Recipe websites** | schema.org `Recipe` JSON-LD first (walks arrays and `@graph`, normalises `HowToStep` / `HowToSection`, image and yield quirks), readable-text fallback capped at 12,000 characters, and a direct-mapping fallback so a JSON-LD recipe is never lost. `og:image` and `og:site_name` for cover and author. | ✅ |
+| **YouTube** videos and Shorts | Parses `ytInitialPlayerResponse` for title, channel and full description, falls back to `og:` meta tags, and follows up to 2 linked recipe pages when the description itself has no recipe. | ✅ |
 | **By hand** | Write recipe (empty form) and **Fill from pasted text** (a WhatsApp message, a family recipe) through the same extractor. | ✅ |
 
 Capture runs in a WorkManager `CoroutineWorker` with a network constraint and exponential backoff, so it survives leaving the app. You can start it from the Android share sheet (a translucent `ShareReceiverActivity` over the source app) or the in-app **Paste link** screen. URLs are normalised and stripped of tracking parameters (`igsh`, `utm_*`, `fbclid`, `gclid`), and duplicates are caught by shortcode, video ID or normalised URL.
 
 ```mermaid
-stateDiagram-v2
-  [*] --> pending_fetch: link received
-  pending_fetch --> pending_extract: source fetched
-  pending_fetch --> failed_fetch: network / parse error
-  pending_extract --> needs_review: valid JSON
-  pending_extract --> failed_extract: LLM error
-  pending_extract --> no_recipe_found: model says no recipe
-  needs_review --> saved: user taps Save
-  failed_fetch --> pending_fetch: Retry
-  failed_extract --> pending_extract: Retry
+flowchart TD
+  A["Link received"] --> B["pending_fetch"]
+  B -->|"Source fetched"| C["pending_extract"]
+  B -->|"Network / parse error"| D["failed_fetch"]
+  C -->|"Valid JSON"| E["needs_review"]
+  C -->|"LLM error"| F["failed_extract"]
+  C -->|"Model says no recipe"| G["no_recipe_found"]
+  E -->|"User taps Save"| H["saved"]
+  D -->|"Retry"| B
+  F -->|"Retry"| C
 ```
 
 ### AI extraction with Claude Haiku 5.5
@@ -128,9 +128,9 @@ These belong to you: the AI never writes them, and re-extraction never overwrite
 - No proprietary backend, no analytics SDKs, no telemetry. Network traffic is limited to fetching the page you shared and calling the Claude API with your own key.
 - An **AI spend panel** in Settings shows running cost this month and all time, computed from every call's `usage` block logged to the `llm_usage` table.
 
-### Backup and restore 🗓️
+### Backup and restore ✅
 
-Planned as the safety net that makes the app your primary copy:
+The safety net that makes the app your primary copy:
 
 - `VACUUM INTO` for a consistent single-file database snapshot without closing Room.
 - `manifest.json` with format version, schema version, counts and a **SHA-256** of the database.
@@ -425,7 +425,7 @@ Every wave ends with a tagged, signed release that installs over the previous on
 | **0** | Foundation | Modules, version catalog, CI, signing, domain models, scaler, formatter, URL normaliser | ✅ Done |
 | **1** | Instagram capture | Ktor fetcher, three Instagram strategies, `ClaudeExtractor`, Room schema v1, secure settings, `CaptureWorker`, share sheet and Paste link, Review & Save, AI spend panel | ✅ Done |
 | **2** | Library, cooking, personal touches | FTS search, filters and sorts, viewer with scaling, cooking mode with timers, cook log with photos, favourites, notes, Write recipe, list manager, Re-extract, image cleanup | ✅ Done |
-| **3** | Web, YouTube, backup | `WebRecipeFetcher`, `YouTubeFetcher`, clipboard detection, WebView retry for blocked sites, `BackupManager`, `RestoreManager`, pre-migration backup | 🚧 In progress |
+| **3** | Web, YouTube, backup | `WebRecipeFetcher`, `YouTubeFetcher`, clipboard detection, WebView retry for blocked sites, `BackupManager`, `RestoreManager`, pre-migration backup | ✅ Done |
 | **4** | Planner, lists, widget | Bottom tabs with Today as home, week planner with cook / prep / leftover entries, grocery list and inventory, reminders, Glance `TodayWidget` | 🗓️ Planned |
 | **5** | Chat, Find with AI, Suggest | Recipe chat over your library with optional web search, Find with AI on the edit form, `PlanSuggester` | 🗓️ Planned |
 | **6** | Bulk import, Wear OS | Instagram saved-posts importer, opt-in top-comment fetch, `:wear` app with tile and complication | 🗓️ Planned |
@@ -433,7 +433,7 @@ Every wave ends with a tagged, signed release that installs over the previous on
 
 ```mermaid
 flowchart LR
-  W0[0 · Foundation]:::done --> W1[1 · Instagram]:::done --> W2[2 · Library & cooking]:::done --> W3[3 · Web, YouTube, backup]:::wip --> W4[4 · Planner & widget] --> W5[5 · Chat & AI] --> W6[6 · Import & Wear OS] -.-> W7[7 · Media]
+  W0[0 · Foundation]:::done --> W1[1 · Instagram]:::done --> W2[2 · Library & cooking]:::done --> W3[3 · Web, YouTube, backup]:::done --> W4[4 · Planner & widget] --> W5[5 · Chat & AI] --> W6[6 · Import & Wear OS] -.-> W7[7 · Media]
   classDef done fill:#2e7d32,color:#fff,stroke:#1b5e20
   classDef wip fill:#f9a825,color:#000,stroke:#f57f17
 ```
