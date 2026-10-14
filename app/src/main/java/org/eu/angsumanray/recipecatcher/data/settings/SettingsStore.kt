@@ -13,6 +13,14 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** USD prices used by the AI spend panel; applied to the whole usage history when shown. */
+data class PriceTable(
+    val inputPerMillion: Double = SettingsStore.DEFAULT_INPUT_PRICE_PER_M,
+    val outputPerMillion: Double = SettingsStore.DEFAULT_OUTPUT_PRICE_PER_M,
+    val cacheReadPerMillion: Double = SettingsStore.DEFAULT_CACHE_READ_PRICE_PER_M,
+    val perWebSearch: Double = SettingsStore.DEFAULT_WEB_SEARCH_PRICE
+)
+
 private val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore(name = "user_settings")
 
 @Singleton
@@ -48,6 +56,24 @@ class SettingsStore @Inject constructor(
         prefs[KEY_THEME] ?: THEME_DARK
     }
 
+    val priceTableFlow: Flow<PriceTable> = context.settingsDataStore.data.map { prefs ->
+        PriceTable(
+            inputPerMillion = prefs[KEY_PRICE_INPUT_M] ?: DEFAULT_INPUT_PRICE_PER_M,
+            outputPerMillion = prefs[KEY_PRICE_OUTPUT_M] ?: DEFAULT_OUTPUT_PRICE_PER_M,
+            cacheReadPerMillion = prefs[KEY_PRICE_CACHE_M] ?: DEFAULT_CACHE_READ_PRICE_PER_M,
+            perWebSearch = prefs[KEY_PRICE_WEB] ?: DEFAULT_WEB_SEARCH_PRICE
+        )
+    }
+
+    suspend fun setPriceTable(prices: PriceTable) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_PRICE_INPUT_M] = prices.inputPerMillion
+            prefs[KEY_PRICE_OUTPUT_M] = prices.outputPerMillion
+            prefs[KEY_PRICE_CACHE_M] = prices.cacheReadPerMillion
+            prefs[KEY_PRICE_WEB] = prices.perWebSearch
+        }
+    }
+
     suspend fun setModelId(modelId: String) {
         context.settingsDataStore.edit { prefs ->
             prefs[KEY_MODEL_ID] = modelId.trim().ifEmpty { DEFAULT_MODEL_ID }
@@ -72,16 +98,13 @@ class SettingsStore @Inject constructor(
         inputTokens: Long,
         outputTokens: Long,
         cacheReadTokens: Long,
-        webSearches: Int = 0,
-        priceInputPerM: Double = DEFAULT_INPUT_PRICE_PER_M,
-        priceOutputPerM: Double = DEFAULT_OUTPUT_PRICE_PER_M,
-        priceCachePerM: Double = DEFAULT_CACHE_READ_PRICE_PER_M,
-        priceWebSearch: Double = DEFAULT_WEB_SEARCH_PRICE
+        webSearches: Long = 0,
+        prices: PriceTable = PriceTable()
     ): Double {
-        val inputCost = (inputTokens.toDouble() / 1_000_000.0) * priceInputPerM
-        val outputCost = (outputTokens.toDouble() / 1_000_000.0) * priceOutputPerM
-        val cacheCost = (cacheReadTokens.toDouble() / 1_000_000.0) * priceCachePerM
-        val webCost = webSearches * priceWebSearch
+        val inputCost = (inputTokens.toDouble() / 1_000_000.0) * prices.inputPerMillion
+        val outputCost = (outputTokens.toDouble() / 1_000_000.0) * prices.outputPerMillion
+        val cacheCost = (cacheReadTokens.toDouble() / 1_000_000.0) * prices.cacheReadPerMillion
+        val webCost = webSearches * prices.perWebSearch
         return inputCost + outputCost + cacheCost + webCost
     }
 }

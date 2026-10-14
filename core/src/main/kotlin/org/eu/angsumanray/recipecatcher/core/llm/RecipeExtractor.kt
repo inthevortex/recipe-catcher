@@ -44,7 +44,8 @@ data class LlmUsage(
     val inputTokens: Int,
     val outputTokens: Int,
     val cacheReadTokens: Int,
-    val webSearches: Int = 0
+    val webSearches: Int = 0,
+    val model: String? = null
 )
 
 data class ExtractedRecipe(
@@ -81,4 +82,4 @@ interface RecipeExtractor {
 class ApiKeyInvalidException(message: String) : Exception(message)
 class ModelNotFoundException(message: String) : Exception(message)
 class TransientApiException(message: String, val statusCode: Int) : Exception(message)
-class NoRecipeFoundException(message: String) : Exception(message)
+class NoRecipeFoundException(message: String, val usage: LlmUsage? = null) : Exception(message)

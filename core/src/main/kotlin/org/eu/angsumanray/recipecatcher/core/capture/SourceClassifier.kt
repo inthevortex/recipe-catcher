@@ -50,6 +50,16 @@ object SourceClassifier {
         )
     }
 
+    /**
+     * Classifies text received from the share sheet or clipboard. The first Instagram post link
+     * wins even when another URL comes before it; otherwise the first URL is used.
+     */
+    fun classifySharedText(text: String): ClassifiedSource? {
+        val urls = UrlNormalizer.extractUrls(text)
+        val instagram = urls.firstOrNull { UrlNormalizer.extractInstagramShortcode(it) != null }
+        return classify(instagram ?: urls.firstOrNull() ?: return classify(text))
+    }
+
     fun isInstagram(urlOrText: String): Boolean =
         classify(urlOrText)?.sourceType == SourceType.INSTAGRAM
 

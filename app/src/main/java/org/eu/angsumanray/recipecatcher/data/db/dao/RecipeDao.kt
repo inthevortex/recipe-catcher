@@ -6,14 +6,24 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 
 @Dao
 interface RecipeDao {
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    // Never REPLACE: it deletes the existing row first, cascading away its ingredients, steps,
+    // tags and cook log, and nulling plan entries that point at it.
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(recipe: RecipeEntity): Long
+
+    /** Returns -1 when a row with the same `source_key` already exists. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIfAbsent(recipe: RecipeEntity): Long
+
+    @Upsert
+    suspend fun upsert(recipe: RecipeEntity): Long
 
     @Update
     suspend fun update(recipe: RecipeEntity)

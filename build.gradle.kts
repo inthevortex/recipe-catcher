@@ -26,9 +26,19 @@ tasks.register("verifyCoreIsolation") {
                 }
             }
         }
-        if (violations.isNotEmpty()) {
-            throw GradleException(":core module isolation violation! Found android/androidx imports:\n" + violations.joinToString("\n"))
+        val androidGroup = Regex("""^(android|androidx|com\.android|com\.google\.android)(\..*)?$""")
+        val core = project(":core")
+        listOf("compileClasspath", "runtimeClasspath").forEach { configName ->
+            core.configurations.getByName(configName).incoming.resolutionResult.allComponents.forEach { component ->
+                val module = component.moduleVersion ?: return@forEach
+                if (androidGroup.matches(module.group)) {
+                    violations.add("core $configName: ${module.group}:${module.name}:${module.version}")
+                }
+            }
         }
-        println(":core isolation check passed: zero android.* or androidx.* imports found.")
+        if (violations.isNotEmpty()) {
+            throw GradleException(":core module isolation violation! Found Android imports or dependencies:\n" + violations.joinToString("\n"))
+        }
+        println(":core isolation check passed: zero android.* or androidx.* imports or dependencies found.")
     }
 }

@@ -1,8 +1,8 @@
 package org.eu.angsumanray.recipecatcher.core.insta
 
+import kotlinx.coroutines.CancellationException
 import org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher
 import org.jsoup.Jsoup
-import org.jsoup.nodes.Element
 
 class EmbedPageFetchStrategy(
     private val httpFetcher: HttpFetcher,
@@ -21,6 +21,8 @@ class EmbedPageFetchStrategy(
         val headers = mapOf("User-Agent" to userAgent)
         val response = try {
             httpFetcher.get(url, headers)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return null
         }
@@ -31,33 +33,25 @@ class EmbedPageFetchStrategy(
     fun parseHtml(html: String): PostData? {
         val doc = Jsoup.parse(html)
 
-        // Find author
         val authorElement = doc.selectFirst(".CaptionUsername")
             ?: doc.selectFirst(".Username")
             ?: doc.selectFirst(".Header .UsernameText")
             ?: doc.selectFirst("a[class*=Username]")
         val author = authorElement?.text()?.trim()?.removePrefix("@")
 
-        // Find caption
         val captionElement = doc.selectFirst(".Caption")
             ?: doc.selectFirst(".CaptionText")
-            ?: doc.selectFirst("div.Caption")
-            ?: doc.selectFirst("[class*=Caption]")
 
         var caption: String? = null
         if (captionElement != null) {
             val cloned = captionElement.clone()
-            // Remove the username element inside caption if present
             cloned.select(".CaptionUsername, .CaptionComments, [class*=Username]").remove()
-            caption = extractTextWithNewlines(cloned)
+            caption = HtmlText.withLineBreaks(cloned)
         }
 
-        // Find image
+        // Only media images: the header also holds the author's avatar, served from the same CDN.
         val imageElement = doc.selectFirst("img.EmbeddedMediaImage")
-            ?: doc.selectFirst("img[src*='cdninstagram']")
-            ?: doc.selectFirst("img[src*='fbcdn']")
             ?: doc.selectFirst(".EmbeddedMedia img")
-            ?: doc.selectFirst("img")
         val imageUrl = imageElement?.attr("src")?.takeIf { it.isNotBlank() }
 
         return PostData(
@@ -65,11 +59,5 @@ class EmbedPageFetchStrategy(
             author = author?.takeIf { it.isNotBlank() },
             imageUrl = imageUrl
         )
-    }
-
-    private fun extractTextWithNewlines(element: Element): String {
-        element.select("br").after("\n")
-        element.select("p").prepend("\n")
-        return element.wholeText().lines().map { it.trim() }.joinToString("\n").trim()
     }
 }

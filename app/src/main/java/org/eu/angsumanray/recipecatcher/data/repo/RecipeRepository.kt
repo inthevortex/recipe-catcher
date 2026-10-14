@@ -2,8 +2,11 @@ package org.eu.angsumanray.recipecatcher.data.repo
 
 import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
+import org.eu.angsumanray.recipecatcher.core.capture.SourceClassifier
+import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
+import org.eu.angsumanray.recipecatcher.data.db.entity.LlmUsageEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeFtsEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeTagEntity
@@ -11,6 +14,12 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.StepEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 import javax.inject.Inject
 import javax.inject.Singleton
+
+sealed interface CaptureStart {
+    data class Created(val recipeId: Long, val sourceType: SourceType) : CaptureStart
+    data class Existing(val recipeId: Long) : CaptureStart
+    data object NoLink : CaptureStart
+}
 
 @Singleton
 class RecipeRepository @Inject constructor(
@@ -22,6 +31,7 @@ class RecipeRepository @Inject constructor(
     private val recipeTagDao = database.recipeTagDao()
     private val tagDao = database.tagDao()
     private val recipeFtsDao = database.recipeFtsDao()
+    private val llmUsageDao = database.llmUsageDao()
 
     fun observeSavedRecipes(): Flow<List<RecipeEntity>> = recipeDao.observeAllSaved()
 
@@ -43,20 +53,63 @@ class RecipeRepository @Inject constructor(
     suspend fun getRecipeBySourceKey(sourceKey: String): RecipeEntity? =
         recipeDao.getBySourceKey(sourceKey)
 
+    /**
+     * Dedupes [sharedText]'s link against the library and, when it is new, writes the
+     * `pending_fetch` row. Check and insert run in one transaction, so two quick shares of the
+     * same post can't both create a row.
+     */
+    suspend fun startCapture(sharedText: String): CaptureStart {
+        val source = SourceClassifier.classifySharedText(sharedText) ?: return CaptureStart.NoLink
+        return database.withTransaction {
+            val existing = recipeDao.getBySourceKey(source.sourceKey)
+            if (existing != null) {
+                CaptureStart.Existing(existing.id)
+            } else {
+                val id = insertPendingRecipe(source.sourceType.value, source.sourceKey, source.canonicalUrl)
+                CaptureStart.Created(id, source.sourceType)
+            }
+        }
+    }
+
+    /** Inserts a `pending_fetch` row, or returns the id of the row that already has [sourceKey]. */
     suspend fun insertPendingRecipe(
         sourceType: String,
         sourceKey: String,
         sourceUrl: String? = null
     ): Long {
+        val now = System.currentTimeMillis()
         val entity = RecipeEntity(
             sourceType = sourceType,
             sourceKey = sourceKey,
             sourceUrl = sourceUrl,
             status = RecipeEntity.STATUS_PENDING_FETCH,
-            createdAt = System.currentTimeMillis(),
-            updatedAt = System.currentTimeMillis()
+            createdAt = now,
+            updatedAt = now
         )
-        return recipeDao.insert(entity)
+        val id = recipeDao.insertIfAbsent(entity)
+        return if (id != -1L) id else checkNotNull(recipeDao.getBySourceKey(sourceKey)).id
+    }
+
+    /** Writes an extraction result and its usage row atomically, leaving the recipe in [RecipeEntity.STATUS_NEEDS_REVIEW]. */
+    suspend fun saveExtraction(
+        recipe: RecipeEntity,
+        ingredients: List<IngredientEntity>,
+        steps: List<StepEntity>,
+        tagIds: List<Long>,
+        usage: LlmUsageEntity
+    ) = database.withTransaction {
+        recipeDao.update(recipe)
+        ingredientDao.deleteByRecipeId(recipe.id)
+        ingredientDao.insertAll(ingredients)
+        stepDao.deleteByRecipeId(recipe.id)
+        stepDao.insertAll(steps)
+        recipeTagDao.deleteByRecipeId(recipe.id)
+        recipeTagDao.insertAll(tagIds.map { RecipeTagEntity(recipeId = recipe.id, tagId = it, source = RecipeTagEntity.SOURCE_AI) })
+        llmUsageDao.insert(usage)
+    }
+
+    suspend fun logUsage(usage: LlmUsageEntity) {
+        llmUsageDao.insert(usage)
     }
 
     suspend fun updateRecipeStatus(
@@ -83,7 +136,7 @@ class RecipeRepository @Inject constructor(
             savedAt = recipe.savedAt ?: System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis()
         )
-        val recipeId = recipeDao.insert(savedRecipe)
+        val recipeId = recipeDao.upsert(savedRecipe).let { if (it == -1L) savedRecipe.id else it }
 
         // Clear and re-insert ingredients
         ingredientDao.deleteByRecipeId(recipeId)
@@ -136,8 +189,8 @@ class RecipeRepository @Inject constructor(
 
     companion object {
         fun sanitizeFtsQuery(query: String): String {
-            // Remove punctuation and characters that break SQLite FTS syntax (*, ", ', :, etc.)
-            val clean = query.replace("[^a-zA-Z0-9\\s]".toRegex(), " ").trim()
+            // Keep letters and digits in any script (unicode61 tokenizer); drop FTS syntax like * " : -
+            val clean = query.replace("[^\\p{L}\\p{M}\\p{N}\\s]".toRegex(), " ").trim()
             val tokens = clean.split("\\s+".toRegex()).filter { it.isNotBlank() }
             if (tokens.isEmpty()) return ""
             // Append wildcard prefix search to each term: "pan" -> "pan*"

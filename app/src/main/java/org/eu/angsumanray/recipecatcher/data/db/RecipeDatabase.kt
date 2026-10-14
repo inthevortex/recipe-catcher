@@ -4,9 +4,6 @@ import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import androidx.sqlite.db.SupportSQLiteDatabase
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.data.db.dao.ChatDao
 import org.eu.angsumanray.recipecatcher.data.db.dao.CookLogDao
 import org.eu.angsumanray.recipecatcher.data.db.dao.ImportItemDao
@@ -75,20 +72,18 @@ abstract class RecipeDatabase : RoomDatabase() {
     companion object {
         const val DATABASE_NAME = "recipes.db"
 
-        fun createStarterSeedCallback(
-            scope: CoroutineScope,
-            tagDaoProvider: () -> TagDao
-        ): Callback {
-            return object : Callback() {
-                override fun onCreate(db: SupportSQLiteDatabase) {
-                    super.onCreate(db)
-                    scope.launch(Dispatchers.IO) {
-                        try {
-                            tagDaoProvider().insertAll(StarterLists.createInitialEntities())
-                        } catch (e: Exception) {
-                            // Seeder error handling
-                        }
-                    }
+        /**
+         * Seeds the starter lists inside the database-creation transaction, so nothing can read
+         * the tag table before it is filled.
+         */
+        val starterSeedCallback: Callback = object : Callback() {
+            override fun onCreate(db: SupportSQLiteDatabase) {
+                super.onCreate(db)
+                StarterLists.createInitialEntities().forEach { tag ->
+                    db.execSQL(
+                        "INSERT OR IGNORE INTO tag (kind, name, position) VALUES (?, ?, ?)",
+                        arrayOf<Any>(tag.kind, tag.name, tag.position)
+                    )
                 }
             }
         }

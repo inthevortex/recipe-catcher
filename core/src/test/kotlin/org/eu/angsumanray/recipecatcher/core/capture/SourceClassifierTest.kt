@@ -61,4 +61,19 @@ class SourceClassifierTest {
         assertNull(SourceClassifier.classify("Random text without a link"))
         assertNull(SourceClassifier.classify(""))
     }
+
+    @Test
+    fun `classifySharedText prefers the first Instagram link over earlier urls`() {
+        val shared = "Saw this via https://example.com/blog and then https://www.instagram.com/reel/AbC_12/?igsh=xyz yum"
+        val result = SourceClassifier.classifySharedText(shared)
+        assertEquals(SourceType.INSTAGRAM, result?.sourceType)
+        assertEquals("AbC_12", result?.sourceKey)
+        assertEquals("https://www.instagram.com/p/AbC_12/", result?.canonicalUrl)
+    }
+
+    @Test
+    fun `classifySharedText falls back to the first url and to null without one`() {
+        assertEquals(SourceType.WEB, SourceClassifier.classifySharedText("try https://example.com/dal?utm_source=x")?.sourceType)
+        assertEquals(null, SourceClassifier.classifySharedText("no links here"))
+    }
 }

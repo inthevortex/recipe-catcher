@@ -1,5 +1,6 @@
 package org.eu.angsumanray.recipecatcher.di
 
+import android.util.Log
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -22,7 +23,13 @@ import org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher
 import org.eu.angsumanray.recipecatcher.data.network.KtorHttpFetcher
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import java.util.concurrent.TimeUnit
+import javax.inject.Qualifier
 import javax.inject.Singleton
+
+/** Ktor client for the Anthropic API, with a read timeout long enough for a non-streaming extraction. */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class AnthropicHttpClient
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -49,18 +56,25 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideKtorClient(okHttpClient: OkHttpClient): HttpClient {
-        return HttpClient(OkHttp) {
-            engine {
-                preconfigured = okHttpClient
-            }
-            install(ContentNegotiation) {
-                json(Json {
-                    ignoreUnknownKeys = true
-                    isLenient = true
-                    encodeDefaults = true
-                })
-            }
+    fun provideKtorClient(okHttpClient: OkHttpClient): HttpClient = ktorClient(okHttpClient)
+
+    // A non-streaming Messages call sends nothing until the whole response is ready.
+    @Provides
+    @Singleton
+    @AnthropicHttpClient
+    fun provideAnthropicKtorClient(okHttpClient: OkHttpClient): HttpClient =
+        ktorClient(okHttpClient.newBuilder().readTimeout(60, TimeUnit.SECONDS).build())
+
+    private fun ktorClient(okHttpClient: OkHttpClient): HttpClient = HttpClient(OkHttp) {
+        engine {
+            preconfigured = okHttpClient
+        }
+        install(ContentNegotiation) {
+            json(Json {
+                ignoreUnknownKeys = true
+                isLenient = true
+                encodeDefaults = true
+            })
         }
     }
 
@@ -72,13 +86,13 @@ object NetworkModule {
             EmbedPageFetchStrategy(httpFetcher),
             PostPageMetaFetchStrategy(httpFetcher)
         )
-        return InstagramPostFetcher(strategies)
+        return InstagramPostFetcher(strategies) { Log.i("InstagramPostFetcher", it) }
     }
 
     @Provides
     @Singleton
     fun provideRecipeExtractor(
-        httpClient: HttpClient,
+        @AnthropicHttpClient httpClient: HttpClient,
         settingsStore: SettingsStore
     ): RecipeExtractor {
         return ClaudeExtractor(

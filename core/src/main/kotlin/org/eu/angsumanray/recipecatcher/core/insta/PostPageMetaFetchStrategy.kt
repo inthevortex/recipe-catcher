@@ -1,5 +1,6 @@
 package org.eu.angsumanray.recipecatcher.core.insta
 
+import kotlinx.coroutines.CancellationException
 import org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher
 import org.jsoup.Jsoup
 
@@ -10,10 +11,14 @@ class PostPageMetaFetchStrategy(
 
     override val name: String = "PostPageMeta"
 
+    // "1,450 likes, 82 comments - handle on October 10, 2026: " (comment count optional).
+    // Requires the counts or a dated "handle on <date>:" so a caption starting "Ingredients:" survives.
     private val prefixRegex = Regex(
-        """^(?:[0-9,KMkm.]+\s+likes?,\s+[0-9,KMkm.]+\s+comments?\s+[-–—]\s+)?(?:@?([a-zA-Z0-9._]+)\s+on\s+[^:]+:\s*|@?([a-zA-Z0-9._]+):\s*)""",
+        """^(?:[0-9][0-9,.]*\s*[KMB]?\s+likes?(?:,\s*[0-9][0-9,.]*\s*[KMB]?\s+comments?)?\s*[-–—]\s*@?([a-zA-Z0-9._]+)\s+on\s+[^:]{1,40}:\s*|@?([a-zA-Z0-9._]+)\s+on\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}:\s*)""",
         RegexOption.IGNORE_CASE
     )
+
+    private val quotedCaptionRegex = Regex("""^["“](.*)["”]\s*\.?$""", RegexOption.DOT_MATCHES_ALL)
 
     private val titleAuthorRegex = Regex(
         """^(?:(.+?)\s*\(@([a-zA-Z0-9._]+)\)|([a-zA-Z0-9._]+))\s+on\s+Instagram""",
@@ -25,6 +30,8 @@ class PostPageMetaFetchStrategy(
         val headers = mapOf("User-Agent" to userAgent)
         val response = try {
             httpFetcher.get(url, headers)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return null
         }
@@ -64,12 +71,8 @@ class PostPageMetaFetchStrategy(
                 caption = ogDescription.trim()
             }
 
-            // Strip surrounding quotes if present: "caption" -> caption
-            if (caption.startsWith("\"") && caption.endsWith("\"") && caption.length >= 2) {
-                caption = caption.substring(1, caption.length - 1).trim()
-            } else if (caption.startsWith("“") && caption.endsWith("”") && caption.length >= 2) {
-                caption = caption.substring(1, caption.length - 1).trim()
-            }
+            // The caption is quoted and usually followed by a period: "caption".
+            quotedCaptionRegex.find(caption)?.let { caption = it.groupValues[1].trim() }
         }
 
         return PostData(

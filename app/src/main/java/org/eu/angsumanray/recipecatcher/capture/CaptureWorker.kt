@@ -1,6 +1,7 @@
 package org.eu.angsumanray.recipecatcher.capture
 
 import android.content.Context
+import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
@@ -13,10 +14,12 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import org.eu.angsumanray.recipecatcher.core.insta.InstagramPostFetcher
 import org.eu.angsumanray.recipecatcher.core.llm.ApiKeyInvalidException
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractionInput
+import org.eu.angsumanray.recipecatcher.core.llm.LlmUsage
 import org.eu.angsumanray.recipecatcher.core.llm.ModelNotFoundException
 import org.eu.angsumanray.recipecatcher.core.llm.NoRecipeFoundException
 import org.eu.angsumanray.recipecatcher.core.llm.RecipeExtractor
@@ -26,7 +29,6 @@ import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.LlmUsageEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
-import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeTagEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.StepEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
@@ -48,6 +50,8 @@ class CaptureWorker @AssistedInject constructor(
 
     companion object {
         const val KEY_RECIPE_ID = "key_recipe_id"
+        private const val TAG = "CaptureWorker"
+        private const val MAX_ATTEMPTS = 3
 
         fun enqueue(context: Context, recipeId: Long) {
             val constraints = Constraints.Builder()
@@ -73,54 +77,48 @@ class CaptureWorker @AssistedInject constructor(
         if (recipeId == -1L) return Result.failure()
 
         val recipe = recipeRepository.getRecipe(recipeId) ?: return Result.failure()
-        if (recipe.status == RecipeEntity.STATUS_SAVED) return Result.success()
+        if (recipe.status == RecipeEntity.STATUS_SAVED || recipe.status == RecipeEntity.STATUS_NEEDS_REVIEW) {
+            return Result.success()
+        }
 
-        val recipeDao = database.recipeDao()
-        val ingredientDao = database.ingredientDao()
-        val stepDao = database.stepDao()
-        val tagDao = database.tagDao()
-        val recipeTagDao = database.recipeTagDao()
-        val llmUsageDao = database.llmUsageDao()
-
-        // Phase 1: Fetch post if needed
         var currentRecipe = recipe
         if (currentRecipe.captionRaw.isNullOrBlank()) {
+            if (currentRecipe.sourceType != SourceType.INSTAGRAM.value) {
+                recipeRepository.updateRecipeStatus(
+                    recipeId,
+                    RecipeEntity.STATUS_FAILED_FETCH,
+                    "Only Instagram links can be captured for now"
+                )
+                return Result.failure()
+            }
+
             val postData = try {
                 instagramPostFetcher.fetch(currentRecipe.sourceKey)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                Log.w(TAG, "Instagram fetch failed for ${currentRecipe.sourceKey}", e)
                 null
             }
 
             if (postData == null || postData.caption.isNullOrBlank()) {
-                return if (runAttemptCount < 3) {
-                    Result.retry()
-                } else {
-                    recipeRepository.updateRecipeStatus(
-                        recipeId,
-                        RecipeEntity.STATUS_FAILED_FETCH,
-                        "Couldn't read this post"
-                    )
-                    Result.failure()
-                }
+                return retryOrFail(recipeId, RecipeEntity.STATUS_FAILED_FETCH, "Couldn't read this post")
             }
 
-            var imagePath = currentRecipe.imagePath
-            val postImageUrl = postData.imageUrl
-            if (!postImageUrl.isNullOrBlank()) {
-                imagePath = imageStorageManager.downloadAndSave(recipeId, postImageUrl)
-            }
+            val imagePath = postData.imageUrl?.takeIf { it.isNotBlank() }
+                ?.let { imageStorageManager.downloadAndSave(recipeId, it) }
 
             currentRecipe = currentRecipe.copy(
                 captionRaw = postData.caption,
                 authorHandle = postData.author ?: currentRecipe.authorHandle,
                 imagePath = imagePath ?: currentRecipe.imagePath,
                 status = RecipeEntity.STATUS_PENDING_EXTRACT,
+                errorMessage = null,
                 updatedAt = System.currentTimeMillis()
             )
-            recipeDao.update(currentRecipe)
+            database.recipeDao().update(currentRecipe)
         }
 
-        // Phase 2: Extract recipe with Claude
         val apiKey = settingsStore.getApiKey()
         if (apiKey.isBlank()) {
             recipeRepository.updateRecipeStatus(
@@ -131,27 +129,27 @@ class CaptureWorker @AssistedInject constructor(
             return Result.failure()
         }
 
-        val allowedTags = tagDao.getByKind(TagEntity.KIND_TAG).map { it.name }
-        val allowedDiet = tagDao.getByKind(TagEntity.KIND_DIET).map { it.name }
-        val allowedEquipment = tagDao.getByKind(TagEntity.KIND_EQUIPMENT).map { it.name }
-        val allowedConsumables = tagDao.getByKind(TagEntity.KIND_CONSUMABLE).map { it.name }
+        val tagDao = database.tagDao()
+        val tagsByKind = tagDao.getAll().groupBy { it.kind }
 
+        val captionRaw = currentRecipe.captionRaw.orEmpty()
         val extractionInput = ExtractionInput(
-            sourceType = SourceType.INSTAGRAM,
-            sourceText = currentRecipe.captionRaw.orEmpty(),
+            sourceType = SourceType.from(currentRecipe.sourceType),
+            sourceText = InstagramPostFetcher.stripTrailingHashtags(captionRaw).ifBlank { captionRaw },
             topComment = currentRecipe.commentRaw,
             author = currentRecipe.authorHandle,
-            allowedTags = allowedTags,
-            allowedDiet = allowedDiet,
-            allowedEquipment = allowedEquipment,
-            allowedConsumables = allowedConsumables
+            allowedTags = tagsByKind[TagEntity.KIND_TAG].orEmpty().map { it.name },
+            allowedDiet = tagsByKind[TagEntity.KIND_DIET].orEmpty().map { it.name },
+            allowedEquipment = tagsByKind[TagEntity.KIND_EQUIPMENT].orEmpty().map { it.name },
+            allowedConsumables = tagsByKind[TagEntity.KIND_CONSUMABLE].orEmpty().map { it.name }
         )
 
+        val activeModel = settingsStore.modelIdFlow.first()
         val extractionResult = recipeExtractor.extract(extractionInput)
-        if (extractionResult.isFailure) {
-            val ex = extractionResult.exceptionOrNull()
+        val extracted = extractionResult.getOrElse { ex ->
             return when (ex) {
                 is NoRecipeFoundException -> {
+                    ex.usage?.let { recipeRepository.logUsage(it.toEntity(activeModel)) }
                     recipeRepository.updateRecipeStatus(
                         recipeId,
                         RecipeEntity.STATUS_NO_RECIPE_FOUND,
@@ -175,48 +173,16 @@ class CaptureWorker @AssistedInject constructor(
                     )
                     Result.failure()
                 }
-                is TransientApiException -> {
-                    if (runAttemptCount < 3) {
-                        Result.retry()
-                    } else {
-                        recipeRepository.updateRecipeStatus(
-                            recipeId,
-                            RecipeEntity.STATUS_FAILED_EXTRACT,
-                            "API error: ${ex.message}"
-                        )
-                        Result.failure()
-                    }
-                }
+                is TransientApiException ->
+                    retryOrFail(recipeId, RecipeEntity.STATUS_FAILED_EXTRACT, "API error: ${ex.message}")
                 else -> {
-                    if (runAttemptCount < 2) {
-                        Result.retry()
-                    } else {
-                        recipeRepository.updateRecipeStatus(
-                            recipeId,
-                            RecipeEntity.STATUS_FAILED_EXTRACT,
-                            ex?.message ?: "Extraction failed"
-                        )
-                        Result.failure()
-                    }
+                    Log.w(TAG, "Extraction failed for recipe $recipeId", ex)
+                    retryOrFail(recipeId, RecipeEntity.STATUS_FAILED_EXTRACT, ex.message ?: "Extraction failed")
                 }
             }
         }
 
-        val extracted = extractionResult.getOrThrow()
-
-        // Log usage
-        val activeModel = settingsStore.modelIdFlow.first()
-        llmUsageDao.insert(
-            LlmUsageEntity(
-                purpose = LlmUsageEntity.PURPOSE_EXTRACTION,
-                model = activeModel,
-                inputTokens = extracted.usage.inputTokens,
-                outputTokens = extracted.usage.outputTokens,
-                cacheReadTokens = extracted.usage.cacheReadTokens
-            )
-        )
-
-        // Update recipe row to needs_review
+        val model = extracted.usage.model ?: activeModel
         val needsReviewRecipe = currentRecipe.copy(
             title = extracted.title ?: currentRecipe.title,
             description = extracted.description ?: currentRecipe.description,
@@ -232,20 +198,19 @@ class CaptureWorker @AssistedInject constructor(
             kcalPerServing = extracted.kcalPerServing ?: currentRecipe.kcalPerServing,
             makeAhead = extracted.makeAhead,
             freezerFriendly = extracted.freezerFriendly,
-            llmModel = activeModel,
+            llmModel = model,
             status = RecipeEntity.STATUS_NEEDS_REVIEW,
             errorMessage = null,
             updatedAt = System.currentTimeMillis()
         )
-        recipeDao.update(needsReviewRecipe)
 
-        // Insert ingredients
-        val ingredientEntities = extracted.ingredientGroups.flatMapIndexed { groupIdx, group ->
-            group.items.mapIndexed { itemIdx, item ->
+        val ingredientEntities = extracted.ingredientGroups
+            .flatMap { group -> group.items.map { group.name to it } }
+            .mapIndexed { position, (groupName, item) ->
                 IngredientEntity(
                     recipeId = recipeId,
-                    position = groupIdx * 100 + itemIdx,
-                    groupName = group.name,
+                    position = position,
+                    groupName = groupName,
                     quantity = item.quantity,
                     quantityMax = item.quantityMax,
                     unit = item.unit,
@@ -256,11 +221,7 @@ class CaptureWorker @AssistedInject constructor(
                     rawText = item.rawText
                 )
             }
-        }
-        ingredientDao.deleteByRecipeId(recipeId)
-        ingredientDao.insertAll(ingredientEntities)
 
-        // Insert steps
         val stepEntities = extracted.steps.mapIndexed { idx, step ->
             StepEntity(
                 recipeId = recipeId,
@@ -269,19 +230,42 @@ class CaptureWorker @AssistedInject constructor(
                 timerSeconds = step.timerSeconds
             )
         }
-        stepDao.deleteByRecipeId(recipeId)
-        stepDao.insertAll(stepEntities)
 
-        // Match tags and recipe_tag
-        val allDbTags = tagDao.getAll().associateBy { it.name.lowercase().trim() }
-        val extractedTagNames = (extracted.tags + extracted.contains + extracted.equipment + extracted.consumables)
-        val matchedTagIds = extractedTagNames.mapNotNull { allDbTags[it.lowercase().trim()]?.id }.distinct()
-        val recipeTags = matchedTagIds.map {
-            RecipeTagEntity(recipeId = recipeId, tagId = it, source = RecipeTagEntity.SOURCE_AI)
+        // Names are unique per kind only, so each list is matched against its own vocabulary.
+        fun tagIds(kind: String, names: List<String>): List<Long> {
+            val byName = tagsByKind[kind].orEmpty().associateBy { it.name.trim().lowercase() }
+            return names.mapNotNull { byName[it.trim().lowercase()]?.id }
         }
-        recipeTagDao.deleteByRecipeId(recipeId)
-        recipeTagDao.insertAll(recipeTags)
+        val matchedTagIds = (
+            tagIds(TagEntity.KIND_TAG, extracted.tags) +
+                tagIds(TagEntity.KIND_DIET, extracted.contains) +
+                tagIds(TagEntity.KIND_EQUIPMENT, extracted.equipment) +
+                tagIds(TagEntity.KIND_CONSUMABLE, extracted.consumables)
+            ).distinct()
+
+        recipeRepository.saveExtraction(
+            recipe = needsReviewRecipe,
+            ingredients = ingredientEntities,
+            steps = stepEntities,
+            tagIds = matchedTagIds,
+            usage = extracted.usage.toEntity(model)
+        )
 
         return Result.success()
     }
+
+    private suspend fun retryOrFail(recipeId: Long, failedStatus: String, message: String): Result {
+        if (runAttemptCount + 1 < MAX_ATTEMPTS) return Result.retry()
+        recipeRepository.updateRecipeStatus(recipeId, failedStatus, message)
+        return Result.failure()
+    }
+
+    private fun LlmUsage.toEntity(fallbackModel: String) = LlmUsageEntity(
+        purpose = LlmUsageEntity.PURPOSE_EXTRACTION,
+        model = model ?: fallbackModel,
+        inputTokens = inputTokens,
+        outputTokens = outputTokens,
+        cacheReadTokens = cacheReadTokens,
+        webSearches = webSearches
+    )
 }

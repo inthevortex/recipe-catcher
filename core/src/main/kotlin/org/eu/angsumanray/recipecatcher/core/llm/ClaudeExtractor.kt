@@ -9,7 +9,10 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -26,6 +29,17 @@ class ClaudeExtractor(
         const val DEFAULT_MODEL_ID = "claude-haiku-5-5"
         const val ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
         const val ANTHROPIC_VERSION = "2023-06-01"
+        const val MAX_TOKENS = 2000
+        const val EFFORT = "low"
+
+        const val UNKNOWN = "unknown"
+        val COMPLEXITY_VALUES = listOf("easy", "medium", "hard")
+        val SPICE_LEVEL_VALUES = listOf("mild", "medium", "hot")
+        val DIET_TYPE_VALUES = listOf("vegan", "vegetarian", "eggetarian", "non-veg")
+        val CATEGORY_VALUES = listOf(
+            "vegetables", "fruit", "dairy", "meat & fish", "grains & flours", "spices", "pantry", "other"
+        )
+        val SUGGESTION_KIND_VALUES = listOf("tag", "diet", "equipment", "consumable")
 
         const val SYSTEM_PROMPT = """You are an expert recipe extraction system. Extract structured recipe information from the provided source text.
 Rules:
@@ -55,19 +69,19 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
         val userContent = buildUserTurnText(input)
         val requestPayload = buildRequestPayload(modelId, userContent)
 
-        val response = try {
-            httpClient.post(ANTHROPIC_MESSAGES_URL) {
+        val (statusCode, responseBody) = try {
+            val response = httpClient.post(ANTHROPIC_MESSAGES_URL) {
                 contentType(ContentType.Application.Json)
                 header("x-api-key", apiKey)
                 header("anthropic-version", ANTHROPIC_VERSION)
                 setBody(requestPayload)
             }
+            response.status.value to response.bodyAsText()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return Result.failure(e)
         }
-
-        val statusCode = response.status.value
-        val responseBody = response.bodyAsText()
 
         when (statusCode) {
             200 -> Unit
@@ -80,6 +94,9 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
 
         return try {
             val anthropicResponse = json.decodeFromString<AnthropicMessageResponse>(responseBody)
+            if (anthropicResponse.stopReason == "refusal" || anthropicResponse.stopReason == "max_tokens") {
+                return Result.failure(RuntimeException("Extraction stopped early: ${anthropicResponse.stopReason}"))
+            }
             val textContent = anthropicResponse.content.firstOrNull { it.type == "text" }?.text
                 ?: return Result.failure(RuntimeException("No text content in Anthropic response"))
 
@@ -88,11 +105,13 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
             val usage = LlmUsage(
                 inputTokens = anthropicResponse.usage?.inputTokens ?: 0,
                 outputTokens = anthropicResponse.usage?.outputTokens ?: 0,
-                cacheReadTokens = anthropicResponse.usage?.cacheReadTokens
-                    ?: anthropicResponse.usage?.cacheReadInputTokens ?: 0
+                cacheReadTokens = anthropicResponse.usage?.cacheReadInputTokens ?: 0,
+                model = anthropicResponse.model ?: modelId
             )
 
             validateAndMap(rawRecipe, input, usage)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -112,11 +131,10 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
         appendLine(input.sourceText)
     }
 
-    private fun buildRequestPayload(modelId: String, userContent: String): String {
+    internal fun buildRequestPayload(modelId: String, userContent: String): String {
         val root = buildJsonObject {
             put("model", modelId)
-            put("max_tokens", 2000)
-            put("effort", "low")
+            put("max_tokens", MAX_TOKENS)
             putJsonArray("system") {
                 add(buildJsonObject {
                     put("type", "text")
@@ -133,6 +151,7 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
                 })
             }
             putJsonObject("output_config") {
+                put("effort", EFFORT)
                 putJsonObject("format") {
                     put("type", "json_schema")
                     put("schema", buildJsonSchema())
@@ -153,10 +172,10 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
             putJsonObject("cook_minutes") { put("type", "integer") }
             putJsonObject("total_minutes") { put("type", "integer") }
             putJsonObject("cuisine") { put("type", "string") }
-            putJsonObject("complexity") { put("type", "string") }
+            putJsonObject("complexity") { stringEnum(COMPLEXITY_VALUES + UNKNOWN) }
             putJsonObject("complexity_reason") { put("type", "string") }
-            putJsonObject("spice_level") { put("type", "string") }
-            putJsonObject("diet_type") { put("type", "string") }
+            putJsonObject("spice_level") { stringEnum(SPICE_LEVEL_VALUES + UNKNOWN) }
+            putJsonObject("diet_type") { stringEnum(DIET_TYPE_VALUES + UNKNOWN) }
             putJsonObject("contains") {
                 put("type", "array")
                 putJsonObject("items") { put("type", "string") }
@@ -180,27 +199,27 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
                                     putJsonObject("unit") { put("type", "string") }
                                     putJsonObject("name") { put("type", "string") }
                                     putJsonObject("base_name") { put("type", "string") }
-                                    putJsonObject("category") { put("type", "string") }
+                                    putJsonObject("category") { stringEnum(CATEGORY_VALUES) }
                                     putJsonObject("note") { put("type", "string") }
                                     putJsonObject("raw") { put("type", "string") }
                                 }
                                 putJsonArray("required") {
-                                    add(kotlinx.serialization.json.JsonPrimitive("quantity"))
-                                    add(kotlinx.serialization.json.JsonPrimitive("quantity_max"))
-                                    add(kotlinx.serialization.json.JsonPrimitive("unit"))
-                                    add(kotlinx.serialization.json.JsonPrimitive("name"))
-                                    add(kotlinx.serialization.json.JsonPrimitive("base_name"))
-                                    add(kotlinx.serialization.json.JsonPrimitive("category"))
-                                    add(kotlinx.serialization.json.JsonPrimitive("note"))
-                                    add(kotlinx.serialization.json.JsonPrimitive("raw"))
+                                    add(JsonPrimitive("quantity"))
+                                    add(JsonPrimitive("quantity_max"))
+                                    add(JsonPrimitive("unit"))
+                                    add(JsonPrimitive("name"))
+                                    add(JsonPrimitive("base_name"))
+                                    add(JsonPrimitive("category"))
+                                    add(JsonPrimitive("note"))
+                                    add(JsonPrimitive("raw"))
                                 }
                                 put("additionalProperties", false)
                             }
                         }
                     }
                     putJsonArray("required") {
-                        add(kotlinx.serialization.json.JsonPrimitive("name"))
-                        add(kotlinx.serialization.json.JsonPrimitive("items"))
+                        add(JsonPrimitive("name"))
+                        add(JsonPrimitive("items"))
                     }
                     put("additionalProperties", false)
                 }
@@ -214,8 +233,8 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
                         putJsonObject("timer_seconds") { put("type", "integer") }
                     }
                     putJsonArray("required") {
-                        add(kotlinx.serialization.json.JsonPrimitive("text"))
-                        add(kotlinx.serialization.json.JsonPrimitive("timer_seconds"))
+                        add(JsonPrimitive("text"))
+                        add(JsonPrimitive("timer_seconds"))
                     }
                     put("additionalProperties", false)
                 }
@@ -237,12 +256,12 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
                 putJsonObject("items") {
                     put("type", "object")
                     putJsonObject("properties") {
-                        putJsonObject("kind") { put("type", "string") }
+                        putJsonObject("kind") { stringEnum(SUGGESTION_KIND_VALUES) }
                         putJsonObject("name") { put("type", "string") }
                     }
                     putJsonArray("required") {
-                        add(kotlinx.serialization.json.JsonPrimitive("kind"))
-                        add(kotlinx.serialization.json.JsonPrimitive("name"))
+                        add(JsonPrimitive("kind"))
+                        add(JsonPrimitive("name"))
                     }
                     put("additionalProperties", false)
                 }
@@ -257,9 +276,14 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
                 "kcal_per_serving", "make_ahead", "freezer_friendly",
                 "ingredient_groups", "steps", "equipment", "consumables",
                 "tags", "new_list_suggestions", "confidence"
-            ).forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) }
+            ).forEach { add(JsonPrimitive(it)) }
         }
         put("additionalProperties", false)
+    }
+
+    private fun JsonObjectBuilder.stringEnum(values: List<String>) {
+        put("type", "string")
+        putJsonArray("enum") { values.forEach { add(JsonPrimitive(it)) } }
     }
 
     private fun validateAndMap(
@@ -271,7 +295,7 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
         val totalSteps = raw.steps.size
 
         if (!raw.is_recipe || (totalIngredients == 0 && totalSteps == 0)) {
-            return Result.failure(NoRecipeFoundException("No recipe found in source"))
+            return Result.failure(NoRecipeFoundException("No recipe found in source", usage))
         }
 
         val servings = if (raw.servings > 0) raw.servings.coerceIn(1, 50) else null
@@ -295,7 +319,7 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
                         unit = item.unit.toNullIfBlankOrUnknown(),
                         name = item.name.ifBlank { item.raw },
                         baseName = item.base_name.ifBlank { item.name },
-                        category = item.category.toNullIfBlankOrUnknown() ?: "other",
+                        category = item.category.toAllowedEnum(CATEGORY_VALUES) ?: "other",
                         note = item.note.toNullIfBlankOrUnknown(),
                         rawText = item.raw.ifBlank { "${item.quantity} ${item.unit} ${item.name}".trim() }
                     )
@@ -310,8 +334,10 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
             )
         }
 
-        val suggestions = raw.new_list_suggestions.map {
-            NewListSuggestion(kind = it.kind, name = it.name)
+        val suggestions = raw.new_list_suggestions.mapNotNull {
+            val kind = it.kind.toAllowedEnum(SUGGESTION_KIND_VALUES)
+            val name = it.name.trim()
+            if (kind == null || name.isEmpty()) null else NewListSuggestion(kind = kind, name = name)
         }
 
         val recipe = ExtractedRecipe(
@@ -323,10 +349,10 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
             cookMinutes = cookMinutes,
             totalMinutes = totalMinutes,
             cuisine = raw.cuisine.toNullIfBlankOrUnknown(),
-            complexity = raw.complexity.toNullIfBlankOrUnknown(),
+            complexity = raw.complexity.toAllowedEnum(COMPLEXITY_VALUES),
             complexityReason = raw.complexity_reason.toNullIfBlankOrUnknown(),
-            spiceLevel = raw.spice_level.toNullIfBlankOrUnknown(),
-            dietType = raw.diet_type.toNullIfBlankOrUnknown(),
+            spiceLevel = raw.spice_level.toAllowedEnum(SPICE_LEVEL_VALUES),
+            dietType = raw.diet_type.toAllowedEnum(DIET_TYPE_VALUES),
             contains = filteredDiet,
             kcalPerServing = kcal,
             makeAhead = raw.make_ahead,
@@ -352,7 +378,13 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
 
     private fun String.toNullIfBlankOrUnknown(): String? {
         val trimmed = this.trim()
-        return if (trimmed.isEmpty() || trimmed.equals("unknown", ignoreCase = true)) null else trimmed
+        return if (trimmed.isEmpty() || trimmed.equals(UNKNOWN, ignoreCase = true)) null else trimmed
+    }
+
+    // Structured outputs don't guarantee enum capitalisation, so match case-insensitively.
+    private fun String.toAllowedEnum(allowed: List<String>): String? {
+        val normalized = trim().lowercase()
+        return allowed.firstOrNull { it == normalized }
     }
 }
 
@@ -363,6 +395,8 @@ private data class AnthropicMessageResponse(
     val role: String? = null,
     val content: List<AnthropicContentBlock> = emptyList(),
     val model: String? = null,
+    @SerialName("stop_reason")
+    val stopReason: String? = null,
     val usage: AnthropicUsage? = null
 )
 
@@ -379,9 +413,7 @@ private data class AnthropicUsage(
     @SerialName("output_tokens")
     val outputTokens: Int = 0,
     @SerialName("cache_read_input_tokens")
-    val cacheReadInputTokens: Int? = null,
-    @SerialName("cache_read_tokens")
-    val cacheReadTokens: Int? = null
+    val cacheReadInputTokens: Int? = null
 )
 
 @Serializable

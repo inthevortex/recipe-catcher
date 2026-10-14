@@ -36,6 +36,9 @@ class SecretStore @Inject constructor(
         val KEY_API_KEY_CIPHERTEXT = stringPreferencesKey("anthropic_api_key_encrypted")
     }
 
+    // Used only where the AndroidKeyStore provider doesn't exist (JVM unit tests). On a device a
+    // keystore failure must surface: an in-memory key would make the stored ciphertext unreadable
+    // after the next restart.
     private var jvmFallbackKey: SecretKey? = null
 
     private val keyStore: KeyStore? = try {
@@ -49,30 +52,25 @@ class SecretStore @Inject constructor(
     @Synchronized
     private fun getOrCreateSecretKey(): SecretKey {
         if (keyStore != null) {
-            try {
-                if (keyStore.containsAlias(KEY_ALIAS)) {
-                    val entry = keyStore.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
-                    if (entry != null) return entry.secretKey
-                }
-
-                val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-                val spec = KeyGenParameterSpec.Builder(
-                    KEY_ALIAS,
-                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-                )
-                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .setKeySize(256)
-                    .build()
-
-                keyGenerator.init(spec)
-                return keyGenerator.generateKey()
-            } catch (e: Exception) {
-                // If AndroidKeyStore operation fails in test environment, fall through to fallback
+            if (keyStore.containsAlias(KEY_ALIAS)) {
+                val entry = keyStore.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
+                if (entry != null) return entry.secretKey
             }
+
+            val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+            val spec = KeyGenParameterSpec.Builder(
+                KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .build()
+
+            keyGenerator.init(spec)
+            return keyGenerator.generateKey()
         }
 
-        // JVM test fallback when AndroidKeyStore is unavailable
         if (jvmFallbackKey == null) {
             val keyGenerator = KeyGenerator.getInstance("AES")
             keyGenerator.init(256)

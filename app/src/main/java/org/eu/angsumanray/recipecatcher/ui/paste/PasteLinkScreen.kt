@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.capture.CaptureWorker
 import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
+import org.eu.angsumanray.recipecatcher.data.repo.CaptureStart
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -140,40 +141,20 @@ fun PasteLinkScreen(
                         errorMessage = "Please enter or paste a URL"
                         return@Button
                     }
-                    val url = UrlNormalizer.extractUrl(trimmed) ?: trimmed
-
                     isCapturing = true
                     scope.launch {
                         try {
-                            val shortcode = UrlNormalizer.extractInstagramShortcode(url)
-                            val sourceKey: String
-                            val sourceType: String
-                            val canonicalUrl: String?
-
-                            if (shortcode != null) {
-                                sourceType = "instagram"
-                                sourceKey = shortcode
-                                canonicalUrl = UrlNormalizer.canonicalizeInstagramUrl(shortcode)
-                            } else {
-                                sourceType = "web"
-                                val normalized = UrlNormalizer.normalizeWebUrl(url)
-                                sourceKey = normalized
-                                canonicalUrl = normalized
+                            when (val start = recipeRepository.startCapture(trimmed)) {
+                                CaptureStart.NoLink -> {
+                                    errorMessage = "That doesn't look like a link"
+                                    isCapturing = false
+                                }
+                                is CaptureStart.Existing -> onRecipeCaptured(start.recipeId)
+                                is CaptureStart.Created -> {
+                                    CaptureWorker.enqueue(context, start.recipeId)
+                                    onRecipeCaptured(start.recipeId)
+                                }
                             }
-
-                            val existing = recipeRepository.getRecipeBySourceKey(sourceKey)
-                            if (existing != null) {
-                                onRecipeCaptured(existing.id)
-                                return@launch
-                            }
-
-                            val newId = recipeRepository.insertPendingRecipe(
-                                sourceType = sourceType,
-                                sourceKey = sourceKey,
-                                sourceUrl = canonicalUrl
-                            )
-                            CaptureWorker.enqueue(context, newId)
-                            onRecipeCaptured(newId)
                         } catch (e: Exception) {
                             errorMessage = e.message ?: "Failed to start capture"
                             isCapturing = false

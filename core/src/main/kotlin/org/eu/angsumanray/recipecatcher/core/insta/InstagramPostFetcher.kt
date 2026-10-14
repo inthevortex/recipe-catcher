@@ -1,9 +1,17 @@
 package org.eu.angsumanray.recipecatcher.core.insta
 
+import kotlinx.coroutines.CancellationException
 import org.jsoup.parser.Parser
 
+/**
+ * Runs the strategies in order and stops at the first non-empty caption. Image URL and author
+ * are merged from whichever strategy supplies them first. The returned caption is HTML-unescaped
+ * with line breaks kept; hashtag-only trailing lines are left in so the row keeps the full text,
+ * and [stripTrailingHashtags] removes them before the caption goes to the LLM.
+ */
 class InstagramPostFetcher(
-    private val strategies: List<PostFetchStrategy>
+    private val strategies: List<PostFetchStrategy>,
+    private val log: (String) -> Unit = {}
 ) {
 
     suspend fun fetch(shortcode: String): PostData? {
@@ -14,7 +22,10 @@ class InstagramPostFetcher(
         for (strategy in strategies) {
             val result = try {
                 strategy.fetch(shortcode)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                log("Instagram strategy ${strategy.name} failed for $shortcode: ${e.message}")
                 null
             } ?: continue
 
@@ -26,52 +37,44 @@ class InstagramPostFetcher(
             }
             if (winningCaption == null && !result.caption.isNullOrBlank()) {
                 winningCaption = result.caption
-                // If we already have an image, or later strategies aren't needed, break
-                if (mergedImageUrl != null) {
-                    break
-                }
+                log("Instagram caption for $shortcode from strategy ${strategy.name}")
             }
+            // Later strategies are only worth a request while the caption or image is still missing.
+            if (winningCaption != null && mergedImageUrl != null) break
         }
 
-        if (winningCaption == null) {
-            return null
-        }
-
-        val cleanedCaption = cleanCaption(winningCaption)
+        val caption = winningCaption?.let { unescapeCaption(it) }?.takeIf { it.isNotBlank() }
+            ?: return null
 
         return PostData(
-            caption = cleanedCaption,
+            caption = caption,
             author = winningAuthor,
             imageUrl = mergedImageUrl
         )
     }
 
     companion object {
-        fun cleanCaption(raw: String): String {
-            val unescaped = Parser.unescapeEntities(raw, false)
-            val lines = unescaped.lines()
+        fun unescapeCaption(raw: String): String =
+            Parser.unescapeEntities(raw, false)
+                .replace("\r\n", "\n")
+                .lines()
+                .joinToString("\n") { it.trimEnd() }
+                .trim()
 
-            var lastNonHashtagIdx = lines.size - 1
-            while (lastNonHashtagIdx >= 0) {
-                val line = lines[lastNonHashtagIdx].trim()
-                if (line.isEmpty() || isHashtagOnlyLine(line)) {
-                    lastNonHashtagIdx--
-                } else {
-                    break
-                }
+        /** Drops hashtag-only and blank lines from the end of a caption. */
+        fun stripTrailingHashtags(caption: String): String {
+            val lines = caption.lines()
+            var lastKept = lines.size - 1
+            while (lastKept >= 0) {
+                val line = lines[lastKept].trim()
+                if (line.isEmpty() || isHashtagOnlyLine(line)) lastKept-- else break
             }
-
-            return if (lastNonHashtagIdx < 0) {
-                ""
-            } else {
-                lines.subList(0, lastNonHashtagIdx + 1).joinToString("\n").trim()
-            }
+            return lines.subList(0, lastKept + 1).joinToString("\n").trim()
         }
 
         private fun isHashtagOnlyLine(line: String): Boolean {
             val tokens = line.split("\\s+".toRegex()).filter { it.isNotBlank() }
-            if (tokens.isEmpty()) return false
-            return tokens.all { it.startsWith("#") }
+            return tokens.isNotEmpty() && tokens.all { it.startsWith("#") }
         }
     }
 }

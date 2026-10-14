@@ -3,14 +3,22 @@ package org.eu.angsumanray.recipecatcher.core.llm
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.request.HttpRequestData
+import io.ktor.http.content.TextContent
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -38,14 +46,15 @@ class ClaudeExtractorTest {
     }
     """.trimIndent()
 
-    private fun createClient(handler: (requestUrl: String, body: String) -> Pair<HttpStatusCode, String>): HttpClient {
+    private fun createClient(handler: (request: HttpRequestData, body: String) -> Pair<HttpStatusCode, String>): HttpClient {
         return HttpClient(MockEngine) {
             install(ContentNegotiation) {
                 json()
             }
             engine {
                 addHandler { request ->
-                    val (status, content) = handler(request.url.toString(), "")
+                    val body = (request.body as? TextContent)?.text.orEmpty()
+                    val (status, content) = handler(request, body)
                     respond(
                         content = content,
                         status = status,
@@ -170,5 +179,176 @@ class ClaudeExtractorTest {
 
         assertTrue(result.isFailure)
         assertTrue(result.exceptionOrNull() is NoRecipeFoundException)
+    }
+
+    private fun anthropicResponse(recipeJson: String, stopReason: String = "end_turn"): String {
+        val escaped = Json.encodeToString(kotlinx.serialization.json.JsonPrimitive.serializer(), kotlinx.serialization.json.JsonPrimitive(recipeJson))
+        return """{"id":"msg_x","type":"message","role":"assistant","model":"claude-haiku-5-5","stop_reason":"$stopReason",
+            "content":[{"type":"thinking","thinking":"","signature":"sig"},{"type":"text","text":$escaped}],
+            "usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0}}"""
+    }
+
+    private fun recipeJson(
+        servings: Int = 4,
+        prep: Int = 10,
+        complexity: String = "medium",
+        dietType: String = "vegetarian",
+        spice: String = "medium",
+        category: String = "dairy",
+        suggestionKind: String = "tag"
+    ) = """{"is_recipe":true,"title":"T","description":"","servings":$servings,"prep_minutes":$prep,"cook_minutes":0,
+        "total_minutes":5000,"cuisine":"unknown","complexity":"$complexity","complexity_reason":"","spice_level":"$spice",
+        "diet_type":"$dietType","contains":["Dairy"],"kcal_per_serving":0,"make_ahead":false,"freezer_friendly":false,
+        "ingredient_groups":[{"name":"","items":[{"quantity":0,"quantity_max":0,"unit":"","name":"salt","base_name":"salt",
+        "category":"$category","note":"to taste","raw":"salt to taste"}]}],"steps":[{"text":"Mix.","timer_seconds":0}],
+        "equipment":["KADAI"],"consumables":["foil"],"tags":[],"new_list_suggestions":[{"kind":"$suggestionKind","name":"tandoor"}],
+        "confidence":0.5}"""
+
+    @Test
+    fun `request uses Messages API headers, output_config effort and strict schema without sampling params`() = runBlocking {
+        var captured: HttpRequestData? = null
+        var capturedBody = ""
+        val client = createClient { request, body ->
+            captured = request
+            capturedBody = body
+            HttpStatusCode.OK to sampleAnthropicRecipeJson
+        }
+        ClaudeExtractor(client, { "test-api-key" }, { "claude-haiku-5-5" })
+            .extract(ExtractionInput(SourceType.INSTAGRAM, "recipe text", allowedTags = listOf("indian")))
+
+        val request = captured!!
+        assertEquals("https://api.anthropic.com/v1/messages", request.url.toString())
+        assertEquals("POST", request.method.value)
+        assertEquals("test-api-key", request.headers["x-api-key"])
+        assertEquals("2023-06-01", request.headers["anthropic-version"])
+        assertTrue((request.body as TextContent).contentType.toString().startsWith("application/json"))
+
+        val root = Json.parseToJsonElement(capturedBody).jsonObject
+        assertEquals("claude-haiku-5-5", root["model"]!!.jsonPrimitive.content)
+        assertEquals(2000, root["max_tokens"]!!.jsonPrimitive.content.toInt())
+        listOf("temperature", "top_p", "top_k", "effort", "thinking").forEach { assertFalse(it, root.containsKey(it)) }
+
+        val outputConfig = root["output_config"]!!.jsonObject
+        assertEquals("low", outputConfig["effort"]!!.jsonPrimitive.content)
+        val format = outputConfig["format"]!!.jsonObject
+        assertEquals("json_schema", format["type"]!!.jsonPrimitive.content)
+
+        val system = root["system"]!!.jsonArray.single().jsonObject
+        assertEquals("ephemeral", system["cache_control"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        val userText = root["messages"]!!.jsonArray.single().jsonObject["content"]!!.jsonPrimitive.content
+        assertTrue(userText.contains("recipe text"))
+        assertTrue(userText.contains("Allowed tags: indian"))
+
+        // Every object in the schema: all properties required, no extras, no nullable unions.
+        fun checkObject(node: JsonObject, path: String) {
+            if (node["type"]?.jsonPrimitive?.content == "object") {
+                val props = node["properties"]!!.jsonObject.keys
+                val required = node["required"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet()
+                assertEquals(path, props, required)
+                assertEquals(path, "false", node["additionalProperties"]!!.jsonPrimitive.content)
+                node["properties"]!!.jsonObject.forEach { (k, v) -> checkObject(v.jsonObject, "$path.$k") }
+            }
+            assertFalse(path, node["type"] is kotlinx.serialization.json.JsonArray)
+            node["items"]?.let { checkObject(it.jsonObject, "$path[]") }
+        }
+        val schema = format["schema"]!!.jsonObject
+        checkObject(schema, "$")
+        val dietEnum = schema["properties"]!!.jsonObject["diet_type"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertTrue(dietEnum.containsAll(listOf("vegan", "vegetarian", "eggetarian", "non-veg", "unknown")))
+    }
+
+    @Test
+    fun `validation clamps numbers, normalizes enums and drops values outside the lists`() = runBlocking {
+        val client = createClient { _, _ ->
+            HttpStatusCode.OK to anthropicResponse(
+                recipeJson(servings = 120, prep = -5, complexity = "Hard", dietType = "Non-Veg", spice = "fiery",
+                    category = "Spices", suggestionKind = "gadget")
+            )
+        }
+        val recipe = ClaudeExtractor(client, { "k" }).extract(
+            ExtractionInput(
+                SourceType.INSTAGRAM, "text",
+                allowedDiet = listOf("dairy"),
+                allowedEquipment = listOf("kadai"),
+                allowedConsumables = listOf("aluminium foil")
+            )
+        ).getOrThrow()
+
+        assertEquals(50, recipe.servings)
+        assertNull(recipe.prepMinutes)
+        assertNull(recipe.cookMinutes)
+        assertEquals(1440, recipe.totalMinutes)
+        assertNull(recipe.cuisine)
+        assertEquals("hard", recipe.complexity)
+        assertEquals("non-veg", recipe.dietType)
+        assertNull(recipe.spiceLevel)
+        assertEquals(listOf("dairy"), recipe.contains)
+        assertEquals(listOf("kadai"), recipe.equipment)
+        assertTrue(recipe.consumables.isEmpty())
+        assertTrue(recipe.newListSuggestions.isEmpty())
+        val salt = recipe.ingredientGroups.single().items.single()
+        assertEquals("spices", salt.category)
+        assertNull(salt.quantity)
+        assertEquals("to taste", salt.note)
+        assertNull(recipe.ingredientGroups.single().name)
+        assertNull(recipe.steps.single().timerSeconds)
+        assertEquals("claude-haiku-5-5", recipe.usage.model)
+    }
+
+    @Test
+    fun `servings below one map to null`() = runBlocking {
+        val client = createClient { _, _ -> HttpStatusCode.OK to anthropicResponse(recipeJson(servings = 0)) }
+        val recipe = ClaudeExtractor(client, { "k" }).extract(ExtractionInput(SourceType.INSTAGRAM, "t")).getOrThrow()
+        assertNull(recipe.servings)
+    }
+
+    @Test
+    fun `status codes map to typed exceptions`() = runBlocking {
+        val expectations = mapOf(
+            403 to ApiKeyInvalidException::class,
+            401 to ApiKeyInvalidException::class,
+            404 to ModelNotFoundException::class,
+            429 to TransientApiException::class,
+            529 to TransientApiException::class,
+            500 to TransientApiException::class,
+            503 to TransientApiException::class
+        )
+        expectations.forEach { (code, type) ->
+            val client = createClient { _, _ -> HttpStatusCode.fromValue(code) to """{"type":"error"}""" }
+            val error = ClaudeExtractor(client, { "k" }).extract(ExtractionInput(SourceType.INSTAGRAM, "t")).exceptionOrNull()
+            assertTrue("HTTP $code gave $error", type.isInstance(error))
+        }
+        val badRequest = createClient { _, _ -> HttpStatusCode.BadRequest to """{"type":"error"}""" }
+        val error = ClaudeExtractor(badRequest, { "k" }).extract(ExtractionInput(SourceType.INSTAGRAM, "t")).exceptionOrNull()
+        assertFalse(error is TransientApiException)
+    }
+
+    @Test
+    fun `empty api key fails without a request`() = runBlocking {
+        var called = false
+        val client = createClient { _, _ -> called = true; HttpStatusCode.OK to sampleAnthropicRecipeJson }
+        val result = ClaudeExtractor(client, { "  " }).extract(ExtractionInput(SourceType.INSTAGRAM, "t"))
+        assertTrue(result.exceptionOrNull() is ApiKeyInvalidException)
+        assertFalse(called)
+    }
+
+    @Test
+    fun `truncated or refused responses fail instead of decoding partial json`() = runBlocking {
+        listOf("max_tokens", "refusal").forEach { reason ->
+            val client = createClient { _, _ -> HttpStatusCode.OK to anthropicResponse(recipeJson(), stopReason = reason) }
+            val result = ClaudeExtractor(client, { "k" }).extract(ExtractionInput(SourceType.INSTAGRAM, "t"))
+            assertTrue(result.isFailure)
+            assertFalse(result.exceptionOrNull() is NoRecipeFoundException)
+        }
+    }
+
+    @Test
+    fun `no recipe failure carries usage for logging`() = runBlocking {
+        val client = createClient { _, _ ->
+            HttpStatusCode.OK to anthropicResponse(recipeJson().replace("\"is_recipe\":true", "\"is_recipe\":false"))
+        }
+        val error = ClaudeExtractor(client, { "k" }).extract(ExtractionInput(SourceType.INSTAGRAM, "t")).exceptionOrNull()
+        assertTrue(error is NoRecipeFoundException)
+        assertEquals(10, (error as NoRecipeFoundException).usage?.inputTokens)
     }
 }

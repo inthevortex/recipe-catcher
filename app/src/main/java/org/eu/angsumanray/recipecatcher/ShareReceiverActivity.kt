@@ -8,7 +8,7 @@ import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.capture.CaptureWorker
-import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
+import org.eu.angsumanray.recipecatcher.data.repo.CaptureStart
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import javax.inject.Inject
 
@@ -32,64 +32,32 @@ class ShareReceiverActivity : ComponentActivity() {
             return
         }
 
-        val url = UrlNormalizer.extractUrl(text)
-        if (url == null) {
-            Toast.makeText(this, "No link found", Toast.LENGTH_SHORT).show()
-            finish()
-            return
-        }
-
         lifecycleScope.launch {
-            handleCapturedUrl(url)
+            handleSharedText(text)
         }
     }
 
-    private suspend fun handleCapturedUrl(rawUrl: String) {
-        val shortcode = UrlNormalizer.extractInstagramShortcode(rawUrl)
-        val sourceKey: String
-        val sourceType: String
-        val canonicalUrl: String?
-
-        if (shortcode != null) {
-            sourceType = "instagram"
-            sourceKey = shortcode
-            canonicalUrl = UrlNormalizer.canonicalizeInstagramUrl(shortcode)
-        } else {
-            sourceType = "web"
-            val normalized = UrlNormalizer.normalizeWebUrl(rawUrl)
-            sourceKey = normalized
-            canonicalUrl = normalized
-        }
-
-        // Dedupe check
-        val existing = recipeRepository.getRecipeBySourceKey(sourceKey)
-        if (existing != null) {
-            Toast.makeText(this, "Already saved!", Toast.LENGTH_SHORT).show()
-            val intent = Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                putExtra("recipe_id", existing.id)
+    private suspend fun handleSharedText(text: String) {
+        when (val start = recipeRepository.startCapture(text)) {
+            CaptureStart.NoLink -> {
+                Toast.makeText(this, "No link found", Toast.LENGTH_SHORT).show()
             }
-            startActivity(intent)
-            finish()
-            return
+            is CaptureStart.Existing -> {
+                Toast.makeText(this, "Already saved", Toast.LENGTH_SHORT).show()
+                startActivity(Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    putExtra("recipe_id", start.recipeId)
+                })
+            }
+            is CaptureStart.Created -> {
+                CaptureWorker.enqueue(applicationContext, start.recipeId)
+                Toast.makeText(this, "Capturing recipe...", Toast.LENGTH_SHORT).show()
+                startActivity(Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    putExtra("pending_recipe_id", start.recipeId)
+                })
+            }
         }
-
-        // Insert pending row and enqueue capture
-        val recipeId = recipeRepository.insertPendingRecipe(
-            sourceType = sourceType,
-            sourceKey = sourceKey,
-            sourceUrl = canonicalUrl
-        )
-
-        CaptureWorker.enqueue(applicationContext, recipeId)
-
-        Toast.makeText(this, "Capturing recipe...", Toast.LENGTH_SHORT).show()
-
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra("pending_recipe_id", recipeId)
-        }
-        startActivity(intent)
         finish()
     }
 }

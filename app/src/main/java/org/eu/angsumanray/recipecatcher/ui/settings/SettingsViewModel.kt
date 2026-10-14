@@ -4,26 +4,20 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.ktor.client.HttpClient
+import io.ktor.client.request.get
 import io.ktor.client.request.header
-import io.ktor.client.request.post
-import io.ktor.client.request.setBody
-import io.ktor.http.ContentType
-import io.ktor.http.contentType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonArray
 import org.eu.angsumanray.recipecatcher.core.llm.ClaudeExtractor
 import org.eu.angsumanray.recipecatcher.data.db.dao.LlmUsageDao
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
-import java.util.Locale
+import org.eu.angsumanray.recipecatcher.di.AnthropicHttpClient
 import javax.inject.Inject
 
 sealed interface TestKeyStatus {
@@ -44,7 +38,7 @@ data class SpendStats(
 class SettingsViewModel @Inject constructor(
     private val settingsStore: SettingsStore,
     private val llmUsageDao: LlmUsageDao,
-    private val httpClient: HttpClient
+    @AnthropicHttpClient private val httpClient: HttpClient
 ) : ViewModel() {
 
     private val _apiKey = MutableStateFlow("")
@@ -78,7 +72,8 @@ class SettingsViewModel @Inject constructor(
             val input = llmUsageDao.getTotalInputTokens() ?: 0L
             val output = llmUsageDao.getTotalOutputTokens() ?: 0L
             val cache = llmUsageDao.getTotalCacheReadTokens() ?: 0L
-            val cost = settingsStore.calculateSpend(input, output, cache)
+            val webSearches = llmUsageDao.getTotalWebSearches() ?: 0L
+            val cost = settingsStore.calculateSpend(input, output, cache, webSearches, settingsStore.priceTableFlow.first())
             _spendStats.value = SpendStats(
                 inputTokens = input,
                 outputTokens = output,
@@ -121,34 +116,34 @@ class SettingsViewModel @Inject constructor(
 
         _testKeyStatus.value = TestKeyStatus.Testing
         viewModelScope.launch {
-            try {
-                val pingPayload = buildJsonObject {
-                    put("model", modelId.value)
-                    put("max_tokens", 1)
-                    putJsonArray("messages") {
-                        add(buildJsonObject {
-                            put("role", "user")
-                            put("content", "ping")
-                        })
-                    }
-                }.toString()
-
-                val response = httpClient.post(ClaudeExtractor.ANTHROPIC_MESSAGES_URL) {
-                    contentType(ContentType.Application.Json)
+            // The Models API checks the key and the model ID without spending tokens.
+            val model = modelId.value.trim().ifEmpty { SettingsStore.DEFAULT_MODEL_ID }
+            _testKeyStatus.value = try {
+                val response = httpClient.get("$MODELS_URL/$model") {
                     header("x-api-key", key)
                     header("anthropic-version", ClaudeExtractor.ANTHROPIC_VERSION)
-                    setBody(pingPayload)
                 }
-
-                if (response.status.value in 200..299) {
-                    _testKeyStatus.value = TestKeyStatus.Success("API Key verified successfully!")
-                    settingsStore.saveApiKey(key)
-                } else {
-                    _testKeyStatus.value = TestKeyStatus.Error("HTTP ${response.status.value}: Key verification failed")
+                when (response.status.value) {
+                    in 200..299 -> {
+                        settingsStore.saveApiKey(key)
+                        TestKeyStatus.Success("API key works with $model")
+                    }
+                    401, 403 -> TestKeyStatus.Error("Check API key: HTTP ${response.status.value}")
+                    404 -> {
+                        settingsStore.saveApiKey(key)
+                        TestKeyStatus.Error("Key works, but model \"$model\" was not found; update the model ID")
+                    }
+                    else -> TestKeyStatus.Error("HTTP ${response.status.value}: couldn't verify the key")
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _testKeyStatus.value = TestKeyStatus.Error(e.message ?: "Connection error")
+                TestKeyStatus.Error(e.message ?: "Connection error")
             }
         }
+    }
+
+    private companion object {
+        const val MODELS_URL = "https://api.anthropic.com/v1/models"
     }
 }

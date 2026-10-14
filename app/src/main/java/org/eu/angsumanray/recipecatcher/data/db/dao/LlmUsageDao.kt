@@ -27,4 +27,7 @@ interface LlmUsageDao {
 
     @Query("SELECT SUM(cache_read_tokens) FROM llm_usage")
     suspend fun getTotalCacheReadTokens(): Long?
+
+    @Query("SELECT SUM(web_searches) FROM llm_usage")
+    suspend fun getTotalWebSearches(): Long?
 }

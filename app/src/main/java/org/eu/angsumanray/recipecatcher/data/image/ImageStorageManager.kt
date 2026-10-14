@@ -42,14 +42,18 @@ class ImageStorageManager @Inject constructor(
                 .header("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15")
                 .build()
 
-            val response = okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) return@withContext null
-
-            val body = response.body ?: return@withContext null
-            val file = getRecipeImageFile(recipeId)
-            body.byteStream().use { input ->
-                FileOutputStream(file).use { output ->
-                    input.copyTo(output)
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body ?: return@withContext null
+                // Write to a temp file first so a dropped connection never leaves a truncated image.
+                val file = getRecipeImageFile(recipeId)
+                val tmp = File(file.parentFile, "${file.name}.part")
+                body.byteStream().use { input ->
+                    FileOutputStream(tmp).use { output -> input.copyTo(output) }
+                }
+                if (!tmp.renameTo(file)) {
+                    tmp.delete()
+                    return@withContext null
                 }
             }
             "images/$recipeId.jpg"

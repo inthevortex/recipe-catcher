@@ -27,16 +27,20 @@ import org.eu.angsumanray.recipecatcher.core.llm.ExtractionInput
 import org.eu.angsumanray.recipecatcher.core.llm.LlmUsage
 import org.eu.angsumanray.recipecatcher.core.llm.NoRecipeFoundException
 import org.eu.angsumanray.recipecatcher.core.llm.RecipeExtractor
+import org.eu.angsumanray.recipecatcher.core.llm.TransientApiException
 import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
 import org.eu.angsumanray.recipecatcher.data.db.StarterLists
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
+import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.data.settings.SecretStore
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -77,7 +81,8 @@ class CaptureWorkerTest {
     private fun createWorker(
         recipeId: Long,
         postFetcher: InstagramPostFetcher,
-        extractor: RecipeExtractor
+        extractor: RecipeExtractor,
+        runAttemptCount: Int = 0
     ): CaptureWorker {
         val factory = object : WorkerFactory() {
             override fun createWorker(
@@ -101,6 +106,7 @@ class CaptureWorkerTest {
         return TestListenableWorkerBuilder<CaptureWorker>(context)
             .setInputData(workDataOf(CaptureWorker.KEY_RECIPE_ID to recipeId))
             .setWorkerFactory(factory)
+            .setRunAttemptCount(runAttemptCount)
             .build()
     }
 
@@ -124,8 +130,10 @@ class CaptureWorkerTest {
         }
         val postFetcher = InstagramPostFetcher(listOf(mockStrategy))
 
+        var sentInput: ExtractionInput? = null
         val mockExtractor = object : RecipeExtractor {
             override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> {
+                sentInput = input
                 return Result.success(
                     ExtractedRecipe(
                         isRecipe = true,
@@ -170,7 +178,7 @@ class CaptureWorkerTest {
                         tags = listOf("paneer", "indian", "dinner"),
                         newListSuggestions = emptyList(),
                         confidence = 0.95,
-                        usage = LlmUsage(inputTokens = 1500, outputTokens = 600, cacheReadTokens = 300)
+                        usage = LlmUsage(inputTokens = 1500, outputTokens = 600, cacheReadTokens = 300, model = "claude-haiku-5-5")
                     )
                 )
             }
@@ -188,6 +196,22 @@ class CaptureWorkerTest {
         assertEquals("chef_paneer", updated?.authorHandle)
         assertEquals(4, updated?.servings)
         assertEquals(30, updated?.totalMin)
+        assertEquals("claude-haiku-5-5", updated?.llmModel)
+
+        // caption_raw keeps the hashtags; only the LLM input drops the trailing hashtag line.
+        assertTrue(updated?.captionRaw.orEmpty().endsWith("#food"))
+        assertEquals("Delicious Paneer Tikka recipe!\nIngredients: 250g paneer, curd, spices.", sentInput?.sourceText)
+        assertTrue(sentInput!!.allowedEquipment.contains("kadai"))
+
+        // Every list is matched within its own kind.
+        val linked = database.recipeTagDao().getTagsForRecipe(recipeId).map { it.kind to it.name }.toSet()
+        assertEquals(
+            setOf(
+                TagEntity.KIND_TAG to "paneer", TagEntity.KIND_TAG to "indian", TagEntity.KIND_TAG to "dinner",
+                TagEntity.KIND_DIET to "dairy", TagEntity.KIND_EQUIPMENT to "kadai", TagEntity.KIND_CONSUMABLE to "skewers"
+            ),
+            linked
+        )
 
         // Verify ingredients and steps saved
         val ingredients = database.ingredientDao().getByRecipeId(recipeId)
@@ -221,7 +245,7 @@ class CaptureWorkerTest {
 
         val mockExtractor = object : RecipeExtractor {
             override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> {
-                return Result.failure(NoRecipeFoundException("No recipe found"))
+                return Result.failure(NoRecipeFoundException("No recipe found", LlmUsage(200, 40, 0)))
             }
         }
 
@@ -233,5 +257,74 @@ class CaptureWorkerTest {
         val updated = recipeRepository.getRecipe(recipeId)
         assertEquals(RecipeEntity.STATUS_NO_RECIPE_FOUND, updated?.status)
         assertEquals("No recipe in caption", updated?.errorMessage)
+        assertEquals(200, database.llmUsageDao().getAll().single().inputTokens)
+    }
+
+    private val unusedExtractor = object : RecipeExtractor {
+        override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> = error("not expected")
+    }
+
+    @Test
+    fun `non Instagram rows fail fetch without any request`() = runBlocking {
+        val recipeId = recipeRepository.insertPendingRecipe("web", "https://example.com/dal", "https://example.com/dal")
+        var fetched = false
+        val fetcher = InstagramPostFetcher(listOf(object : PostFetchStrategy {
+            override val name: String = "Mock"
+            override suspend fun fetch(shortcode: String): PostData? { fetched = true; return null }
+        }))
+
+        val result = createWorker(recipeId, fetcher, unusedExtractor).doWork()
+
+        assertEquals(ListenableWorker.Result.failure(), result)
+        assertFalse(fetched)
+        assertEquals(RecipeEntity.STATUS_FAILED_FETCH, recipeRepository.getRecipe(recipeId)?.status)
+    }
+
+    @Test
+    fun `fetch failure retries then marks failed_fetch on the last attempt`() = runBlocking {
+        val recipeId = recipeRepository.insertPendingRecipe("instagram", "NOPE_1")
+        val emptyFetcher = InstagramPostFetcher(emptyList())
+
+        assertEquals(ListenableWorker.Result.retry(), createWorker(recipeId, emptyFetcher, unusedExtractor, 0).doWork())
+        assertEquals(RecipeEntity.STATUS_PENDING_FETCH, recipeRepository.getRecipe(recipeId)?.status)
+
+        assertEquals(ListenableWorker.Result.failure(), createWorker(recipeId, emptyFetcher, unusedExtractor, 2).doWork())
+        val failed = recipeRepository.getRecipe(recipeId)
+        assertEquals(RecipeEntity.STATUS_FAILED_FETCH, failed?.status)
+        assertEquals("Couldn't read this post", failed?.errorMessage)
+    }
+
+    @Test
+    fun `transient API errors retry and keep the fetched caption`() = runBlocking {
+        val recipeId = recipeRepository.insertPendingRecipe("instagram", "BUSY_1")
+        val fetcher = InstagramPostFetcher(listOf(object : PostFetchStrategy {
+            override val name: String = "Mock"
+            override suspend fun fetch(shortcode: String) = PostData("Dal: 1 cup lentils, boil 20 min", "dalchef", null)
+        }))
+        val busy = object : RecipeExtractor {
+            override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> =
+                Result.failure(TransientApiException("overloaded", 529))
+        }
+
+        assertEquals(ListenableWorker.Result.retry(), createWorker(recipeId, fetcher, busy).doWork())
+        val row = recipeRepository.getRecipe(recipeId)
+        assertEquals(RecipeEntity.STATUS_PENDING_EXTRACT, row?.status)
+        assertEquals("Dal: 1 cup lentils, boil 20 min", row?.captionRaw)
+        assertNull(row?.errorMessage)
+    }
+
+    @Test
+    fun `missing API key leaves the row pending with a prompt`() = runBlocking {
+        settingsStore.saveApiKey("")
+        val recipeId = recipeRepository.insertPendingRecipe("instagram", "NOKEY_1")
+        val fetcher = InstagramPostFetcher(listOf(object : PostFetchStrategy {
+            override val name: String = "Mock"
+            override suspend fun fetch(shortcode: String) = PostData("Caption", null, null)
+        }))
+
+        assertEquals(ListenableWorker.Result.failure(), createWorker(recipeId, fetcher, unusedExtractor).doWork())
+        val row = recipeRepository.getRecipe(recipeId)
+        assertEquals(RecipeEntity.STATUS_PENDING_EXTRACT, row?.status)
+        assertEquals("Add Anthropic API key in Settings", row?.errorMessage)
     }
 }

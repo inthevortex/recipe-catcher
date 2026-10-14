@@ -49,11 +49,16 @@ object UrlNormalizer {
      * Extracts the first URL found in any arbitrary text (e.g. shared post text from apps).
      * Sentence punctuation directly after the URL is not treated as part of it.
      */
-    fun extractUrl(text: String): String? {
+    fun extractUrl(text: String): String? = extractUrls(text).firstOrNull()
+
+    /** All URLs in [text], in order, with trailing sentence punctuation removed. */
+    fun extractUrls(text: String): List<String> {
         val matcher = URL_IN_TEXT_REGEX.matcher(text)
-        return if (matcher.find()) {
-            matcher.group().trimEnd('.', ',', ';', ':', '!', '?', ')', ']')
-        } else null
+        val urls = mutableListOf<String>()
+        while (matcher.find()) {
+            urls += matcher.group().trimEnd('.', ',', ';', ':', '!', '?', ')', ']')
+        }
+        return urls
     }
 
     /**

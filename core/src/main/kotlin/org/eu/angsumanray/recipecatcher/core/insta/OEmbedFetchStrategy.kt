@@ -1,5 +1,6 @@
 package org.eu.angsumanray.recipecatcher.core.insta
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher
@@ -25,6 +26,8 @@ class OEmbedFetchStrategy(
         val url = "https://graph.facebook.com/v19.0/instagram_oembed?url=https://www.instagram.com/p/$shortcode/&omitscript=true"
         val response = try {
             httpFetcher.get(url)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return null
         }
@@ -39,22 +42,20 @@ class OEmbedFetchStrategy(
             return null
         }
 
-        var caption: String? = null
-        if (!parsed.html.isNullOrBlank()) {
-            val doc = Jsoup.parse(parsed.html)
-            val paragraphs = doc.select("blockquote p")
-            val captionP = paragraphs.firstOrNull { p ->
-                val text = p.text().trim()
-                !text.startsWith("A post shared by", ignoreCase = true) &&
+        // Captioned embeds carry the caption in a <p> inside the blockquote; the "View this post"
+        // and "A post shared by" boilerplate is never a caption. Uncaptioned embeds only have it in title.
+        val htmlCaption = parsed.html?.takeIf { it.isNotBlank() }?.let { html ->
+            Jsoup.parse(html).select("blockquote p")
+                .map { HtmlText.withLineBreaks(it) }
+                .firstOrNull { text ->
+                    text.isNotBlank() &&
+                        !text.startsWith("A post shared by", ignoreCase = true) &&
                         !text.startsWith("View this post", ignoreCase = true)
-            }
-            caption = captionP?.text() ?: doc.select("blockquote").text()
+                }
         }
-        if (caption.isNullOrBlank() && !parsed.title.isNullOrBlank()) {
-            caption = parsed.title
-        }
+        val caption = htmlCaption ?: parsed.title
 
-        val author = parsed.author_name?.removePrefix("@")
+        val author = parsed.author_name?.trim()?.removePrefix("@")
         return PostData(
             caption = caption?.takeIf { it.isNotBlank() },
             author = author?.takeIf { it.isNotBlank() },
