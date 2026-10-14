@@ -133,4 +133,44 @@ class ReminderPlannerTest {
         )
         assertTrue(remindersNone.isEmpty())
     }
+
+    @Test
+    fun `computeReminders sends night-before alerts only for prep entries`() {
+        val slot = PlanSlot(id = 1, date = "2026-10-15", name = "Dinner")
+        val cookFlagged = PlanEntry(id = 10, slotId = 1, kind = "cook", recipeId = 1, prepNightBefore = true)
+
+        val reminders = ReminderPlanner.computeReminders(
+            slots = listOf(slot),
+            entries = listOf(cookFlagged),
+            recipes = emptyMap(),
+            zoneId = zoneId
+        )
+
+        assertTrue(reminders.none { it.type == ReminderType.PREP_NIGHT_BEFORE })
+    }
+
+    @Test
+    fun `computeReminders falls back to prep plus cook minutes when total is missing`() {
+        val slot = PlanSlot(id = 1, date = "2026-10-15", name = "Dinner", time = "20:00")
+        val entry = PlanEntry(id = 10, slotId = 1, kind = "cook", recipeId = 1)
+        val recipe = Recipe(
+            id = 1,
+            sourceType = SourceType.MANUAL,
+            sourceKey = "r-1",
+            title = "Dal",
+            prepMin = 15,
+            cookMin = 45
+        )
+
+        val reminders = ReminderPlanner.computeReminders(
+            slots = listOf(slot),
+            entries = listOf(entry),
+            recipes = mapOf(1L to recipe),
+            zoneId = zoneId
+        )
+
+        val expected = LocalDateTime.of(LocalDate.parse("2026-10-15"), LocalTime.of(19, 0))
+            .atZone(zoneId).toInstant().toEpochMilli()
+        assertEquals(expected, reminders.single().triggerEpochMillis)
+    }
 }

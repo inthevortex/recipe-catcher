@@ -50,11 +50,11 @@ object PortionLedger {
         cookEntry: PlanEntry,
         dependentLeftovers: List<PlanEntry>
     ): PortionBalance {
-        val initial = cookEntry.portions.coerceAtLeast(1)
-        val eatenNow = cookEntry.portionsEatenNow.coerceAtLeast(0)
+        val initial = cookEntry.portions.coerceAtLeast(0)
+        val eatenNow = cookEntry.portionsEatenNow.coerceIn(0, initial)
         val leftoverPlanned = dependentLeftovers
             .filter { it.fromEntryId == cookEntry.id && it.kind == PlanEntryKind.LEFTOVER.value }
-            .sumOf { it.portions.coerceAtLeast(1) }
+            .sumOf { it.portions.coerceAtLeast(0) }
 
         val remaining = (initial - eatenNow - leftoverPlanned).coerceAtLeast(0)
 
@@ -66,6 +66,22 @@ object PortionLedger {
             portionsPlannedAsLeftover = leftoverPlanned,
             remainingPortions = remaining
         )
+    }
+
+    /**
+     * Follows `fromEntryId` links from [entry] back to the Cook entry that produced the food, so a
+     * leftover planned from another leftover draws on the original cook. Returns null when the chain
+     * is broken, loops, or ends on an entry that is not a Cook entry.
+     */
+    fun resolveCookSource(entry: PlanEntry, entriesById: Map<Long, PlanEntry>): PlanEntry? {
+        var current = entry
+        val visited = mutableSetOf<Long>()
+        while (current.kind != PlanEntryKind.COOK.value) {
+            if (!visited.add(current.id)) return null
+            val parentId = current.fromEntryId ?: return null
+            current = entriesById[parentId] ?: return null
+        }
+        return current
     }
 
     /**
@@ -95,15 +111,23 @@ object PortionLedger {
         allEntries: List<PlanEntry>
     ): List<AvailableLeftover> {
         val slotMap = allSlots.associateBy { it.id }
+        val entriesById = allEntries.associateBy { it.id }
         val cookEntries = allEntries.filter { it.kind == PlanEntryKind.COOK.value }
+
+        // Charge every leftover to the cook entry at the root of its chain.
+        val leftoversByCook = allEntries
+            .filter { it.kind == PlanEntryKind.LEFTOVER.value }
+            .mapNotNull { leftover ->
+                resolveCookSource(leftover, entriesById)?.let { cook -> leftover.copy(fromEntryId = cook.id) }
+            }
+            .groupBy { it.fromEntryId }
 
         return cookEntries.mapNotNull { cook ->
             val slot = slotMap[cook.slotId] ?: return@mapNotNull null
             // Must have occurred on or before the target date
             if (slot.date > targetDate) return@mapNotNull null
 
-            val dependents = allEntries.filter { it.fromEntryId == cook.id }
-            val balance = calculateBalance(cook, dependents)
+            val balance = calculateBalance(cook, leftoversByCook[cook.id].orEmpty())
 
             if (balance.remainingPortions > 0) {
                 AvailableLeftover(

@@ -58,6 +58,15 @@ interface ListsDao {
     @Query("SELECT * FROM grocery_item WHERE week_start = :weekStart OR week_start IS NULL ORDER BY checked ASC, category ASC, position ASC")
     suspend fun getGroceryItems(weekStart: LocalDate?): List<GroceryItemEntity>
 
+    @Query("SELECT * FROM grocery_item WHERE id = :id LIMIT 1")
+    suspend fun getGroceryItemById(id: Long): GroceryItemEntity?
+
+    @Query("SELECT * FROM grocery_item")
+    suspend fun getAllGroceryItems(): List<GroceryItemEntity>
+
+    @Query("SELECT * FROM inventory_item WHERE id = :id LIMIT 1")
+    suspend fun getInventoryItemById(id: Long): InventoryItemEntity?
+
     @Query("UPDATE grocery_item SET checked = :checked WHERE id = :id")
     suspend fun setGroceryItemChecked(id: Long, checked: Boolean)
 

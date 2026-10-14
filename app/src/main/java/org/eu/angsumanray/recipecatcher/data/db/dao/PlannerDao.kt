@@ -92,6 +92,15 @@ interface PlannerDao {
     @Query("SELECT * FROM plan_entry WHERE recipe_id = :recipeId")
     suspend fun getEntriesForRecipe(recipeId: Long): List<PlanEntryEntity>
 
+    @Query("SELECT * FROM plan_entry WHERE kind = 'leftover' AND from_entry_id IN (:cookEntryIds)")
+    suspend fun getLeftoversOf(cookEntryIds: List<Long>): List<PlanEntryEntity>
+
+    @Query("SELECT * FROM plan_entry WHERE id IN (:ids)")
+    suspend fun getEntriesByIds(ids: List<Long>): List<PlanEntryEntity>
+
+    @Query("DELETE FROM plan_entry WHERE kind = 'leftover' AND from_entry_id IN (:cookEntryIds)")
+    suspend fun deleteLeftoversOf(cookEntryIds: List<Long>)
+
     @Query("UPDATE plan_entry SET done_at = :doneAt WHERE id = :id")
     suspend fun setEntryDone(id: Long, doneAt: Long?)
 

@@ -8,16 +8,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import org.eu.angsumanray.recipecatcher.core.model.PlanEntry
-import org.eu.angsumanray.recipecatcher.core.model.PlanSlot
 import org.eu.angsumanray.recipecatcher.core.planner.AvailableLeftover
-import org.eu.angsumanray.recipecatcher.core.planner.PortionLedger
 import org.eu.angsumanray.recipecatcher.data.db.entity.PlanEntryEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.PlanSlotEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.repo.PlannerRepository
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
-import org.eu.angsumanray.recipecatcher.reminders.ReminderScheduler
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
@@ -32,14 +28,22 @@ data class PlanUiState(
     val weekEntries: List<PlanEntryEntity> = emptyList(),
     val allRecipes: List<RecipeEntity> = emptyList(),
     val availableLeftovers: List<AvailableLeftover> = emptyList(),
+    val pendingDelete: PendingDelete? = null,
     val snackbarMessage: String? = null
 )
+
+/** A delete waiting on the user's answer about the leftover entries that draw on it. */
+sealed class PendingDelete {
+    abstract val leftoverCount: Int
+
+    data class Entry(val entry: PlanEntryEntity, override val leftoverCount: Int) : PendingDelete()
+    data class Slot(val slot: PlanSlotEntity, override val leftoverCount: Int) : PendingDelete()
+}
 
 @HiltViewModel
 class PlanViewModel @Inject constructor(
     private val plannerRepository: PlannerRepository,
-    private val settingsStore: SettingsStore,
-    private val reminderScheduler: ReminderScheduler
+    private val settingsStore: SettingsStore
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PlanUiState())
@@ -74,27 +78,8 @@ class PlanViewModel @Inject constructor(
             val slots = plannerRepository.getSlotsBetween(weekStart, weekEnd)
             val entries = plannerRepository.getEntriesBetween(weekStart, weekEnd)
             val recipes = plannerRepository.getAllRecipes()
-
-            // Calculate leftovers for selected date
-            val allCoreSlots = slots.map {
-                PlanSlot(id = it.id, date = it.date.toString(), name = it.name, time = it.time?.toString())
-            }
-            val allCoreEntries = entries.map {
-                PlanEntry(
-                    id = it.id,
-                    slotId = it.slotId,
-                    kind = it.kind,
-                    recipeId = it.recipeId,
-                    portions = it.portions,
-                    portionsEatenNow = it.portionsEatenNow,
-                    fromEntryId = it.fromEntryId
-                )
-            }
-            val leftovers = PortionLedger.availableLeftovers(
-                _uiState.value.selectedDate.toString(),
-                allCoreSlots,
-                allCoreEntries
-            )
+            // Looks past the week boundary, so Sunday's cook can feed Monday's lunch.
+            val leftovers = plannerRepository.availableLeftovers(_uiState.value.selectedDate)
 
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
@@ -170,15 +155,19 @@ class PlanViewModel @Inject constructor(
 
     fun deleteSlot(slot: PlanSlotEntity) {
         viewModelScope.launch {
-            plannerRepository.deleteSlot(slot)
-            loadData()
+            val leftovers = plannerRepository.countLeftoversDependingOnSlot(slot)
+            if (leftovers > 0) {
+                _uiState.value = _uiState.value.copy(pendingDelete = PendingDelete.Slot(slot, leftovers))
+            } else {
+                plannerRepository.deleteSlot(slot)
+                loadData()
+            }
         }
     }
 
     fun addCookEntry(slotId: Long, recipeId: Long, portions: Int, portionsEatenNow: Int) {
         viewModelScope.launch {
             plannerRepository.addCookEntry(slotId, recipeId, portions, portionsEatenNow)
-            reminderScheduler.rescheduleAll()
             loadData()
         }
     }
@@ -186,7 +175,6 @@ class PlanViewModel @Inject constructor(
     fun addPrepEntry(slotId: Long, recipeId: Long?, text: String?, portions: Int, prepNightBefore: Boolean) {
         viewModelScope.launch {
             plannerRepository.addPrepEntry(slotId, recipeId, text, portions, prepNightBefore)
-            reminderScheduler.rescheduleAll()
             loadData()
         }
     }
@@ -194,7 +182,6 @@ class PlanViewModel @Inject constructor(
     fun addLeftoverEntry(slotId: Long, fromEntryId: Long, portions: Int) {
         viewModelScope.launch {
             plannerRepository.addLeftoverEntry(slotId, fromEntryId, portions)
-            reminderScheduler.rescheduleAll()
             loadData()
         }
     }
@@ -203,23 +190,42 @@ class PlanViewModel @Inject constructor(
         viewModelScope.launch {
             val targetEntries = plannerRepository.getEntriesForSlot(newSlotId)
             plannerRepository.moveEntry(entryId, newSlotId, targetEntries.size)
-            reminderScheduler.rescheduleAll()
             loadData()
         }
     }
 
     fun deleteEntry(entry: PlanEntryEntity) {
         viewModelScope.launch {
-            plannerRepository.deleteEntry(entry)
-            reminderScheduler.rescheduleAll()
+            val leftovers = plannerRepository.countLeftoversDependingOn(entry)
+            if (leftovers > 0) {
+                _uiState.value = _uiState.value.copy(pendingDelete = PendingDelete.Entry(entry, leftovers))
+            } else {
+                plannerRepository.deleteEntry(entry)
+                loadData()
+            }
+        }
+    }
+
+    /** Finishes a delete that has leftovers depending on it, removing them too or keeping them. */
+    fun confirmPendingDelete(removeLeftovers: Boolean) {
+        val pending = _uiState.value.pendingDelete ?: return
+        _uiState.value = _uiState.value.copy(pendingDelete = null)
+        viewModelScope.launch {
+            when (pending) {
+                is PendingDelete.Entry -> plannerRepository.deleteEntry(pending.entry, removeLeftovers)
+                is PendingDelete.Slot -> plannerRepository.deleteSlot(pending.slot, removeLeftovers)
+            }
             loadData()
         }
+    }
+
+    fun dismissPendingDelete() {
+        _uiState.value = _uiState.value.copy(pendingDelete = null)
     }
 
     fun toggleEntryDone(entryId: Long) {
         viewModelScope.launch {
             plannerRepository.toggleEntryDone(entryId)
-            reminderScheduler.rescheduleAll()
             loadData()
         }
     }

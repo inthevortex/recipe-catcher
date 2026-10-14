@@ -90,7 +90,7 @@ object GroceryBuilder {
         // 1. Filter entries to cook and prep that have recipes
         val validEntries = entries.filter { entry ->
             (entry.kind == PlanEntryKind.COOK.value || entry.kind == PlanEntryKind.PREP.value) &&
-                entry.recipeId != null && recipes.containsKey(entry.recipeId)
+                entry.recipeId != null && recipes.containsKey(entry.recipeId) && entry.portions > 0
         }
 
         // 2. Aggregate ingredients across all valid entries
@@ -119,7 +119,8 @@ object GroceryBuilder {
                     categoryMap[baseName] = GroceryCategories.normalize(ingredient.category)
                 }
 
-                val scaledQty = QuantityScaler.scale(ingredient.quantity, factor)
+                // Shop for the top of a range ("2–3 tomatoes" buys 3).
+                val scaledQty = QuantityScaler.scale(ingredient.quantityMax ?: ingredient.quantity, factor)
                 val unit = ingredient.unit?.trim()?.lowercase(Locale.ROOT)
 
                 aggregatedByBaseName.getOrPut(baseName) { mutableListOf() }.add(Pair(scaledQty, unit))

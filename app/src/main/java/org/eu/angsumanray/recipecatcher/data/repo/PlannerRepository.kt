@@ -2,6 +2,10 @@ package org.eu.angsumanray.recipecatcher.data.repo
 
 import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
+import org.eu.angsumanray.recipecatcher.core.model.PlanEntry
+import org.eu.angsumanray.recipecatcher.core.model.PlanSlot
+import org.eu.angsumanray.recipecatcher.core.planner.AvailableLeftover
+import org.eu.angsumanray.recipecatcher.core.planner.PortionLedger
 import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
 import org.eu.angsumanray.recipecatcher.data.db.dao.CookLogDao
 import org.eu.angsumanray.recipecatcher.data.db.dao.PlannerDao
@@ -10,8 +14,10 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.CookLogEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.PlanEntryEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.PlanSlotEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZoneId
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -66,12 +72,34 @@ class PlannerRepository @Inject constructor(
     suspend fun updateSlot(slot: PlanSlotEntity) =
         plannerDao.updateSlot(slot)
 
-    suspend fun deleteSlot(slot: PlanSlotEntity) {
+    /**
+     * Deletes [slot] and its entries. Leftover entries elsewhere that draw on its cook entries are
+     * removed when [removeLeftovers] is set; otherwise they stay with their link cleared.
+     */
+    suspend fun deleteSlot(slot: PlanSlotEntity, removeLeftovers: Boolean = false) {
         database.withTransaction {
+            if (removeLeftovers) {
+                val cookIds = plannerDao.getEntriesForSlot(slot.id)
+                    .filter { it.kind == PlanEntryEntity.KIND_COOK }
+                    .map { it.id }
+                if (cookIds.isNotEmpty()) plannerDao.deleteLeftoversOf(cookIds)
+            }
             plannerDao.deleteEntriesForSlot(slot.id)
             plannerDao.deleteSlot(slot)
         }
     }
+
+    /** Leftover entries in other slots that would lose their source if [slot] were deleted. */
+    suspend fun countLeftoversDependingOnSlot(slot: PlanSlotEntity): Int {
+        val cookIds = plannerDao.getEntriesForSlot(slot.id)
+            .filter { it.kind == PlanEntryEntity.KIND_COOK }
+            .map { it.id }
+        if (cookIds.isEmpty()) return 0
+        return plannerDao.getLeftoversOf(cookIds).count { it.slotId != slot.id }
+    }
+
+    suspend fun countLeftoversDependingOn(entry: PlanEntryEntity): Int =
+        if (entry.kind == PlanEntryEntity.KIND_COOK) plannerDao.getLeftoversOf(listOf(entry.id)).size else 0
 
     fun observeEntriesForSlot(slotId: Long): Flow<List<PlanEntryEntity>> =
         plannerDao.observeEntriesForSlot(slotId)
@@ -100,8 +128,18 @@ class PlannerRepository @Inject constructor(
     suspend fun updateEntry(entry: PlanEntryEntity) =
         plannerDao.updateEntry(entry)
 
-    suspend fun deleteEntry(entry: PlanEntryEntity) =
-        plannerDao.deleteEntry(entry)
+    /**
+     * Deletes [entry]. For a cook entry, its leftover entries are removed when [removeLeftovers] is set;
+     * otherwise they stay with their link cleared.
+     */
+    suspend fun deleteEntry(entry: PlanEntryEntity, removeLeftovers: Boolean = false) {
+        database.withTransaction {
+            if (removeLeftovers && entry.kind == PlanEntryEntity.KIND_COOK) {
+                plannerDao.deleteLeftoversOf(listOf(entry.id))
+            }
+            plannerDao.deleteEntry(entry)
+        }
+    }
 
     suspend fun moveEntry(entryId: Long, newSlotId: Long, newPosition: Int) =
         plannerDao.moveEntry(entryId, newSlotId, newPosition)
@@ -118,7 +156,7 @@ class PlannerRepository @Inject constructor(
             kind = PlanEntryEntity.KIND_COOK,
             recipeId = recipeId,
             portions = portions.coerceAtLeast(1),
-            portionsEatenNow = portionsEatenNow.coerceAtLeast(1),
+            portionsEatenNow = portionsEatenNow.coerceIn(0, portions.coerceAtLeast(1)),
             position = existing.size
         )
         return plannerDao.insertEntry(entry)
@@ -150,17 +188,50 @@ class PlannerRepository @Inject constructor(
         portions: Int = 1
     ): Long {
         val existing = plannerDao.getEntriesForSlot(slotId)
-        val fromEntry = plannerDao.getEntryById(fromEntryId)
+        val source = resolveCookSource(fromEntryId)
+        requireNotNull(source) { "Leftovers must come from a cook entry" }
         val entry = PlanEntryEntity(
             slotId = slotId,
             kind = PlanEntryEntity.KIND_LEFTOVER,
-            recipeId = fromEntry?.recipeId,
-            text = fromEntry?.text,
+            recipeId = source.recipeId,
+            text = source.text,
             portions = portions.coerceAtLeast(1),
-            fromEntryId = fromEntryId,
+            fromEntryId = source.id,
             position = existing.size
         )
         return plannerDao.insertEntry(entry)
+    }
+
+    /** Follows leftover links from [entryId] back to the cook entry that made the food. */
+    private suspend fun resolveCookSource(entryId: Long): PlanEntryEntity? {
+        val chain = mutableMapOf<Long, PlanEntryEntity>()
+        var nextId: Long? = entryId
+        while (nextId != null && nextId !in chain) {
+            val entry = plannerDao.getEntryById(nextId) ?: break
+            chain[entry.id] = entry
+            nextId = if (entry.kind == PlanEntryEntity.KIND_COOK) null else entry.fromEntryId
+        }
+        val start = chain[entryId] ?: return null
+        val source = PortionLedger.resolveCookSource(start.toCore(), chain.mapValues { it.value.toCore() })
+        return source?.let { chain[it.id] }
+    }
+
+    /**
+     * Leftovers that can be planned on [date]: cook entries from the [lookbackDays] before it (and the
+     * day itself) with portions still unclaimed, counting leftover entries planned in any week.
+     */
+    suspend fun availableLeftovers(date: LocalDate, lookbackDays: Long = 7): List<AvailableLeftover> {
+        val slots = plannerDao.getSlotsBetween(date.minusDays(lookbackDays), date)
+        if (slots.isEmpty()) return emptyList()
+        val cooks = plannerDao.getEntriesForSlots(slots.map { it.id })
+            .filter { it.kind == PlanEntryEntity.KIND_COOK }
+        if (cooks.isEmpty()) return emptyList()
+        val leftovers = plannerDao.getLeftoversOf(cooks.map { it.id })
+        return PortionLedger.availableLeftovers(
+            targetDate = date.toString(),
+            allSlots = slots.map { it.toCore() },
+            allEntries = (cooks + leftovers).map { it.toCore() }
+        )
     }
 
     suspend fun copyPreviousWeekLayout(targetWeekStart: LocalDate): Boolean {
@@ -179,11 +250,15 @@ class PlannerRepository @Inject constructor(
                 }
             }
 
-            // Copy slots from previous week for each day
+            // Slots that still hold food were kept; don't add a second slot with the same name.
+            val keptNames = plannerDao.getSlotsBetween(targetWeekStart, targetWeekEnd)
+                .groupBy({ it.date }, { it.name.trim().lowercase() })
+
             for (offset in 0L..6L) {
                 val prevDate = prevWeekStart.plusDays(offset)
                 val newDate = targetWeekStart.plusDays(offset)
-                val daySlots = prevSlots.filter { it.date == prevDate }
+                val taken = keptNames[newDate].orEmpty()
+                val daySlots = prevSlots.filter { it.date == prevDate && it.name.trim().lowercase() !in taken }
                 val newSlots = daySlots.map { slot ->
                     PlanSlotEntity(
                         date = newDate,
@@ -206,20 +281,46 @@ class PlannerRepository @Inject constructor(
         note: String? = null
     ) {
         val entry = plannerDao.getEntryById(entryId) ?: return
-        if (entry.doneAt != null) {
-            plannerDao.setEntryDone(entryId, null)
-        } else {
-            val now = System.currentTimeMillis()
-            plannerDao.setEntryDone(entryId, now)
-            if (entry.kind == PlanEntryEntity.KIND_COOK && entry.recipeId != null) {
-                cookLogDao.insert(
-                    CookLogEntity(
-                        recipeId = entry.recipeId,
-                        cookedOn = LocalDate.now(),
-                        note = note,
-                        photoPath = photoPath
+        setEntryDone(entry, done = entry.doneAt == null, photoPath = photoPath, note = note)
+    }
+
+    /** Marks [entryId] done without toggling, so a repeated tap or a stale notification can't undo it. */
+    suspend fun markEntryDone(entryId: Long) {
+        val entry = plannerDao.getEntryById(entryId) ?: return
+        if (entry.doneAt == null) setEntryDone(entry, done = true)
+    }
+
+    /**
+     * Ticking a cook entry writes the cooked log; unticking removes the log row that tick wrote, so
+     * toggling back and forth doesn't inflate the recipe's cook count.
+     */
+    private suspend fun setEntryDone(
+        entry: PlanEntryEntity,
+        done: Boolean,
+        photoPath: String? = null,
+        note: String? = null
+    ) {
+        database.withTransaction {
+            val logsCook = entry.kind == PlanEntryEntity.KIND_COOK && entry.recipeId != null
+            if (done) {
+                plannerDao.setEntryDone(entry.id, System.currentTimeMillis())
+                if (logsCook) {
+                    cookLogDao.insert(
+                        CookLogEntity(
+                            recipeId = entry.recipeId!!,
+                            cookedOn = LocalDate.now(),
+                            note = note,
+                            photoPath = photoPath
+                        )
                     )
-                )
+                }
+            } else {
+                plannerDao.setEntryDone(entry.id, null)
+                val doneAt = entry.doneAt
+                if (logsCook && doneAt != null) {
+                    val doneOn = Instant.ofEpochMilli(doneAt).atZone(ZoneId.systemDefault()).toLocalDate()
+                    cookLogDao.deleteLatestForRecipeOn(entry.recipeId!!, doneOn)
+                }
             }
         }
     }
@@ -230,3 +331,25 @@ class PlannerRepository @Inject constructor(
     suspend fun getAllRecipes(): List<RecipeEntity> =
         recipeDao.getAllSaved()
 }
+
+private fun PlanSlotEntity.toCore() = PlanSlot(
+    id = id,
+    date = date.toString(),
+    name = name,
+    time = time?.toString(),
+    position = position
+)
+
+private fun PlanEntryEntity.toCore() = PlanEntry(
+    id = id,
+    slotId = slotId,
+    kind = kind,
+    recipeId = recipeId,
+    text = text,
+    portions = portions,
+    portionsEatenNow = portionsEatenNow,
+    fromEntryId = fromEntryId,
+    prepNightBefore = prepNightBefore,
+    doneAt = doneAt,
+    position = position
+)

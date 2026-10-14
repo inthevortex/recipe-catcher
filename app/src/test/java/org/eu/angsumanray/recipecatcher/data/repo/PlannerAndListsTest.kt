@@ -213,4 +213,173 @@ class PlannerAndListsTest {
         assertNotNull(butterItem)
         assertEquals(GroceryItemEntity.SOURCE_INVENTORY, butterItem!!.source)
     }
+
+    private suspend fun insertRecipe(key: String, title: String, servings: Int = 4): Long =
+        database.recipeDao().insert(
+            RecipeEntity(
+                sourceType = "manual",
+                sourceKey = key,
+                title = title,
+                servings = servings,
+                status = RecipeEntity.STATUS_SAVED
+            )
+        )
+
+    @Test
+    fun `checking a week-scoped plan grocery item updates inventory`() = runBlocking {
+        val weekStart = LocalDate.of(2026, 10, 12)
+        val id = database.listsDao().insertGroceryItem(
+            GroceryItemEntity(
+                name = "Paneer",
+                baseName = "paneer",
+                category = "dairy",
+                source = GroceryItemEntity.SOURCE_PLAN,
+                weekStart = weekStart
+            )
+        )
+
+        listsRepository.toggleGroceryItemChecked(id, true)
+
+        val inv = database.listsDao().getInventoryItemByBaseName("paneer")
+        assertNotNull(inv)
+        assertEquals(InventoryItemEntity.STATUS_IN_STOCK, inv!!.status)
+    }
+
+    @Test
+    fun `marking inventory out does not duplicate an unbought line from this week`() = runBlocking {
+        val weekStart = LocalDate.of(2026, 10, 12)
+        database.listsDao().insertGroceryItem(
+            GroceryItemEntity(name = "Butter", baseName = "butter", category = "dairy", source = GroceryItemEntity.SOURCE_PLAN, weekStart = weekStart)
+        )
+        val invId = listsRepository.addInventoryItem("Butter", "butter", "dairy", InventoryItemEntity.STATUS_IN_STOCK)
+
+        listsRepository.setInventoryStatus(invId, InventoryItemEntity.STATUS_OUT)
+
+        assertEquals(1, database.listsDao().getAllGroceryItems().count { it.baseName == "butter" })
+    }
+
+    @Test
+    fun `unticking a cook entry removes the cooked log it wrote`() = runBlocking {
+        val slotId = plannerRepository.insertSlot(PlanSlotEntity(date = LocalDate.now(), name = "Dinner"))
+        val recipeId = insertRecipe("r-untick", "Rajma")
+        val entryId = plannerRepository.addCookEntry(slotId, recipeId, portions = 4)
+
+        plannerRepository.toggleEntryDone(entryId)
+        plannerRepository.toggleEntryDone(entryId)
+        assertEquals(null, plannerRepository.getEntryById(entryId)!!.doneAt)
+        assertEquals(0, database.cookLogDao().getTimesCooked(recipeId))
+
+        plannerRepository.toggleEntryDone(entryId)
+        assertEquals(1, database.cookLogDao().getTimesCooked(recipeId))
+    }
+
+    @Test
+    fun `markEntryDone is idempotent`() = runBlocking {
+        val slotId = plannerRepository.insertSlot(PlanSlotEntity(date = LocalDate.now(), name = "Dinner"))
+        val recipeId = insertRecipe("r-done", "Khichdi")
+        val entryId = plannerRepository.addCookEntry(slotId, recipeId, portions = 2)
+
+        plannerRepository.markEntryDone(entryId)
+        plannerRepository.markEntryDone(entryId)
+
+        assertNotNull(plannerRepository.getEntryById(entryId)!!.doneAt)
+        assertEquals(1, database.cookLogDao().getTimesCooked(recipeId))
+    }
+
+    @Test
+    fun `copyPreviousWeekLayout does not duplicate a kept slot that holds food`() = runBlocking {
+        val prevMonday = LocalDate.of(2026, 10, 5)
+        val monday = LocalDate.of(2026, 10, 12)
+        plannerRepository.insertSlot(PlanSlotEntity(date = prevMonday, name = "Dinner", position = 0))
+        plannerRepository.insertSlot(PlanSlotEntity(date = prevMonday, name = "Snack", position = 1))
+        val keptSlot = plannerRepository.insertSlot(PlanSlotEntity(date = monday, name = "Dinner", position = 0))
+        plannerRepository.addPrepEntry(keptSlot, text = "Salad")
+
+        plannerRepository.copyPreviousWeekLayout(monday)
+
+        val mondaySlots = plannerRepository.getSlotsForDate(monday)
+        assertEquals(listOf("Dinner", "Snack"), mondaySlots.map { it.name }.sorted())
+        assertEquals(keptSlot, mondaySlots.first { it.name == "Dinner" }.id)
+    }
+
+    @Test
+    fun `addLeftoverEntry from a leftover links to the original cook entry`() = runBlocking {
+        val day1 = plannerRepository.insertSlot(PlanSlotEntity(date = LocalDate.of(2026, 10, 12), name = "Dinner"))
+        val day2 = plannerRepository.insertSlot(PlanSlotEntity(date = LocalDate.of(2026, 10, 13), name = "Lunch"))
+        val day3 = plannerRepository.insertSlot(PlanSlotEntity(date = LocalDate.of(2026, 10, 14), name = "Lunch"))
+        val recipeId = insertRecipe("r-chain", "Chole")
+        val cookId = plannerRepository.addCookEntry(day1, recipeId, portions = 4)
+        val leftoverId = plannerRepository.addLeftoverEntry(day2, cookId, portions = 1)
+
+        val secondId = plannerRepository.addLeftoverEntry(day3, leftoverId, portions = 1)
+
+        val second = plannerRepository.getEntryById(secondId)!!
+        assertEquals(cookId, second.fromEntryId)
+        assertEquals(recipeId, second.recipeId)
+    }
+
+    @Test
+    fun `availableLeftovers reaches back across the week boundary and counts later weeks`() = runBlocking {
+        val sunday = plannerRepository.insertSlot(PlanSlotEntity(date = LocalDate.of(2026, 10, 11), name = "Dinner"))
+        val monday = plannerRepository.insertSlot(PlanSlotEntity(date = LocalDate.of(2026, 10, 12), name = "Lunch"))
+        val recipeId = insertRecipe("r-week", "Biryani")
+        val cookId = plannerRepository.addCookEntry(sunday, recipeId, portions = 5, portionsEatenNow = 2)
+        plannerRepository.addLeftoverEntry(monday, cookId, portions = 1)
+
+        val available = plannerRepository.availableLeftovers(LocalDate.of(2026, 10, 13))
+
+        assertEquals(cookId, available.single().cookEntryId)
+        assertEquals(2, available.single().remainingPortions)
+    }
+
+    @Test
+    fun `deleting a cook entry keeps or removes its leftovers as asked`() = runBlocking {
+        val day1 = plannerRepository.insertSlot(PlanSlotEntity(date = LocalDate.of(2026, 10, 12), name = "Dinner"))
+        val day2 = plannerRepository.insertSlot(PlanSlotEntity(date = LocalDate.of(2026, 10, 13), name = "Lunch"))
+        val recipeId = insertRecipe("r-delete", "Pulao")
+
+        val keptCook = plannerRepository.addCookEntry(day1, recipeId, portions = 4)
+        val keptLeftover = plannerRepository.addLeftoverEntry(day2, keptCook, portions = 1)
+        val keptCookEntry = plannerRepository.getEntryById(keptCook)!!
+        assertEquals(1, plannerRepository.countLeftoversDependingOn(keptCookEntry))
+        plannerRepository.deleteEntry(keptCookEntry, removeLeftovers = false)
+        val orphan = plannerRepository.getEntryById(keptLeftover)
+        assertNotNull(orphan)
+        assertEquals(null, orphan!!.fromEntryId)
+
+        val removedCook = plannerRepository.addCookEntry(day1, recipeId, portions = 4)
+        val removedLeftover = plannerRepository.addLeftoverEntry(day2, removedCook, portions = 1)
+        plannerRepository.deleteEntry(plannerRepository.getEntryById(removedCook)!!, removeLeftovers = true)
+        assertEquals(null, plannerRepository.getEntryById(removedLeftover))
+    }
+
+    @Test
+    fun `deleting a slot can remove leftovers planned elsewhere`() = runBlocking {
+        val day1 = plannerRepository.insertSlot(PlanSlotEntity(date = LocalDate.of(2026, 10, 12), name = "Dinner"))
+        val day2 = plannerRepository.insertSlot(PlanSlotEntity(date = LocalDate.of(2026, 10, 13), name = "Lunch"))
+        val recipeId = insertRecipe("r-slot", "Sambar")
+        val cookId = plannerRepository.addCookEntry(day1, recipeId, portions = 4)
+        val leftoverId = plannerRepository.addLeftoverEntry(day2, cookId, portions = 2)
+        val slot = plannerRepository.getSlotById(day1)!!
+
+        assertEquals(1, plannerRepository.countLeftoversDependingOnSlot(slot))
+        plannerRepository.deleteSlot(slot, removeLeftovers = true)
+
+        assertEquals(null, plannerRepository.getEntryById(leftoverId))
+        assertEquals(null, plannerRepository.getSlotById(day1))
+    }
+
+    @Test
+    fun `deleting a recipe keeps its plan entries with recipe_id set to null`() = runBlocking {
+        val slotId = plannerRepository.insertSlot(PlanSlotEntity(date = LocalDate.of(2026, 10, 12), name = "Dinner"))
+        val recipeId = insertRecipe("r-gone", "Aloo Gobi")
+        val entryId = plannerRepository.addCookEntry(slotId, recipeId, portions = 2)
+
+        database.recipeDao().deleteById(recipeId)
+
+        val entry = plannerRepository.getEntryById(entryId)
+        assertNotNull(entry)
+        assertEquals(null, entry!!.recipeId)
+        assertEquals(2, entry.portions)
+    }
 }

@@ -59,7 +59,7 @@ class SettingsStore @Inject constructor(
         private val KEY_WEEK_STARTS_ON = stringPreferencesKey("week_starts_on")
         private val KEY_PREP_ALERT_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("prep_alert_enabled")
         private val KEY_PREP_ALERT_TIME = stringPreferencesKey("prep_alert_time")
-        private val KEY_COOKING_ALERTS_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("cooking_alerts_enabled")
+        private val KEY_COOKING_ALERTS_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("cooking_alerts")
     }
 
     val weekStartsOnFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->

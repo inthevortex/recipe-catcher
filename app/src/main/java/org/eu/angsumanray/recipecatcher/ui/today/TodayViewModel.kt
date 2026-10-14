@@ -12,7 +12,6 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.PlanEntryEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.PlanSlotEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.repo.PlannerRepository
-import org.eu.angsumanray.recipecatcher.reminders.ReminderScheduler
 import java.time.LocalDate
 import javax.inject.Inject
 
@@ -33,8 +32,7 @@ data class TodayUiState(
 
 @HiltViewModel
 class TodayViewModel @Inject constructor(
-    private val plannerRepository: PlannerRepository,
-    private val reminderScheduler: ReminderScheduler
+    private val plannerRepository: PlannerRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TodayUiState())
@@ -100,7 +98,6 @@ class TodayViewModel @Inject constructor(
     fun toggleEntryDone(entryId: Long, photoPath: String? = null, note: String? = null) {
         viewModelScope.launch {
             plannerRepository.toggleEntryDone(entryId, photoPath, note)
-            reminderScheduler.rescheduleAll()
         }
     }
 }

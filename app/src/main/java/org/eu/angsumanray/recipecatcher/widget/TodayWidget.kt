@@ -1,20 +1,28 @@
 package org.eu.angsumanray.recipecatcher.widget
 
 import android.content.Context
-import android.content.Intent
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
+import androidx.glance.action.ActionParameters
+import androidx.glance.action.actionParametersOf
 import androidx.glance.action.actionStartActivity
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
+import androidx.glance.appwidget.CheckBox
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
+import androidx.glance.appwidget.action.ActionCallback
+import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.lazy.LazyColumn
 import androidx.glance.appwidget.lazy.items
 import androidx.glance.appwidget.provideContent
+import androidx.glance.appwidget.updateAll
 import androidx.glance.background
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
@@ -34,9 +42,15 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import org.eu.angsumanray.recipecatcher.MainActivity
+import org.eu.angsumanray.recipecatcher.data.db.entity.PlanEntryEntity
 import org.eu.angsumanray.recipecatcher.data.repo.PlannerRepository
+import org.eu.angsumanray.recipecatcher.reminders.ReminderReceiver
 import java.time.LocalDate
 
 data class WidgetMealItem(
@@ -50,6 +64,13 @@ data class WidgetMealItem(
 
 class TodayWidget : GlanceAppWidget() {
 
+    companion object {
+        /** Redraws every placed Today widget; a no-op when none is on the home screen. */
+        suspend fun refresh(context: Context) {
+            TodayWidget().updateAll(context)
+        }
+    }
+
     @EntryPoint
     @InstallIn(SingletonComponent::class)
     interface TodayWidgetEntryPoint {
@@ -57,22 +78,32 @@ class TodayWidget : GlanceAppWidget() {
     }
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val entryPoint = EntryPointAccessors.fromApplication(
+        val plannerRepo = EntryPointAccessors.fromApplication(
             context.applicationContext,
             TodayWidgetEntryPoint::class.java
-        )
-        val plannerRepo = entryPoint.plannerRepository()
+        ).plannerRepository()
 
-        val items = withContext(Dispatchers.IO) {
-            val today = LocalDate.now()
-            val slots = plannerRepo.getSlotsForDate(today)
+        val today = LocalDate.now()
+        val initial = withContext(Dispatchers.IO) { todayItems(plannerRepo, today).first() }
+
+        provideContent {
+            // Collected inside the composition so a running session follows database changes.
+            val items by remember { todayItems(plannerRepo, today) }.collectAsState(initial)
+            TodayWidgetContent(items)
+        }
+    }
+
+    private fun todayItems(plannerRepo: PlannerRepository, date: LocalDate): Flow<List<WidgetMealItem>> =
+        combine(
+            plannerRepo.observeSlotsForDate(date),
+            plannerRepo.observeEntriesForDate(date)
+        ) { slots, entries ->
             val slotMap = slots.associateBy { it.id }
-            val entries = plannerRepo.getEntriesForDate(today)
-
             entries.map { entry ->
                 val slot = slotMap[entry.slotId]
                 val recipe = entry.recipeId?.let { plannerRepo.getRecipe(it) }
-                val title = recipe?.title ?: entry.text ?: "Meal"
+                val title = recipe?.title ?: entry.text
+                    ?: if (entry.kind == PlanEntryEntity.KIND_PREP) "Prep" else "Deleted recipe"
                 WidgetMealItem(
                     entryId = entry.id,
                     slotName = slot?.name ?: "Meal",
@@ -82,19 +113,10 @@ class TodayWidget : GlanceAppWidget() {
                     isDone = entry.doneAt != null
                 )
             }
-        }
-
-        provideContent {
-            TodayWidgetContent(context, items)
-        }
-    }
+        }.flowOn(Dispatchers.IO)
 
     @Composable
-    private fun TodayWidgetContent(context: Context, items: List<WidgetMealItem>) {
-        val launchIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-
+    private fun TodayWidgetContent(items: List<WidgetMealItem>) {
         Column(
             modifier = GlanceModifier
                 .fillMaxSize()
@@ -148,17 +170,13 @@ class TodayWidget : GlanceAppWidget() {
                                 .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = if (item.isDone) "✓" else "○",
-                                style = TextStyle(
-                                    color = androidx.glance.unit.ColorProvider(
-                                        if (item.isDone) Color(0xFF81C784) else Color(0xFFD4C4B5)
-                                    ),
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold
+                            CheckBox(
+                                checked = item.isDone,
+                                onCheckedChange = actionRunCallback<ToggleEntryAction>(
+                                    actionParametersOf(ToggleEntryAction.ENTRY_ID to item.entryId)
                                 )
                             )
-                            Spacer(modifier = GlanceModifier.width(8.dp))
+                            Spacer(modifier = GlanceModifier.width(4.dp))
                             Column(modifier = GlanceModifier.defaultWeight()) {
                                 Text(
                                     text = item.title,
@@ -189,6 +207,26 @@ class TodayWidget : GlanceAppWidget() {
                 }
             }
         }
+    }
+}
+
+/** Tick box on a widget row: toggles the entry exactly as Today does, cooked log included. */
+class ToggleEntryAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        val entryId = parameters[ENTRY_ID] ?: return
+        val entryPoint = EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            ReminderReceiver.ReminderReceiverEntryPoint::class.java
+        )
+        withContext(Dispatchers.IO) {
+            entryPoint.plannerRepository().toggleEntryDone(entryId)
+            entryPoint.reminderScheduler().rescheduleAll()
+        }
+        TodayWidget().update(context, glanceId)
+    }
+
+    companion object {
+        val ENTRY_ID = ActionParameters.Key<Long>("entry_id")
     }
 }
 

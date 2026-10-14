@@ -79,7 +79,7 @@ object ReminderPlanner {
             val itemTitle = recipe?.title ?: entry.text ?: "Meal"
 
             // 1. Night-before prep alert
-            if (prepAlertEnabled && entry.prepNightBefore) {
+            if (prepAlertEnabled && entry.prepNightBefore && entry.kind == PlanEntryKind.PREP.value) {
                 val alertDate = slotDate.minusDays(1)
                 val alertDateTime = LocalDateTime.of(alertDate, parsedPrepTime)
                 val triggerMillis = alertDateTime.atZone(zoneId).toInstant().toEpochMilli()
@@ -109,7 +109,7 @@ object ReminderPlanner {
 
                 if (slotTime != null) {
                     val mealDateTime = LocalDateTime.of(slotDate, slotTime)
-                    val totalMinutes = recipe?.totalMin?.takeIf { it > 0 } ?: 30
+                    val totalMinutes = recipe?.let(::recipeMinutes) ?: DEFAULT_COOK_MINUTES
                     val alertDateTime = mealDateTime.minusMinutes(totalMinutes.toLong())
                     val triggerMillis = alertDateTime.atZone(zoneId).toInstant().toEpochMilli()
 
@@ -131,5 +131,14 @@ object ReminderPlanner {
         }
 
         return reminders.sortedBy { it.triggerEpochMillis }
+    }
+
+    private const val DEFAULT_COOK_MINUTES = 30
+
+    /** The recipe's total time, falling back to prep + cook when only those are known. */
+    private fun recipeMinutes(recipe: Recipe): Int? {
+        recipe.totalMin?.takeIf { it > 0 }?.let { return it }
+        val parts = (recipe.prepMin ?: 0).coerceAtLeast(0) + (recipe.cookMin ?: 0).coerceAtLeast(0)
+        return parts.takeIf { it > 0 }
     }
 }

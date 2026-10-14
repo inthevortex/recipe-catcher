@@ -7,6 +7,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
 import org.eu.angsumanray.recipecatcher.data.db.entity.CookLogEntity
+import java.time.LocalDate
 
 @Dao
 interface CookLogDao {
@@ -37,6 +38,11 @@ interface CookLogDao {
 
     @Query("DELETE FROM cook_log WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    @Query(
+        "DELETE FROM cook_log WHERE id = (SELECT id FROM cook_log WHERE recipe_id = :recipeId AND cooked_on = :cookedOn ORDER BY id DESC LIMIT 1)"
+    )
+    suspend fun deleteLatestForRecipeOn(recipeId: Long, cookedOn: LocalDate)
 
     @Query("SELECT * FROM cook_log WHERE recipe_id = :recipeId")
     suspend fun getAllByRecipe(recipeId: Long): List<CookLogEntity>

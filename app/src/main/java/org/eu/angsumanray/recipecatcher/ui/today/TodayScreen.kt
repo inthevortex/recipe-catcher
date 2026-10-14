@@ -272,7 +272,8 @@ fun TodayMealCard(
     onStartCooking: (() -> Unit)?
 ) {
     val recipe = item.recipe
-    val title = recipe?.title ?: item.entry.text ?: "Meal"
+    val title = recipe?.title ?: item.entry.text
+        ?: if (item.entry.kind == PlanEntryEntity.KIND_PREP) "Prep" else "Deleted recipe"
 
     Card(
         modifier = Modifier

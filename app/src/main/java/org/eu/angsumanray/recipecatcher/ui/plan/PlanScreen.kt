@@ -292,6 +292,38 @@ fun PlanScreen(
         )
     }
 
+    // Deleting a cook entry (or its slot) that leftovers draw on
+    state.pendingDelete?.let { pending ->
+        val what = when (pending) {
+            is PendingDelete.Entry -> "this cook entry"
+            is PendingDelete.Slot -> "this slot"
+        }
+        val count = pending.leftoverCount
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissPendingDelete() },
+            title = { Text("Delete leftovers too?") },
+            text = {
+                Text(
+                    "$count leftover ${if (count == 1) "entry comes" else "entries come"} from $what. " +
+                        "Remove them as well, or keep them in the plan on their own?"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmPendingDelete(removeLeftovers = true) }) {
+                    Text("Remove leftovers")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { viewModel.dismissPendingDelete() }) { Text("Cancel") }
+                    TextButton(onClick = { viewModel.confirmPendingDelete(removeLeftovers = false) }) {
+                        Text("Keep leftovers")
+                    }
+                }
+            }
+        )
+    }
+
     // Move Entry Dialog
     entryToMove?.let { entry ->
         MoveEntryDialog(
@@ -381,7 +413,8 @@ fun SlotCard(
             } else {
                 entries.forEach { entry ->
                     val recipe = entry.recipeId?.let { recipes[it] }
-                    val title = recipe?.title ?: entry.text ?: "Meal"
+                    val title = recipe?.title ?: entry.text
+                        ?: if (entry.kind == PlanEntryEntity.KIND_PREP) "Prep" else "Deleted recipe"
 
                     Surface(
                         modifier = Modifier
@@ -518,10 +551,11 @@ fun AddMealDialog(
 
     // Cook state
     var selectedRecipeId by remember { mutableStateOf<Long?>(recipes.firstOrNull()?.id) }
-    var cookPortions by remember { mutableIntStateOf(2) }
+    var cookPortions by remember { mutableIntStateOf(recipes.firstOrNull()?.servings?.coerceAtLeast(1) ?: 2) }
     var eatenNow by remember { mutableIntStateOf(1) }
 
     // Prep state
+    var prepRecipeId by remember { mutableStateOf<Long?>(null) }
     var prepText by remember { mutableStateOf("") }
     var prepPortions by remember { mutableIntStateOf(1) }
     var prepNightBefore by remember { mutableStateOf(false) }
@@ -565,7 +599,8 @@ fun AddMealDialog(
                                         text = { Text(r.title ?: "Untitled") },
                                         onClick = {
                                             selectedRecipeId = r.id
-                                            cookPortions = r.servings ?: 2
+                                            cookPortions = r.servings?.coerceAtLeast(1) ?: 2
+                                            eatenNow = eatenNow.coerceAtMost(cookPortions)
                                             expanded = false
                                         }
                                     )
@@ -580,7 +615,12 @@ fun AddMealDialog(
                             ) {
                                 Text("Total Portions to Cook:")
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    IconButton(onClick = { if (cookPortions > 1) cookPortions-- }) { Text("-") }
+                                    IconButton(onClick = {
+                                        if (cookPortions > 1) {
+                                            cookPortions--
+                                            eatenNow = eatenNow.coerceAtMost(cookPortions)
+                                        }
+                                    }) { Text("-") }
                                     Text("$cookPortions", fontWeight = FontWeight.Bold)
                                     IconButton(onClick = { cookPortions++ }) { Text("+") }
                                 }
@@ -593,7 +633,7 @@ fun AddMealDialog(
                             ) {
                                 Text("Portions to Eat Now:")
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    IconButton(onClick = { if (eatenNow > 1) eatenNow-- }) { Text("-") }
+                                    IconButton(onClick = { if (eatenNow > 0) eatenNow-- }) { Text("-") }
                                     Text("$eatenNow", fontWeight = FontWeight.Bold)
                                     IconButton(onClick = { if (eatenNow < cookPortions) eatenNow++ }) { Text("+") }
                                 }
@@ -602,13 +642,61 @@ fun AddMealDialog(
                     }
 
                     1 -> {
-                        // Prep
+                        // Prep: a recipe, free text, or both
+                        if (recipes.isNotEmpty()) {
+                            Text("Recipe (optional):", style = MaterialTheme.typography.labelMedium)
+                            var expanded by remember { mutableStateOf(false) }
+                            val prepRecipe = recipes.firstOrNull { it.id == prepRecipeId }
+                            OutlinedButton(
+                                onClick = { expanded = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(prepRecipe?.title ?: "No recipe", maxLines = 1)
+                            }
+                            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("No recipe") },
+                                    onClick = {
+                                        prepRecipeId = null
+                                        expanded = false
+                                    }
+                                )
+                                recipes.forEach { r ->
+                                    DropdownMenuItem(
+                                        text = { Text(r.title ?: "Untitled") },
+                                        onClick = {
+                                            prepRecipeId = r.id
+                                            prepPortions = r.servings?.coerceAtLeast(1) ?: 1
+                                            expanded = false
+                                        }
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                        }
+
                         OutlinedTextField(
                             value = prepText,
                             onValueChange = { prepText = it },
-                            label = { Text("Description (e.g. Overnight oats)") },
+                            label = { Text(if (prepRecipeId == null) "Description (e.g. Overnight oats)" else "Note (optional)") },
                             modifier = Modifier.fillMaxWidth()
                         )
+
+                        if (prepRecipeId != null) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Portions:")
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(onClick = { if (prepPortions > 1) prepPortions-- }) { Text("-") }
+                                    Text("$prepPortions", fontWeight = FontWeight.Bold)
+                                    IconButton(onClick = { prepPortions++ }) { Text("+") }
+                                }
+                            }
+                        }
 
                         Spacer(modifier = Modifier.height(12.dp))
                         Row(
@@ -641,7 +729,7 @@ fun AddMealDialog(
                                 onClick = { expanded = true },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                val label = "${currentRecipe?.title ?: "Leftover"} (${currentLeftover?.remainingPortions ?: 0} left from ${currentLeftover?.slotDate})"
+                                val label = currentLeftover?.let { leftoverLabel(currentRecipe?.title, it) } ?: "Leftover"
                                 Text(label, maxLines = 1)
                             }
 
@@ -649,7 +737,7 @@ fun AddMealDialog(
                                 availableLeftovers.forEach { l ->
                                     val r = recipes.firstOrNull { it.id == l.recipeId }
                                     DropdownMenuItem(
-                                        text = { Text("${r?.title ?: "Cook entry"} (${l.remainingPortions} left from ${l.slotDate})") },
+                                        text = { Text(leftoverLabel(r?.title, l)) },
                                         onClick = {
                                             selectedLeftoverEntryId = l.cookEntryId
                                             leftoverPortions = 1
@@ -682,14 +770,14 @@ fun AddMealDialog(
             Button(
                 enabled = when (selectedTab) {
                     0 -> selectedRecipeId != null
-                    1 -> prepText.isNotBlank()
+                    1 -> prepRecipeId != null || prepText.isNotBlank()
                     2 -> selectedLeftoverEntryId != null
                     else -> false
                 },
                 onClick = {
                     when (selectedTab) {
                         0 -> selectedRecipeId?.let { onAddCook(it, cookPortions, eatenNow) }
-                        1 -> onAddPrep(null, prepText.trim(), prepPortions, prepNightBefore)
+                        1 -> onAddPrep(prepRecipeId, prepText.trim().ifEmpty { null }, prepPortions, prepNightBefore)
                         2 -> selectedLeftoverEntryId?.let { onAddLeftover(it, leftoverPortions) }
                     }
                 }
@@ -741,3 +829,10 @@ fun MoveEntryDialog(
         }
     )
 }
+
+private fun leftoverLabel(
+    recipeTitle: String?,
+    leftover: org.eu.angsumanray.recipecatcher.core.planner.AvailableLeftover
+): String =
+    "${recipeTitle ?: "Deleted recipe"}, ${leftover.remainingPortions} of ${leftover.initialPortions} portions left " +
+        "(${leftover.slotName}, ${leftover.slotDate})"

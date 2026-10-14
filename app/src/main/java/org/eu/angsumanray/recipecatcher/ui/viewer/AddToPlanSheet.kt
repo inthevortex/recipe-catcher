@@ -124,7 +124,12 @@ fun AddToPlanSheet(
             ) {
                 Text("Total Portions to Cook:")
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { if (portions > 1) portions-- }) { Text("-") }
+                    IconButton(onClick = {
+                        if (portions > 1) {
+                            portions--
+                            eatenNow = eatenNow.coerceAtMost(portions)
+                        }
+                    }) { Text("-") }
                     Text("$portions", fontWeight = FontWeight.Bold)
                     IconButton(onClick = { portions++ }) { Text("+") }
                 }
@@ -137,7 +142,7 @@ fun AddToPlanSheet(
             ) {
                 Text("Portions to Eat Now:")
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { if (eatenNow > 1) eatenNow-- }) { Text("-") }
+                    IconButton(onClick = { if (eatenNow > 0) eatenNow-- }) { Text("-") }
                     Text("$eatenNow", fontWeight = FontWeight.Bold)
                     IconButton(onClick = { if (eatenNow < portions) eatenNow++ }) { Text("+") }
                 }

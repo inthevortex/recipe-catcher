@@ -63,9 +63,7 @@ class ListsRepository @Inject constructor(
         database.withTransaction {
             listsDao.setGroceryItemChecked(id, checked)
             if (checked) {
-                // Find the grocery item
-                val all = listsDao.getGroceryItems(null)
-                val item = all.firstOrNull { it.id == id }
+                val item = listsDao.getGroceryItemById(id)
                 if (item != null) {
                     val baseKey = (item.baseName ?: item.name).trim().lowercase(Locale.ROOT)
                     val existingInv = listsDao.getInventoryItemByBaseName(baseKey)
@@ -231,13 +229,11 @@ class ListsRepository @Inject constructor(
         database.withTransaction {
             listsDao.updateInventoryStatus(id, status)
             if (status == InventoryItemEntity.STATUS_OUT) {
-                // When marked OUT, add to grocery list if not already there
-                val allInv = listsDao.getAllInventoryItems()
-                val item = allInv.firstOrNull { it.id == id }
+                // When marked OUT, add to grocery list if no unbought line for it exists in any week
+                val item = listsDao.getInventoryItemById(id)
                 if (item != null) {
-                    val currentGrocery = listsDao.getGroceryItems(null)
-                    val alreadyOnList = currentGrocery.any {
-                        (it.baseName ?: it.name).equals(item.baseName, ignoreCase = true)
+                    val alreadyOnList = listsDao.getAllGroceryItems().any {
+                        !it.checked && (it.baseName ?: it.name).equals(item.baseName, ignoreCase = true)
                     }
                     if (!alreadyOnList) {
                         listsDao.insertGroceryItem(

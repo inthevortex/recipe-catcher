@@ -185,4 +185,39 @@ class GroceryBuilderTest {
         assertNotNull(choc)
         assertEquals(GrocerySource.MANUAL.value, choc.source)
     }
+
+    @Test
+    fun `buildFromPlan shops for the top of a quantity range`() {
+        val recipe = sampleRecipe(
+            id = 1,
+            title = "Salsa",
+            servings = 2,
+            ingredients = listOf(
+                Ingredient(name = "Tomatoes", baseName = "tomato", category = "vegetables", quantity = 2.0, quantityMax = 3.0, unit = "pc")
+            )
+        )
+        val entries = listOf(PlanEntry(id = 1, slotId = 1, kind = PlanEntryKind.COOK.value, recipeId = 1, portions = 2))
+
+        val items = GroceryBuilder.buildFromPlan(entries = entries, recipes = mapOf(1L to recipe))
+
+        assertEquals("3 pc", items.single().quantityText)
+    }
+
+    @Test
+    fun `buildFromPlan ignores entries with zero portions and leftover entries`() {
+        val recipe = sampleRecipe(
+            id = 1,
+            title = "Dal",
+            servings = 4,
+            ingredients = listOf(Ingredient(name = "Lentils", baseName = "lentil", category = "pantry", quantity = 200.0, unit = "g"))
+        )
+        val entries = listOf(
+            PlanEntry(id = 1, slotId = 1, kind = PlanEntryKind.COOK.value, recipeId = 1, portions = 0),
+            PlanEntry(id = 2, slotId = 2, kind = PlanEntryKind.LEFTOVER.value, recipeId = 1, portions = 2, fromEntryId = 1)
+        )
+
+        val items = GroceryBuilder.buildFromPlan(entries = entries, recipes = mapOf(1L to recipe))
+
+        assertTrue(items.isEmpty())
+    }
 }
