@@ -91,6 +91,18 @@ object NetworkModule {
 
     @Provides
     @Singleton
+    fun provideWebRecipeFetcher(httpFetcher: org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher): org.eu.angsumanray.recipecatcher.core.web.WebRecipeFetcher {
+        return org.eu.angsumanray.recipecatcher.core.web.WebRecipeFetcher(httpFetcher) { Log.i("WebRecipeFetcher", it) }
+    }
+
+    @Provides
+    @Singleton
+    fun provideYouTubeFetcher(httpFetcher: org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher): org.eu.angsumanray.recipecatcher.core.youtube.YouTubeFetcher {
+        return org.eu.angsumanray.recipecatcher.core.youtube.YouTubeFetcher(httpFetcher) { Log.i("YouTubeFetcher", it) }
+    }
+
+    @Provides
+    @Singleton
     fun provideRecipeExtractor(
         @AnthropicHttpClient httpClient: HttpClient,
         settingsStore: SettingsStore

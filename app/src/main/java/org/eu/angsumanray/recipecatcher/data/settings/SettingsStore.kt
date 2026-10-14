@@ -47,6 +47,73 @@ class SettingsStore @Inject constructor(
         private val KEY_PRICE_CACHE_M = doublePreferencesKey("price_cache_m")
         private val KEY_PRICE_WEB = doublePreferencesKey("price_web_search")
         private val KEY_ALLOW_NEW_TAGS = androidx.datastore.preferences.core.booleanPreferencesKey("allow_new_ai_tags")
+
+        private val KEY_LAST_BACKUP_AT = stringPreferencesKey("last_backup_at")
+        private val KEY_NEW_RECIPES_SINCE_BACKUP = androidx.datastore.preferences.core.intPreferencesKey("new_recipes_since_backup")
+        private val KEY_BACKUP_REMINDER_THRESHOLD = androidx.datastore.preferences.core.intPreferencesKey("backup_reminder_threshold")
+        private val KEY_REMEMBER_BACKUP_FOLDER = androidx.datastore.preferences.core.booleanPreferencesKey("remember_backup_folder")
+        private val KEY_BACKUP_FOLDER_URI = stringPreferencesKey("backup_folder_uri")
+    }
+
+    val lastBackupAtFlow: Flow<String?> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_LAST_BACKUP_AT]
+    }
+
+    val newRecipesSinceBackupFlow: Flow<Int> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_NEW_RECIPES_SINCE_BACKUP] ?: 0
+    }
+
+    val backupReminderThresholdFlow: Flow<Int> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_BACKUP_REMINDER_THRESHOLD] ?: 10
+    }
+
+    val rememberBackupFolderFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_REMEMBER_BACKUP_FOLDER] ?: true
+    }
+
+    val backupFolderUriFlow: Flow<String?> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_BACKUP_FOLDER_URI]
+    }
+
+    suspend fun setLastBackupAt(timestamp: String) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_LAST_BACKUP_AT] = timestamp
+        }
+    }
+
+    suspend fun incrementNewRecipesSinceBackup() {
+        context.settingsDataStore.edit { prefs ->
+            val current = prefs[KEY_NEW_RECIPES_SINCE_BACKUP] ?: 0
+            prefs[KEY_NEW_RECIPES_SINCE_BACKUP] = current + 1
+        }
+    }
+
+    suspend fun resetNewRecipesSinceBackup() {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_NEW_RECIPES_SINCE_BACKUP] = 0
+        }
+    }
+
+    suspend fun setBackupReminderThreshold(threshold: Int) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_BACKUP_REMINDER_THRESHOLD] = threshold
+        }
+    }
+
+    suspend fun setRememberBackupFolder(remember: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_REMEMBER_BACKUP_FOLDER] = remember
+        }
+    }
+
+    suspend fun setBackupFolderUri(uri: String?) {
+        context.settingsDataStore.edit { prefs ->
+            if (uri != null) {
+                prefs[KEY_BACKUP_FOLDER_URI] = uri
+            } else {
+                prefs.remove(KEY_BACKUP_FOLDER_URI)
+            }
+        }
     }
 
     val modelIdFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->

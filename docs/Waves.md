@@ -82,14 +82,14 @@ Everything you need to find, read and cook offline, plus your own layer on top.
 
 The other two link sources, and the safety net that makes the app safe to rely on.
 
-- [ ] `WebRecipeFetcher`: JSON-LD parsing, readable-text fallback capped at 12,000 characters, direct-mapping fallback, `og:image`.
-- [ ] `YouTubeFetcher`: player-response parsing, meta-tag fallback, linked-page fallback.
-- [ ] Clipboard detection on Paste link for all link types; Paste page text escape hatch.
-- [ ] WebView retry for blocked sites, from a foreground Retry tap only.
-- [ ] `BackupManager`: `VACUUM INTO`, manifest, SHA-256, zip through the Storage Access Framework, remembered folder.
-- [ ] `RestoreManager`: zip-slip check, manifest and integrity checks, safety backup, Room close, file swap, restart.
-- [ ] Automatic backup before any database migration; backup reminder.
-- [ ] Tests: 5 website and 3 Shorts fixtures; 50-recipe backup round trip.
+- [x] `WebRecipeFetcher`: JSON-LD parsing, readable-text fallback capped at 12,000 characters, direct-mapping fallback, `og:image`.
+- [x] `YouTubeFetcher`: player-response parsing, meta-tag fallback, linked-page fallback.
+- [x] Clipboard detection on Paste link for all link types; Paste page text escape hatch.
+- [x] WebView retry for blocked sites, from a foreground Retry tap only.
+- [x] `BackupManager`: `VACUUM INTO`, manifest, SHA-256, zip through the Storage Access Framework, remembered folder.
+- [x] `RestoreManager`: zip-slip check, manifest and integrity checks, safety backup, Room close, file swap, restart.
+- [x] Automatic backup before any database migration; backup reminder.
+- [x] Tests: 5 website and 3 Shorts fixtures; 50-recipe backup round trip.
 
 **Done when:** 4 of the 5 acceptance websites and 2 of the 3 Shorts are usable without edits, and backup → wipe → restore gives an identical library.
 

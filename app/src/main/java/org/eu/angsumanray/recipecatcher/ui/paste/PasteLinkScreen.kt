@@ -85,7 +85,7 @@ fun PasteLinkScreen(
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Paste an Instagram post or reel link (or any recipe website link).",
+                text = "Paste an Instagram post or reel, YouTube video or short, or any recipe website link.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -99,7 +99,7 @@ fun PasteLinkScreen(
                     errorMessage = null
                 },
                 label = { Text("Recipe URL") },
-                placeholder = { Text("https://www.instagram.com/p/...") },
+                placeholder = { Text("https://... (Instagram, YouTube, or recipe website)") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 isError = errorMessage != null

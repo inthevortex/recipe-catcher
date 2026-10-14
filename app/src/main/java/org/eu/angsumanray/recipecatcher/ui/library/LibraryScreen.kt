@@ -100,8 +100,82 @@ fun LibraryScreen(
     val context = LocalContext.current
     var showFabMenu by remember { mutableStateOf(false) }
     var recipeToDelete by remember { mutableStateOf<RecipeEntity?>(null) }
+    var recipeForPastingText by remember { mutableStateOf<RecipeEntity?>(null) }
+    var pastedContentText by remember { mutableStateOf("") }
+
+    val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+    val newRecipesSinceBackup by viewModel.newRecipesSinceBackup.collectAsState()
+    val backupReminderThreshold by viewModel.backupReminderThreshold.collectAsState()
+
+    androidx.compose.runtime.LaunchedEffect(newRecipesSinceBackup, backupReminderThreshold) {
+        if (backupReminderThreshold > 0 && newRecipesSinceBackup >= backupReminderThreshold) {
+            val result = snackbarHostState.showSnackbar(
+                message = "You have $newRecipesSinceBackup new recipes since last backup.",
+                actionLabel = "Back up",
+                duration = androidx.compose.material3.SnackbarDuration.Long
+            )
+            if (result == androidx.compose.material3.SnackbarResult.ActionPerformed) {
+                onNavigateToSettings()
+            }
+        }
+    }
+
+    if (recipeForPastingText != null) {
+        AlertDialog(
+            onDismissRequest = {
+                recipeForPastingText = null
+                pastedContentText = ""
+            },
+            title = {
+                Text(if (recipeForPastingText?.sourceType == "web") "Paste Page Text" else "Paste Text")
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Paste recipe text or HTML directly from the page:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = pastedContentText,
+                        onValueChange = { pastedContentText = it },
+                        label = { Text("Recipe text / HTML") },
+                        modifier = Modifier.fillMaxWidth().height(160.dp),
+                        maxLines = 10
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val target = recipeForPastingText
+                        if (target != null && pastedContentText.isNotBlank()) {
+                            viewModel.pastePageText(target.id, pastedContentText.trim())
+                        }
+                        recipeForPastingText = null
+                        pastedContentText = ""
+                    },
+                    enabled = pastedContentText.isNotBlank()
+                ) {
+                    Text("Extract Recipe")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        recipeForPastingText = null
+                        pastedContentText = ""
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     Scaffold(
+        snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Recipe Catcher", fontWeight = FontWeight.Bold) },
@@ -230,7 +304,11 @@ fun LibraryScreen(
                                                 recipe = pending,
                                                 onReview = { onNavigateToReview(pending.id) },
                                                 onRetry = { viewModel.retryCapture(pending) },
-                                                onDelete = { viewModel.deleteRecipe(pending.id) }
+                                                onDelete = { viewModel.deleteRecipe(pending.id) },
+                                                onPastePageText = {
+                                                    recipeForPastingText = pending
+                                                    pastedContentText = ""
+                                                }
                                             )
                                         }
                                     }
@@ -621,7 +699,8 @@ private fun PendingCard(
     recipe: RecipeEntity,
     onReview: () -> Unit,
     onRetry: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onPastePageText: (() -> Unit)? = null
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -696,6 +775,12 @@ private fun PendingCard(
                         Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Retry")
+                    }
+                }
+
+                if (recipe.status == RecipeEntity.STATUS_FAILED_FETCH && onPastePageText != null) {
+                    OutlinedButton(onClick = onPastePageText) {
+                        Text(if (recipe.sourceType == "web") "Paste page text" else "Paste caption")
                     }
                 }
 

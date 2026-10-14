@@ -71,6 +71,7 @@ abstract class RecipeDatabase : RoomDatabase() {
 
     companion object {
         const val DATABASE_NAME = "recipes.db"
+        const val DATABASE_VERSION = 1
 
         /**
          * Seeds the starter lists inside the database-creation transaction, so nothing can read

@@ -1,5 +1,6 @@
 package org.eu.angsumanray.recipecatcher.ui.settings
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -14,6 +15,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import org.eu.angsumanray.recipecatcher.backup.BackupInspection
+import org.eu.angsumanray.recipecatcher.backup.BackupManager
+import org.eu.angsumanray.recipecatcher.backup.RestoreManager
 import org.eu.angsumanray.recipecatcher.core.llm.ClaudeExtractor
 import org.eu.angsumanray.recipecatcher.data.db.dao.LlmUsageDao
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
@@ -27,6 +31,13 @@ sealed interface TestKeyStatus {
     data class Error(val message: String) : TestKeyStatus
 }
 
+sealed interface BackupOpStatus {
+    object Idle : BackupOpStatus
+    data class InProgress(val message: String) : BackupOpStatus
+    data class Success(val message: String) : BackupOpStatus
+    data class Error(val message: String) : BackupOpStatus
+}
+
 data class SpendStats(
     val inputTokens: Long = 0,
     val outputTokens: Long = 0,
@@ -38,6 +49,8 @@ data class SpendStats(
 class SettingsViewModel @Inject constructor(
     private val settingsStore: SettingsStore,
     private val llmUsageDao: LlmUsageDao,
+    private val backupManager: BackupManager,
+    private val restoreManager: RestoreManager,
     @AnthropicHttpClient private val httpClient: HttpClient
 ) : ViewModel() {
 
@@ -50,11 +63,32 @@ class SettingsViewModel @Inject constructor(
     val theme: StateFlow<String> = settingsStore.themeFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsStore.THEME_DARK)
 
+    val lastBackupAt: StateFlow<String?> = settingsStore.lastBackupAtFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val newRecipesSinceBackup: StateFlow<Int> = settingsStore.newRecipesSinceBackupFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val backupReminderThreshold: StateFlow<Int> = settingsStore.backupReminderThresholdFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 10)
+
+    val rememberBackupFolder: StateFlow<Boolean> = settingsStore.rememberBackupFolderFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    val backupFolderUri: StateFlow<String?> = settingsStore.backupFolderUriFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
     private val _testKeyStatus = MutableStateFlow<TestKeyStatus>(TestKeyStatus.Idle)
     val testKeyStatus: StateFlow<TestKeyStatus> = _testKeyStatus.asStateFlow()
 
     private val _spendStats = MutableStateFlow(SpendStats())
     val spendStats: StateFlow<SpendStats> = _spendStats.asStateFlow()
+
+    private val _backupOpStatus = MutableStateFlow<BackupOpStatus>(BackupOpStatus.Idle)
+    val backupOpStatus: StateFlow<BackupOpStatus> = _backupOpStatus.asStateFlow()
+
+    private val _pendingRestoreInspection = MutableStateFlow<BackupInspection?>(null)
+    val pendingRestoreInspection: StateFlow<BackupInspection?> = _pendingRestoreInspection.asStateFlow()
 
     init {
         loadSettings()
@@ -107,6 +141,74 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setRememberBackupFolder(remember: Boolean) {
+        viewModelScope.launch {
+            settingsStore.setRememberBackupFolder(remember)
+        }
+    }
+
+    fun setBackupReminderThreshold(threshold: Int) {
+        viewModelScope.launch {
+            settingsStore.setBackupReminderThreshold(threshold)
+        }
+    }
+
+    fun setBackupFolderUri(uri: String?) {
+        viewModelScope.launch {
+            settingsStore.setBackupFolderUri(uri)
+        }
+    }
+
+    fun clearBackupOpStatus() {
+        _backupOpStatus.value = BackupOpStatus.Idle
+    }
+
+    fun backupToUri(uri: Uri) {
+        viewModelScope.launch {
+            _backupOpStatus.value = BackupOpStatus.InProgress("Creating backup...")
+            try {
+                val manifest = backupManager.backupToUri(uri)
+                _backupOpStatus.value = BackupOpStatus.Success(
+                    "Backed up ${manifest.recipeCount} recipes and ${manifest.imageCount} images successfully!"
+                )
+            } catch (e: Exception) {
+                _backupOpStatus.value = BackupOpStatus.Error("Backup failed: ${e.message}")
+            }
+        }
+    }
+
+    fun inspectBackup(uri: Uri) {
+        viewModelScope.launch {
+            _backupOpStatus.value = BackupOpStatus.InProgress("Inspecting backup file...")
+            try {
+                val inspection = restoreManager.inspectBackup(uri)
+                _pendingRestoreInspection.value = inspection
+                _backupOpStatus.value = BackupOpStatus.Idle
+            } catch (e: Exception) {
+                _backupOpStatus.value = BackupOpStatus.Error("Backup inspection failed: ${e.message}")
+            }
+        }
+    }
+
+    fun dismissRestoreDialog() {
+        _pendingRestoreInspection.value?.tempDir?.deleteRecursively()
+        _pendingRestoreInspection.value = null
+    }
+
+    fun confirmRestore(restartProcess: Boolean = true) {
+        val inspection = _pendingRestoreInspection.value ?: return
+        viewModelScope.launch {
+            _backupOpStatus.value = BackupOpStatus.InProgress("Restoring recipes & images...")
+            try {
+                restoreManager.performRestore(inspection, restartProcess = restartProcess)
+                _pendingRestoreInspection.value = null
+                _backupOpStatus.value = BackupOpStatus.Success("Restore complete!")
+            } catch (e: Exception) {
+                _backupOpStatus.value = BackupOpStatus.Error("Restore failed: ${e.message}")
+            }
+        }
+    }
+
     fun testApiKey() {
         val key = _apiKey.value.trim()
         if (key.isEmpty()) {
@@ -116,7 +218,6 @@ class SettingsViewModel @Inject constructor(
 
         _testKeyStatus.value = TestKeyStatus.Testing
         viewModelScope.launch {
-            // The Models API checks the key and the model ID without spending tokens.
             val model = modelId.value.trim().ifEmpty { SettingsStore.DEFAULT_MODEL_ID }
             _testKeyStatus.value = try {
                 val response = httpClient.get("$MODELS_URL/$model") {

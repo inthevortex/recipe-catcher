@@ -37,8 +37,16 @@ data class LibraryUiState(
 class LibraryViewModel @Inject constructor(
     private val recipeRepository: RecipeRepository,
     private val tagRepository: TagRepository,
+    private val settingsStore: org.eu.angsumanray.recipecatcher.data.settings.SettingsStore,
+    private val foregroundPageFetcher: org.eu.angsumanray.recipecatcher.capture.ForegroundPageFetcher,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
+
+    val newRecipesSinceBackup: StateFlow<Int> = settingsStore.newRecipesSinceBackupFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    val backupReminderThreshold: StateFlow<Int> = settingsStore.backupReminderThresholdFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 10)
 
     private val _filter = MutableStateFlow(RecipeFilter())
     val filter: StateFlow<RecipeFilter> = _filter.asStateFlow()
@@ -148,6 +156,12 @@ class LibraryViewModel @Inject constructor(
 
     fun retryCapture(recipe: RecipeEntity) {
         viewModelScope.launch {
+            if (recipe.sourceType == org.eu.angsumanray.recipecatcher.core.model.SourceType.WEB.value &&
+                recipe.errorMessage?.contains("Blocked", ignoreCase = true) == true
+            ) {
+                val result = foregroundPageFetcher.retryInWebView(recipe.id)
+                if (result.isSuccess) return@launch
+            }
             val nextStatus = if (recipe.captionRaw.isNullOrBlank()) {
                 RecipeEntity.STATUS_PENDING_FETCH
             } else {
@@ -155,6 +169,20 @@ class LibraryViewModel @Inject constructor(
             }
             recipeRepository.updateRecipeStatus(recipe.id, nextStatus, null)
             CaptureWorker.enqueue(context, recipe.id)
+        }
+    }
+
+    fun pastePageText(recipeId: Long, text: String) {
+        viewModelScope.launch {
+            val recipe = recipeRepository.getRecipe(recipeId) ?: return@launch
+            val updated = recipe.copy(
+                captionRaw = text,
+                status = RecipeEntity.STATUS_PENDING_EXTRACT,
+                errorMessage = null,
+                updatedAt = System.currentTimeMillis()
+            )
+            recipeRepository.updateRecipe(updated)
+            CaptureWorker.enqueue(context, recipeId)
         }
     }
 

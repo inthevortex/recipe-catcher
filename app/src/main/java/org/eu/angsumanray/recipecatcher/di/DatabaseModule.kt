@@ -29,6 +29,25 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideRecipeDatabase(@ApplicationContext context: Context): RecipeDatabase {
+        val dbFile = context.getDatabasePath(RecipeDatabase.DATABASE_NAME)
+        if (dbFile.exists()) {
+            try {
+                val currentVersion = android.database.sqlite.SQLiteDatabase.openDatabase(
+                    dbFile.path,
+                    null,
+                    android.database.sqlite.SQLiteDatabase.OPEN_READONLY
+                ).use { it.version }
+
+                if (currentVersion in 1 until RecipeDatabase.DATABASE_VERSION) {
+                    val safetyDir = java.io.File(context.filesDir, "safety_backup").apply { if (!exists()) mkdirs() }
+                    val safetyFile = java.io.File(safetyDir, "recipes_pre_migration_v$currentVersion.db")
+                    dbFile.copyTo(safetyFile, overwrite = true)
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("DatabaseModule", "Pre-migration safety check failed: ${e.message}")
+            }
+        }
+
         return Room.databaseBuilder(
             context,
             RecipeDatabase::class.java,

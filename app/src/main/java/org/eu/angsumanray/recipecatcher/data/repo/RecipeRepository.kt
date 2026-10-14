@@ -25,10 +25,12 @@ sealed interface CaptureStart {
 @Singleton
 class RecipeRepository @Inject constructor(
     private val database: RecipeDatabase,
-    private val imageStorageManager: ImageStorageManager?
+    private val imageStorageManager: ImageStorageManager?,
+    private val settingsStore: org.eu.angsumanray.recipecatcher.data.settings.SettingsStore?
 ) {
     // Secondary constructor for tests without ImageStorageManager
-    constructor(database: RecipeDatabase) : this(database, null)
+    constructor(database: RecipeDatabase) : this(database, null, null)
+    constructor(database: RecipeDatabase, imageStorageManager: ImageStorageManager?) : this(database, imageStorageManager, null)
 
     private val recipeDao = database.recipeDao()
     private val ingredientDao = database.ingredientDao()
@@ -181,6 +183,10 @@ class RecipeRepository @Inject constructor(
         recipeDao.updateImagePath(id, imagePath)
     }
 
+    suspend fun updateRecipe(recipe: RecipeEntity) {
+        recipeDao.update(recipe)
+    }
+
     suspend fun saveFullRecipe(
         recipe: RecipeEntity,
         ingredients: List<IngredientEntity>,
@@ -229,6 +235,10 @@ class RecipeRepository @Inject constructor(
             notes = savedRecipe.personalNote.orEmpty()
         )
         recipeFtsDao.insert(fts)
+
+        if (recipe.status != RecipeEntity.STATUS_SAVED) {
+            settingsStore?.incrementNewRecipesSinceBackup()
+        }
 
         recipeId
     }
