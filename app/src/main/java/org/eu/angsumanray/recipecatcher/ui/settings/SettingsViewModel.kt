@@ -63,14 +63,14 @@ class SettingsViewModel @Inject constructor(
     val modelId: StateFlow<String> = settingsStore.modelIdFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsStore.DEFAULT_MODEL_ID)
 
-    val chatModelId: StateFlow<String> = settingsStore.chatModelIdFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsStore.DEFAULT_MODEL_ID)
+    val chatModelId: StateFlow<String> = settingsStore.chatModelIdSettingFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
     val includeWebDefault: StateFlow<Boolean> = settingsStore.includeWebDefaultFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val maxWebSearches: StateFlow<Int> = settingsStore.maxWebSearchesFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 3)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsStore.DEFAULT_MAX_WEB_SEARCHES)
 
     val theme: StateFlow<String> = settingsStore.themeFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsStore.THEME_DARK)

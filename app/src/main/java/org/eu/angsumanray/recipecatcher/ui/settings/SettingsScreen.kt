@@ -33,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,6 +51,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 import org.eu.angsumanray.recipecatcher.backup.BackupManager
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import java.util.Locale
@@ -396,6 +398,7 @@ fun SettingsScreen(
                         value = chatModelId,
                         onValueChange = { viewModel.setChatModelId(it) },
                         label = { Text("Chat Model ID") },
+                        placeholder = { Text("Same as Claude Model ID") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -413,24 +416,14 @@ fun SettingsScreen(
                             onCheckedChange = { viewModel.setIncludeWebDefault(it) }
                         )
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Max web searches per message", style = MaterialTheme.typography.bodyMedium)
-                            Text("Caps search tool calls per turn (1–10)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        OutlinedTextField(
-                            value = "$maxWebSearches",
-                            onValueChange = {
-                                val num = it.filter { ch -> ch.isDigit() }.toIntOrNull() ?: 1
-                                viewModel.setMaxWebSearches(num)
-                            },
-                            modifier = Modifier.width(80.dp),
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text("Max web searches per message: $maxWebSearches", style = MaterialTheme.typography.bodyMedium)
+                        Text("Each search costs about US$0.01", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Slider(
+                            value = maxWebSearches.toFloat(),
+                            onValueChange = { viewModel.setMaxWebSearches(it.roundToInt()) },
+                            valueRange = SettingsStore.MIN_WEB_SEARCHES.toFloat()..SettingsStore.MAX_WEB_SEARCHES.toFloat(),
+                            steps = SettingsStore.MAX_WEB_SEARCHES - SettingsStore.MIN_WEB_SEARCHES - 1
                         )
                     }
                 }

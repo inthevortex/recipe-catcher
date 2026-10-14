@@ -131,7 +131,7 @@ object NetworkModule {
             httpClient = httpClient,
             apiKeyProvider = { settingsStore.getApiKey() },
             modelIdProvider = { settingsStore.chatModelIdFlow.first() },
-            webSearchProvider = webSearchProvider
+            fallbackSearchProvider = webSearchProvider
         )
     }
 

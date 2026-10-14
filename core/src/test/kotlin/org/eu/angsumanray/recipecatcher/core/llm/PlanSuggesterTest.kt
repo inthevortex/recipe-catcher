@@ -110,6 +110,73 @@ class PlanSuggesterTest {
     }
 
     @Test
+    fun testValidateDedupesClampsPortionsAndCapsPerSlot() {
+        val raw = listOf(
+            ProposedSlotAssignment(slotId = 1, recipeId = 10, portions = 0),
+            ProposedSlotAssignment(slotId = 1, recipeId = 10, portions = 4),
+            ProposedSlotAssignment(slotId = 1, recipeId = 11, portions = 500),
+            ProposedSlotAssignment(slotId = 1, recipeId = 12),
+            ProposedSlotAssignment(slotId = 1, recipeId = 13),
+            ProposedSlotAssignment(slotId = 2, recipeId = 10)
+        )
+
+        val validated = PlanSuggester.validate(raw, validSlotIds = setOf(1L, 2L), validRecipeIds = setOf(10L, 11L, 12L, 13L))
+
+        assertEquals(listOf(10L, 11L, 12L), validated.filter { it.slotId == 1L }.map { it.recipeId })
+        assertEquals(1, validated[0].portions)
+        assertEquals(PlanSuggester.MAX_PORTIONS, validated[1].portions)
+        assertEquals(1, validated.count { it.slotId == 2L })
+    }
+
+    @Test
+    fun testDefaultSelectionPicksOnePerSlotAndAvoidsRepeats() {
+        val suggestions = listOf(
+            ProposedSlotAssignment(slotId = 1, recipeId = 10),
+            ProposedSlotAssignment(slotId = 1, recipeId = 11),
+            ProposedSlotAssignment(slotId = 2, recipeId = 10),
+            ProposedSlotAssignment(slotId = 2, recipeId = 12),
+            ProposedSlotAssignment(slotId = 3, recipeId = 5),
+            ProposedSlotAssignment(slotId = 3, recipeId = 13),
+            ProposedSlotAssignment(slotId = 4, recipeId = 10)
+        )
+
+        val picks = PlanSuggester.defaultSelection(
+            suggestions,
+            slotOrder = listOf(1L, 2L, 3L, 4L),
+            alreadyPlannedRecipeIds = setOf(5L)
+        )
+
+        // Slot 2 skips 10 (picked for slot 1), slot 3 skips 5 (already planned); slot 4 has no fresh option.
+        assertEquals(listOf(1L to 10L, 2L to 12L, 3L to 13L, 4L to 10L), picks.map { it.slotId to it.recipeId })
+    }
+
+    @Test
+    fun testDefaultSelectionAvoidsRecipesWithLeftovers() {
+        val suggestions = listOf(
+            ProposedSlotAssignment(slotId = 1, recipeId = 20),
+            ProposedSlotAssignment(slotId = 1, recipeId = 21)
+        )
+
+        val picks = PlanSuggester.defaultSelection(suggestions, listOf(1L), leftoverRecipeIds = setOf(20L))
+
+        assertEquals(listOf(21L), picks.map { it.recipeId })
+    }
+
+    @Test
+    fun testHttpErrorFailsWithTypedException() = runBlocking {
+        val suggester = PlanSuggester(createClient { _, _ -> HttpStatusCode.TooManyRequests to "{}" }, { "key" })
+
+        val result = suggester.suggestMeals(
+            PlanSuggesterInput(
+                emptySlots = listOf(EmptyPlanSlot(slotId = 1L, day = "Monday", slotName = "Dinner")),
+                libraryRecipes = sampleLibrary
+            )
+        )
+
+        assertTrue(result.exceptionOrNull() is TransientApiException)
+    }
+
+    @Test
     fun testEmptySlotsReturnsEmptySuggestionsDirectly() = runBlocking {
         val suggester = PlanSuggester(
             httpClient = HttpClient(MockEngine) { engine { addHandler { respond("") } } },

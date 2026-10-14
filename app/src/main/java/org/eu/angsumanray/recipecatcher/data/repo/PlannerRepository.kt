@@ -162,6 +162,25 @@ class PlannerRepository @Inject constructor(
         return plannerDao.insertEntry(entry)
     }
 
+    /**
+     * Adds accepted Suggest picks as cook entries in one transaction, given as (slot ID, recipe ID,
+     * portions). With [skipOccupiedSlots], a slot that gained an entry since the suggestions were
+     * made is left alone. Returns how many entries were added.
+     */
+    suspend fun addSuggestedCookEntries(
+        picks: List<Triple<Long, Long, Int>>,
+        skipOccupiedSlots: Boolean
+    ): Int = database.withTransaction {
+        var added = 0
+        for ((slotId, recipeId, portions) in picks) {
+            if (plannerDao.getSlotById(slotId) == null || recipeDao.getById(recipeId) == null) continue
+            if (skipOccupiedSlots && plannerDao.getEntriesForSlot(slotId).isNotEmpty()) continue
+            addCookEntry(slotId = slotId, recipeId = recipeId, portions = portions)
+            added++
+        }
+        added
+    }
+
     suspend fun addPrepEntry(
         slotId: Long,
         recipeId: Long? = null,

@@ -1,5 +1,6 @@
 package org.eu.angsumanray.recipecatcher.core.web
 
+import kotlinx.coroutines.CancellationException
 import org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher
 import org.eu.angsumanray.recipecatcher.core.ports.SearchResult
 import org.eu.angsumanray.recipecatcher.core.ports.WebSearchProvider
@@ -14,8 +15,15 @@ class DuckDuckGoSearchProvider(
     private val logger: ((String) -> Unit)? = null
 ) : WebSearchProvider {
 
+    companion object {
+        private val SKIPPED_HOSTS = listOf(
+            "duckduckgo.com", "youtube.com", "youtu.be", "tiktok.com", "vimeo.com", "instagram.com"
+        )
+    }
+
     override suspend fun search(query: String, maxResults: Int): List<SearchResult> {
-        val encodedQuery = URLEncoder.encode(query, StandardCharsets.UTF_8.name())
+        if (query.isBlank() || maxResults <= 0) return emptyList()
+        val encodedQuery = URLEncoder.encode(query.trim(), StandardCharsets.UTF_8.name())
         val searchUrl = "https://html.duckduckgo.com/html/?q=$encodedQuery"
 
         val headers = mapOf(
@@ -31,52 +39,45 @@ class DuckDuckGoSearchProvider(
                 return emptyList()
             }
             parseHtmlResults(response.body, maxResults)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logger?.invoke("DuckDuckGo search error: ${e.message}")
             emptyList()
         }
     }
 
+    /** Organic results only: ads, DuckDuckGo's own links, video hosts and repeated URLs are skipped. */
     internal fun parseHtmlResults(html: String, maxResults: Int = 3): List<SearchResult> {
+        if (html.isBlank() || maxResults <= 0) return emptyList()
         val doc = Jsoup.parse(html)
-        val resultElements = doc.select(".result, .web-result")
         val results = mutableListOf<SearchResult>()
+        val seenUrls = mutableSetOf<String>()
 
-        for (element in resultElements) {
+        for (element in doc.select(".result, .web-result")) {
+            if (element.hasClass("result--ad") || element.parents().any { it.hasClass("result--ad") }) continue
+
             val titleEl = element.selectFirst(".result__title a, .result__a, h2 a") ?: continue
-            val rawHref = titleEl.attr("href").trim()
-            val cleanUrl = extractCleanUrl(rawHref) ?: continue
-
-            // Exclude video platforms
-            val lowerUrl = cleanUrl.lowercase()
-            if (lowerUrl.contains("youtube.com") || lowerUrl.contains("youtu.be") ||
-                lowerUrl.contains("tiktok.com") || lowerUrl.contains("vimeo.com") ||
-                lowerUrl.contains("instagram.com/reel")
-            ) {
-                continue
-            }
+            val cleanUrl = extractCleanUrl(titleEl.attr("href").trim()) ?: continue
+            val host = try {
+                URI(cleanUrl).host?.lowercase()
+            } catch (e: Exception) {
+                null
+            } ?: continue
+            if (SKIPPED_HOSTS.any { host == it || host.endsWith(".$it") }) continue
+            if (!seenUrls.add(cleanUrl.removeSuffix("/"))) continue
 
             val title = titleEl.text().trim()
             if (title.isEmpty()) continue
-
-            val snippetEl = element.selectFirst(".result__snippet")
-            val snippet = snippetEl?.text()?.trim() ?: ""
-
-            val host = try {
-                URI(cleanUrl).host?.removePrefix("www.") ?: ""
-            } catch (e: Exception) {
-                ""
-            }
 
             results.add(
                 SearchResult(
                     title = title,
                     url = cleanUrl,
-                    snippet = snippet,
-                    site = host
+                    snippet = element.selectFirst(".result__snippet")?.text()?.trim().orEmpty(),
+                    site = host.removePrefix("www.")
                 )
             )
-
             if (results.size >= maxResults) break
         }
 
@@ -86,7 +87,7 @@ class DuckDuckGoSearchProvider(
     private fun extractCleanUrl(rawHref: String): String? {
         if (rawHref.isEmpty()) return null
 
-        // Handle DuckDuckGo redirect: //duckduckgo.com/l/?uddg=https%3A%2F%2F...
+        // DuckDuckGo redirect: //duckduckgo.com/l/?uddg=https%3A%2F%2F...
         if (rawHref.contains("uddg=")) {
             val uddgPart = rawHref.substringAfter("uddg=").substringBefore("&")
             return try {

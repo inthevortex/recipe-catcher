@@ -8,6 +8,8 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -17,14 +19,11 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.eu.angsumanray.recipecatcher.core.model.ChatMessage
-import org.eu.angsumanray.recipecatcher.core.ports.SearchResult
 import org.eu.angsumanray.recipecatcher.core.ports.WebSearchProvider
 import java.net.URI
 
@@ -70,6 +69,10 @@ data class RecipeIndexEntry(
             lastCookedDate ?: "never"
         ).joinToString(" | ")
     }
+
+    companion object {
+        const val HEADER = "id | title | tags | main ingredients | total min | complexity | spice | diet | contains | kcal | make-ahead / freezer | equipment | favourite | last cooked"
+    }
 }
 
 @Serializable
@@ -93,14 +96,25 @@ data class ChatPlanResult(
     val suggestions: List<RecipeSuggestion> = emptyList(),
     @SerialName("follow_up_question") val followUpQuestion: String = "",
     val webSuggestions: List<WebRecipeSuggestion> = emptyList(),
-    val usage: LlmUsage = LlmUsage(0, 0, 0)
+    /** Set when web picks were asked for but the web call failed; the library reply still stands. */
+    val webNote: String = "",
+    /** Library call usage. */
+    val usage: LlmUsage = LlmUsage(0, 0, 0),
+    val webUsage: LlmUsage? = null
+)
+
+/** Web picks plus the usage of the call that found them. */
+data class WebPicks(
+    val picks: List<WebRecipeSuggestion>,
+    val usage: LlmUsage
 )
 
 class ChatPlanner(
     private val httpClient: HttpClient,
     private val apiKeyProvider: suspend () -> String,
     private val modelIdProvider: suspend () -> String = { ClaudeExtractor.DEFAULT_MODEL_ID },
-    private val webSearchProvider: WebSearchProvider? = null,
+    /** Used only when Claude's own web search tool call fails. */
+    private val fallbackSearchProvider: WebSearchProvider? = null,
     private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true }
 ) {
 
@@ -110,6 +124,28 @@ class ChatPlanner(
         const val HISTORY_LIMIT = 10
         const val PRE_FILTER_THRESHOLD = 300
         const val PRE_FILTER_CAP = 150
+        const val WEB_SEARCH_TOOL_TYPE = "web_search_20260209"
+        private const val MAX_PAUSE_CONTINUATIONS = 4
+        private const val FALLBACK_RESULT_COUNT = 8
+        private const val MAX_SEARCH_TERMS = 12
+
+        private val VIDEO_HOSTS = listOf("youtube.com", "youtu.be", "vimeo.com", "tiktok.com", "instagram.com")
+
+        private val STOP_WORDS = setOf(
+            "the", "and", "for", "with", "without", "have", "has", "had", "can", "could", "would", "should",
+            "what", "which", "something", "some", "any", "want", "need", "make", "cook", "cooking", "tonight",
+            "today", "tomorrow", "recipe", "recipes", "dish", "dishes", "meal", "meals", "please", "give", "show",
+            "suggest", "idea", "ideas", "about", "that", "this", "from", "into", "only", "just", "like", "use",
+            "using", "got", "are", "you", "your", "our", "but", "not", "too", "very", "more", "less", "minutes",
+            "min", "mins", "hour", "hours", "quick", "easy", "how", "why", "when", "where", "who"
+        )
+
+        /** Words from a chat message worth matching against the library: no stop words, no duplicates. */
+        fun searchTerms(message: String): List<String> = message.lowercase()
+            .split(Regex("[^\\p{L}\\p{N}]+"))
+            .filter { it.length > 2 && it !in STOP_WORDS }
+            .distinct()
+            .take(MAX_SEARCH_TERMS)
 
         const val LIBRARY_SYSTEM_PROMPT = """You are a helpful culinary assistant for a personal offline recipe app.
 Suggest at most 5 recipes, ONLY by recipe_id from the provided recipe index.
@@ -147,14 +183,40 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
   }
 ]
 ```"""
+
+        private const val DEFAULT_REPLY = "Here are some ideas from your library."
     }
 
+    /**
+     * Runs the library call and, when [includeWeb] is set, the web call in parallel.
+     * A failed web call leaves the library reply intact and sets [ChatPlanResult.webNote].
+     */
     suspend fun planChat(
         userMessage: String,
         history: List<ChatMessage> = emptyList(),
         libraryRecipes: List<RecipeIndexEntry>,
         includeWeb: Boolean = false,
-        maxWebSearches: Int = 3
+        maxWebSearches: Int = 3,
+        ftsHits: Map<Long, Int> = emptyMap(),
+        today: String? = null
+    ): Result<ChatPlanResult> = coroutineScope {
+        val web = if (includeWeb) async { searchWeb(userMessage, maxWebSearches) } else null
+        val library = planLibrary(userMessage, history, libraryRecipes, ftsHits, today)
+        if (library.isFailure) {
+            web?.cancel()
+            return@coroutineScope library
+        }
+        val plan = library.getOrThrow()
+        Result.success(if (web == null) plan else plan.withWeb(web.await()))
+    }
+
+    /** The library call: suggestions validated against the index sent, capped at [MAX_SUGGESTIONS]. */
+    suspend fun planLibrary(
+        userMessage: String,
+        history: List<ChatMessage> = emptyList(),
+        libraryRecipes: List<RecipeIndexEntry>,
+        ftsHits: Map<Long, Int> = emptyMap(),
+        today: String? = null
     ): Result<ChatPlanResult> {
         val apiKey = apiKeyProvider().trim()
         if (apiKey.isEmpty()) {
@@ -162,83 +224,68 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
         }
         val modelId = modelIdProvider().trim().ifEmpty { ClaudeExtractor.DEFAULT_MODEL_ID }
 
-        // 1. Pre-filter library recipes if above 300
-        val filteredRecipes = prefilterRecipes(libraryRecipes, userMessage)
-
-        // 2. Perform library call
-        val libraryResult = callLibraryLlm(apiKey, modelId, userMessage, history, filteredRecipes)
-        if (libraryResult.isFailure) {
-            return Result.failure(libraryResult.exceptionOrNull() ?: RuntimeException("Library call failed"))
-        }
-
-        val basePlan = libraryResult.getOrThrow()
-
-        // 3. Web call (if requested)
-        if (!includeWeb) {
-            return Result.success(basePlan)
-        }
-
-        val webPicksResult = callWebSearchLlm(apiKey, modelId, userMessage, maxWebSearches)
-        return if (webPicksResult.isSuccess) {
-            val (webSuggestions, webUsage) = webPicksResult.getOrThrow()
-            Result.success(
-                basePlan.copy(
-                    webSuggestions = webSuggestions,
-                    usage = LlmUsage(
-                        inputTokens = basePlan.usage.inputTokens + webUsage.inputTokens,
-                        outputTokens = basePlan.usage.outputTokens + webUsage.outputTokens,
-                        cacheReadTokens = basePlan.usage.cacheReadTokens + webUsage.cacheReadTokens,
-                        webSearches = basePlan.usage.webSearches + webUsage.webSearches,
-                        model = modelId
-                    )
-                )
-            )
-        } else {
-            // If web call fails, still return library results gracefully
-            Result.success(basePlan)
-        }
+        val turns = conversationTurns(history, userMessage)
+        // A short follow-up like "something spicier" borrows terms from the previous request.
+        val filterQuery = userMessage.takeIf { searchTerms(it).isNotEmpty() }
+            ?: turns.dropLast(1).lastOrNull { it.first == "user" }?.second
+            ?: userMessage
+        val recipes = prefilterRecipes(libraryRecipes, filterQuery, ftsHits)
+        return callLibraryLlm(apiKey, modelId, turns, recipes, today)
     }
 
-    suspend fun findWebCandidates(
-        dishName: String,
-        hints: String = "",
-        maxResults: Int = MAX_WEB_PICKS
-    ): Result<List<WebRecipeSuggestion>> {
+    /** The web call on its own, for chat. */
+    suspend fun searchWeb(userMessage: String, maxWebSearches: Int = 3): Result<WebPicks> {
         val apiKey = apiKeyProvider().trim()
         if (apiKey.isEmpty()) {
             return Result.failure(ApiKeyInvalidException("API key is empty"))
         }
         val modelId = modelIdProvider().trim().ifEmpty { ClaudeExtractor.DEFAULT_MODEL_ID }
-        val query = if (hints.isNotBlank()) "$dishName ($hints)" else dishName
-
-        val result = callWebSearchLlm(apiKey, modelId, query, maxResults)
-        return result.map { it.first }
+        return callWebSearch(apiKey, modelId, userMessage, maxWebSearches.coerceIn(1, 10))
     }
 
+    /** The web call for Find with AI: the dish name and hints are the whole request. */
+    suspend fun findWebCandidates(
+        dishName: String,
+        hints: String = "",
+        maxWebSearches: Int = 3
+    ): Result<WebPicks> {
+        val query = if (hints.isNotBlank()) "${dishName.trim()} (${hints.trim()})" else dishName.trim()
+        return searchWeb(query, maxWebSearches)
+    }
+
+    private fun ChatPlanResult.withWeb(web: Result<WebPicks>): ChatPlanResult = web.fold(
+        onSuccess = { copy(webSuggestions = it.picks, webUsage = it.usage) },
+        onFailure = { copy(webNote = "Web search failed: ${llmErrorMessage(it)}") }
+    )
+
+    /**
+     * Above [PRE_FILTER_THRESHOLD] recipes, keeps the [cap] best matches for [query]. [ftsHits] counts
+     * how many of the query's terms matched each recipe in full-text search; title, ingredient and tag
+     * matches add to that. Ties keep the input order.
+     */
     internal fun prefilterRecipes(
         recipes: List<RecipeIndexEntry>,
         query: String,
+        ftsHits: Map<Long, Int> = emptyMap(),
         cap: Int = PRE_FILTER_CAP
     ): List<RecipeIndexEntry> {
         if (recipes.size <= PRE_FILTER_THRESHOLD) return recipes
 
-        val queryWords = query.lowercase()
-            .split(Regex("[^a-z0-9]+"))
-            .filter { it.length > 2 }
-            .toSet()
+        val queryWords = searchTerms(query).toSet()
+        if (queryWords.isEmpty() && ftsHits.isEmpty()) return recipes.take(cap)
 
-        if (queryWords.isEmpty()) return recipes.take(cap)
+        val wordSplit = Regex("[^\\p{L}\\p{N}]+")
+        fun words(values: List<String>) = values.flatMap { it.lowercase().split(wordSplit) }.toSet()
 
         fun score(recipe: RecipeIndexEntry): Int {
-            var score = 0
-            val titleWords = recipe.title.lowercase().split(Regex("[^a-z0-9]+")).toSet()
-            val tagWords = recipe.tags.flatMap { it.lowercase().split(Regex("[^a-z0-9]+")) }.toSet()
-            val ingWords = recipe.mainIngredients.flatMap { it.lowercase().split(Regex("[^a-z0-9]+")) }.toSet()
-
+            var score = (ftsHits[recipe.id] ?: 0) * 4
+            val titleWords = words(listOf(recipe.title))
+            val ingWords = words(recipe.mainIngredients)
+            val tagWords = words(recipe.tags + recipe.contains + listOfNotNull(recipe.dietType))
             for (w in queryWords) {
-                if (titleWords.contains(w)) score += 5
-                if (ingWords.contains(w)) score += 3
-                if (tagWords.contains(w)) score += 2
+                if (w in titleWords) score += 5
+                if (w in ingWords) score += 3
+                if (w in tagWords) score += 2
             }
             if (recipe.favourite) score += 1
             return score
@@ -247,34 +294,34 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
         return recipes.sortedByDescending { score(it) }.take(cap)
     }
 
+    /**
+     * The last [HISTORY_LIMIT] turns plus the new message, as (role, text) pairs. Blank turns and
+     * leading assistant turns are dropped, and a trailing copy of the new message is not sent twice.
+     */
+    internal fun conversationTurns(history: List<ChatMessage>, userMessage: String): List<Pair<String, String>> {
+        val turns = history
+            .filter { it.text.isNotBlank() }
+            .map { (if (it.role.equals("user", ignoreCase = true)) "user" else "assistant") to it.text.trim() }
+            .toMutableList()
+        if (turns.lastOrNull() == ("user" to userMessage.trim())) turns.removeAt(turns.lastIndex)
+        val recent = turns.takeLast(HISTORY_LIMIT).dropWhile { it.first == "assistant" }
+        return recent + ("user" to userMessage.trim())
+    }
+
     private suspend fun callLibraryLlm(
         apiKey: String,
         modelId: String,
-        userMessage: String,
-        history: List<ChatMessage>,
-        recipes: List<RecipeIndexEntry>
+        turns: List<Pair<String, String>>,
+        recipes: List<RecipeIndexEntry>,
+        today: String?
     ): Result<ChatPlanResult> {
         val validIds = recipes.map { it.id }.toSet()
-        val indexText = buildString {
-            appendLine("id | title | tags | main ingredients | total min | complexity | spice | diet | contains | kcal | make-ahead / freezer | equipment | favourite | last cooked")
+        val systemText = buildString {
+            append(LIBRARY_SYSTEM_PROMPT)
+            if (today != null) append("\n\nToday is $today.")
+            append("\n\nRecipe Index (${recipes.size} recipes):\n")
+            appendLine(RecipeIndexEntry.HEADER)
             recipes.forEach { appendLine(it.toIndexLine()) }
-        }
-
-        val systemText = "$LIBRARY_SYSTEM_PROMPT\n\nRecipe Index (${recipes.size} recipes):\n$indexText"
-
-        val recentHistory = history.takeLast(HISTORY_LIMIT)
-        val messagesPayload = buildJsonArray {
-            for (msg in recentHistory) {
-                val role = if (msg.role.equals("user", ignoreCase = true)) "user" else "assistant"
-                add(buildJsonObject {
-                    put("role", role)
-                    put("content", msg.text)
-                })
-            }
-            add(buildJsonObject {
-                put("role", "user")
-                put("content", userMessage)
-            })
         }
 
         val requestPayload = buildJsonObject {
@@ -284,9 +331,18 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
                 add(buildJsonObject {
                     put("type", "text")
                     put("text", systemText)
+                    // The index repeats on every message of a conversation.
+                    putJsonObject("cache_control") { put("type", "ephemeral") }
                 })
             }
-            put("messages", messagesPayload)
+            putJsonArray("messages") {
+                for ((role, text) in turns) {
+                    add(buildJsonObject {
+                        put("role", role)
+                        put("content", text)
+                    })
+                }
+            }
         }.toString()
 
         return try {
@@ -299,22 +355,15 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
 
             val statusCode = response.status.value
             val responseBody = response.bodyAsText()
-
             if (statusCode !in 200..299) {
-                return Result.failure(RuntimeException("Anthropic API error: HTTP $statusCode $responseBody"))
+                return Result.failure(AnthropicSupport.httpError(statusCode, responseBody, modelId))
             }
 
             val anthropicResponse = json.decodeFromString<AnthropicMessageResponse>(responseBody)
-            val textContent = anthropicResponse.content.firstOrNull { it.type == "text" }?.text
-                ?: return Result.failure(RuntimeException("No text content returned from Claude"))
-
-            val parsedJson = extractJsonBlock(textContent)
-            val rawResult = json.decodeFromString<RawChatPlanResponse>(parsedJson)
-
-            // Validate suggestions: drop IDs not in index, cap at MAX_SUGGESTIONS
-            val validatedSuggestions = rawResult.suggestions
-                .filter { it.recipeId in validIds }
-                .take(MAX_SUGGESTIONS)
+            val textContent = AnthropicSupport.responseText(anthropicResponse)
+            if (textContent.isBlank()) {
+                return Result.failure(RuntimeException("No text content returned from Claude"))
+            }
 
             val usage = LlmUsage(
                 inputTokens = anthropicResponse.usage?.inputTokens ?: 0,
@@ -323,12 +372,28 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
                 model = anthropicResponse.model ?: modelId
             )
 
+            // A plain-prose answer (no JSON at all) is still a usable reply.
+            if ('{' !in textContent) {
+                return Result.success(ChatPlanResult(reply = textContent.trim(), usage = usage))
+            }
+
+            val rawResult = json.decodeFromString<RawChatPlanResponse>(AnthropicSupport.extractJsonBlock(textContent))
+            val validatedSuggestions = rawResult.suggestions
+                .filter { it.recipeId in validIds }
+                .distinctBy { it.recipeId }
+                .take(MAX_SUGGESTIONS)
+                .map { s -> s.copy(reason = s.reason.trim(), missing = s.missing.map { it.trim() }.filter { it.isNotEmpty() }) }
+            var followUp = rawResult.followUpQuestion.trim()
+            val reply = rawResult.reply.trim().ifEmpty {
+                // A bare follow-up question becomes the reply rather than an empty bubble.
+                followUp.ifEmpty { DEFAULT_REPLY }.also { if (it == followUp) followUp = "" }
+            }
+
             Result.success(
                 ChatPlanResult(
-                    reply = rawResult.reply.ifBlank { textContent },
+                    reply = reply,
                     suggestions = validatedSuggestions,
-                    followUpQuestion = rawResult.followUpQuestion,
-                    webSuggestions = emptyList(),
+                    followUpQuestion = followUp,
                     usage = usage
                 )
             )
@@ -339,55 +404,56 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
         }
     }
 
-    private suspend fun callWebSearchLlm(
+    private suspend fun callWebSearch(
         apiKey: String,
         modelId: String,
         userQuery: String,
         maxWebSearches: Int
-    ): Result<Pair<List<WebRecipeSuggestion>, LlmUsage>> {
-        // If webSearchProvider is provided, prioritize it
-        if (webSearchProvider != null) {
-            val providerResult = callProviderWebSearch(apiKey, modelId, userQuery, maxWebSearches, webSearchProvider)
-            if (providerResult.isSuccess) {
-                return providerResult
-            }
-        }
+    ): Result<WebPicks> {
+        val serverResult = callServerWebSearch(apiKey, modelId, userQuery, maxWebSearches)
+        if (serverResult.isSuccess || fallbackSearchProvider == null) return serverResult
 
-        // Otherwise try server-side Anthropic web_search tool
-        return tryServerSideWebSearch(apiKey, modelId, userQuery, maxWebSearches)
+        val error = serverResult.exceptionOrNull()
+        // A bad key or model fails the fallback's Claude call the same way.
+        if (error is ApiKeyInvalidException || error is ModelNotFoundException) return serverResult
+        val fallback = callProviderWebSearch(apiKey, modelId, userQuery, fallbackSearchProvider)
+        return if (fallback.isSuccess) fallback else serverResult
     }
 
-    private suspend fun tryServerSideWebSearch(
+    /**
+     * Claude's server-side web_search tool. Search runs inside the request; a `pause_turn` stop is sent
+     * back as the assistant turn so the model can finish. Only URLs returned in `web_search_tool_result`
+     * blocks are kept.
+     */
+    private suspend fun callServerWebSearch(
         apiKey: String,
         modelId: String,
         userQuery: String,
         maxWebSearches: Int
-    ): Result<Pair<List<WebRecipeSuggestion>, LlmUsage>> {
+    ): Result<WebPicks> {
         return try {
-            val userContent = "Find candidate recipes for: $userQuery. Return up to 3 pages with full recipes, not videos."
-            val messages = mutableListOf<JsonObject>()
-            messages.add(buildJsonObject {
-                put("role", "user")
-                put("content", userContent)
-            })
-
-            val toolsArray = buildJsonArray {
+            val messages = mutableListOf<JsonElement>(
+                buildJsonObject {
+                    put("role", "user")
+                    put("content", "Find candidate recipes for: $userQuery. Return up to 3 pages with full recipes, not videos.")
+                }
+            )
+            val tools = buildJsonArray {
                 add(buildJsonObject {
-                    put("type", "web_search_20260209")
+                    put("type", WEB_SEARCH_TOOL_TYPE)
                     put("name", "web_search")
                     put("max_uses", maxWebSearches)
                 })
             }
 
-            var iterations = 0
-            var finalResponse: AnthropicMessageResponse? = null
-            var totalInputTokens = 0
-            var totalOutputTokens = 0
-            var totalCacheRead = 0
+            var inputTokens = 0
+            var outputTokens = 0
+            var cacheRead = 0
+            var searches = 0
+            val text = StringBuilder()
             val searchResultUrls = mutableSetOf<String>()
 
-            while (iterations < 5) {
-                iterations++
+            for (attempt in 0..MAX_PAUSE_CONTINUATIONS) {
                 val requestPayload = buildJsonObject {
                     put("model", modelId)
                     put("max_tokens", 1500)
@@ -398,7 +464,8 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
                         })
                     }
                     put("messages", JsonArray(messages))
-                    put("tools", toolsArray)
+                    put("tools", tools)
+                    putJsonObject("tool_choice") { put("type", "auto") }
                 }.toString()
 
                 val response = httpClient.post(ClaudeExtractor.ANTHROPIC_MESSAGES_URL) {
@@ -410,58 +477,39 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
 
                 val statusCode = response.status.value
                 val responseBody = response.bodyAsText()
-
                 if (statusCode !in 200..299) {
-                    return Result.failure(RuntimeException("Anthropic web search error: HTTP $statusCode $responseBody"))
+                    return Result.failure(AnthropicSupport.httpError(statusCode, responseBody, modelId))
                 }
 
-                val anthropicResponse = json.decodeFromString<AnthropicMessageResponse>(responseBody)
-                finalResponse = anthropicResponse
-                totalInputTokens += anthropicResponse.usage?.inputTokens ?: 0
-                totalOutputTokens += anthropicResponse.usage?.outputTokens ?: 0
-                totalCacheRead += anthropicResponse.usage?.cacheReadInputTokens ?: 0
+                // Kept raw so a paused turn goes back with every field intact (citations, encrypted content).
+                val raw = json.parseToJsonElement(responseBody).jsonObject
+                val anthropicResponse = json.decodeFromJsonElement(AnthropicMessageResponse.serializer(), raw)
+                inputTokens += anthropicResponse.usage?.inputTokens ?: 0
+                outputTokens += anthropicResponse.usage?.outputTokens ?: 0
+                cacheRead += anthropicResponse.usage?.cacheReadInputTokens ?: 0
+                searches += anthropicResponse.usage?.serverToolUse?.webSearchRequests
+                    ?: anthropicResponse.content.count { it.type == "server_tool_use" && it.name == "web_search" }
 
-                // Collect URLs from web_search_tool_result content blocks
-                for (block in anthropicResponse.content) {
-                    extractUrlsFromJsonElement(block.content, searchResultUrls)
-                }
+                anthropicResponse.content
+                    .filter { it.type == "web_search_tool_result" }
+                    .forEach { collectResultUrls(it.content, searchResultUrls) }
+                text.append(AnthropicSupport.responseText(anthropicResponse))
 
-                if (anthropicResponse.stopReason == "pause_turn") {
-                    // Send back assistant turn to continue
-                    val assistantTurnContent = buildJsonArray {
-                        for (block in anthropicResponse.content) {
-                            add(buildJsonObject {
-                                put("type", block.type)
-                                block.text?.let { put("text", it) }
-                                block.id?.let { put("id", it) }
-                                block.name?.let { put("name", it) }
-                                block.input?.let { put("input", it) }
-                                block.toolUseId?.let { put("tool_use_id", it) }
-                                block.content?.let { put("content", it) }
-                            })
-                        }
-                    }
-                    messages.add(buildJsonObject {
-                        put("role", "assistant")
-                        put("content", assistantTurnContent)
-                    })
-                } else {
-                    break
-                }
+                if (anthropicResponse.stopReason != "pause_turn") break
+                messages.add(buildJsonObject {
+                    put("role", "assistant")
+                    put("content", raw["content"] ?: JsonArray(emptyList()))
+                })
             }
 
-            val textBlock = finalResponse?.content?.lastOrNull { it.type == "text" }?.text ?: ""
-            val parsedPicks = parseAndValidateWebPicks(textBlock, searchResultUrls)
-
             val usage = LlmUsage(
-                inputTokens = totalInputTokens,
-                outputTokens = totalOutputTokens,
-                cacheReadTokens = totalCacheRead,
-                webSearches = maxWebSearches,
+                inputTokens = inputTokens,
+                outputTokens = outputTokens,
+                cacheReadTokens = cacheRead,
+                webSearches = searches,
                 model = modelId
             )
-
-            Result.success(parsedPicks to usage)
+            Result.success(WebPicks(parseAndValidateWebPicks(text.toString(), searchResultUrls), usage))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -469,37 +517,34 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
         }
     }
 
+    /** Fallback: a third-party search, then one plain Claude call to pick from its results. */
     private suspend fun callProviderWebSearch(
         apiKey: String,
         modelId: String,
         userQuery: String,
-        maxWebSearches: Int,
         provider: WebSearchProvider
-    ): Result<Pair<List<WebRecipeSuggestion>, LlmUsage>> {
+    ): Result<WebPicks> {
         return try {
-            val searchResults = provider.search(userQuery, maxWebSearches)
+            val searchResults = provider.search(userQuery, FALLBACK_RESULT_COUNT)
             if (searchResults.isEmpty()) {
-                return Result.success(emptyList<WebRecipeSuggestion>() to LlmUsage(0, 0, 0, 0, modelId))
+                return Result.failure(RuntimeException("Fallback web search returned no results"))
             }
 
-            val validUrls = searchResults.map { it.url }.toSet()
-            val searchResultsText = buildString {
-                appendLine("Search results for '$userQuery':")
+            val prompt = buildString {
+                appendLine("The user wants candidate recipes for: \"$userQuery\".")
+                appendLine("From the following search results, choose up to 3 best candidate recipes with full recipes.")
+                appendLine("URLs MUST exactly match the URLs in the search results.")
+                appendLine()
+                appendLine("Search results:")
                 searchResults.forEachIndexed { index, res ->
                     appendLine("${index + 1}. Title: ${res.title}")
                     appendLine("   URL: ${res.url}")
                     appendLine("   Snippet: ${res.snippet}")
                     appendLine("   Site: ${res.site}")
                 }
+                appendLine()
+                append("Output strictly a JSON array in a ```json ... ``` code fence.")
             }
-
-            val prompt = """The user wants candidate recipes for: "$userQuery".
-From the following search results, choose up to 3 best candidate recipes with full recipes.
-URLs MUST exactly match the URLs in the search results.
-
-$searchResultsText
-
-Output strictly a JSON array in a ```json ... ``` code fence."""
 
             val requestPayload = buildJsonObject {
                 put("model", modelId)
@@ -527,25 +572,24 @@ Output strictly a JSON array in a ```json ... ``` code fence."""
 
             val statusCode = response.status.value
             val responseBody = response.bodyAsText()
-
             if (statusCode !in 200..299) {
-                return Result.failure(RuntimeException("Anthropic API error: HTTP $statusCode $responseBody"))
+                return Result.failure(AnthropicSupport.httpError(statusCode, responseBody, modelId))
             }
 
             val anthropicResponse = json.decodeFromString<AnthropicMessageResponse>(responseBody)
-            val textContent = anthropicResponse.content.firstOrNull { it.type == "text" }?.text ?: ""
-
-            val parsedPicks = parseAndValidateWebPicks(textContent, validUrls)
-
+            val picks = parseAndValidateWebPicks(
+                AnthropicSupport.responseText(anthropicResponse),
+                searchResults.map { it.url }.toSet()
+            )
+            // No Anthropic searches ran, so none are billed.
             val usage = LlmUsage(
                 inputTokens = anthropicResponse.usage?.inputTokens ?: 0,
                 outputTokens = anthropicResponse.usage?.outputTokens ?: 0,
                 cacheReadTokens = anthropicResponse.usage?.cacheReadInputTokens ?: 0,
-                webSearches = searchResults.size,
-                model = modelId
+                webSearches = 0,
+                model = anthropicResponse.model ?: modelId
             )
-
-            Result.success(parsedPicks to usage)
+            Result.success(WebPicks(picks, usage))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -553,83 +597,64 @@ Output strictly a JSON array in a ```json ... ``` code fence."""
         }
     }
 
+    /**
+     * Parses the fenced JSON picks and keeps only those whose URL matches one in [allowedUrls]
+     * (ignoring scheme/host case, a trailing slash and any fragment). The search result's own URL is
+     * kept, video hosts are dropped and duplicates collapse.
+     */
     internal fun parseAndValidateWebPicks(
         text: String,
         allowedUrls: Set<String>
     ): List<WebRecipeSuggestion> {
-        if (allowedUrls.isEmpty()) return emptyList()
-        return try {
-            val jsonText = extractJsonBlock(text)
-            val rawList = json.decodeFromString<List<WebRecipeSuggestion>>(jsonText)
-
-            fun normalize(u: String) = u.trim().removeSuffix("/").lowercase()
-            val normalizedAllowed = allowedUrls.map { normalize(it) }.toSet()
-
-            // Strictly filter URLs: keep ONLY URLs present in allowedUrls
-            val filtered = rawList.filter { suggestion ->
-                val norm = normalize(suggestion.url)
-                normalizedAllowed.contains(norm) || normalizedAllowed.any { norm.startsWith(it) || it.startsWith(norm) }
-            }.map { suggestion ->
-                val site = suggestion.site.ifBlank {
-                    try { URI(suggestion.url).host?.removePrefix("www.") ?: "" } catch (e: Exception) { "" }
-                }
-                suggestion.copy(site = site)
-            }
-
-            filtered.take(MAX_WEB_PICKS)
+        if (allowedUrls.isEmpty() || text.isBlank()) return emptyList()
+        val rawList = try {
+            json.decodeFromString<List<WebRecipeSuggestion>>(AnthropicSupport.extractJsonBlock(text))
         } catch (e: Exception) {
-            emptyList()
+            return emptyList()
         }
+
+        val allowedByKey = allowedUrls.associateBy { urlKey(it) }
+        return rawList
+            .mapNotNull { pick ->
+                val url = allowedByKey[urlKey(pick.url)] ?: return@mapNotNull null
+                val host = hostOf(url)
+                if (host == null || VIDEO_HOSTS.any { host == it || host.endsWith(".$it") }) return@mapNotNull null
+                pick.copy(
+                    url = url,
+                    title = pick.title.trim().ifEmpty { host },
+                    site = pick.site.trim().ifEmpty { host.removePrefix("www.") }
+                )
+            }
+            .distinctBy { urlKey(it.url) }
+            .take(MAX_WEB_PICKS)
     }
 
-    internal fun extractJsonBlock(text: String): String {
-        val trimmed = text.trim()
-        if (trimmed.startsWith("```json")) {
-            val content = trimmed.substringAfter("```json").substringBefore("```").trim()
-            if (content.isNotEmpty()) return content
-        }
-        if (trimmed.startsWith("```")) {
-            val content = trimmed.substringAfter("```").substringBefore("```").trim()
-            if (content.isNotEmpty()) return content
-        }
-
-        val firstObj = trimmed.indexOf('{')
-        val lastObj = trimmed.lastIndexOf('}')
-        val firstArr = trimmed.indexOf('[')
-        val lastArr = trimmed.lastIndexOf(']')
-
-        if (firstArr != -1 && lastArr > firstArr && (firstObj == -1 || firstArr < firstObj)) {
-            return trimmed.substring(firstArr, lastArr + 1)
-        }
-        if (firstObj != -1 && lastObj > firstObj) {
-            return trimmed.substring(firstObj, lastObj + 1)
-        }
-
-        return trimmed
+    private fun hostOf(url: String): String? = try {
+        URI(url.trim()).host?.lowercase()
+    } catch (e: Exception) {
+        null
     }
 
-    private fun extractUrlsFromJsonElement(element: JsonElement?, urls: MutableSet<String>) {
-        if (element == null) return
+    private fun urlKey(url: String): String {
+        val trimmed = url.trim().substringBefore('#')
+        val schemeEnd = trimmed.indexOf("://")
+        if (schemeEnd < 0) return trimmed.removeSuffix("/")
+        val pathStart = trimmed.indexOf('/', schemeEnd + 3).let { if (it < 0) trimmed.length else it }
+        val authority = trimmed.substring(0, pathStart).lowercase()
+        return (authority + trimmed.substring(pathStart)).removeSuffix("/")
+    }
+
+    private fun collectResultUrls(element: JsonElement?, urls: MutableSet<String>) {
         when (element) {
-            is JsonObject -> {
-                for ((key, value) in element) {
-                    if (key.equals("url", ignoreCase = true) && value is JsonPrimitive && value.isString) {
-                        urls.add(value.content)
-                    } else {
-                        extractUrlsFromJsonElement(value, urls)
-                    }
+            is JsonObject -> for ((key, value) in element) {
+                if (key == "url" && value is JsonPrimitive && value.isString) {
+                    urls.add(value.content)
+                } else {
+                    collectResultUrls(value, urls)
                 }
             }
-            is JsonArray -> {
-                for (item in element) {
-                    extractUrlsFromJsonElement(item, urls)
-                }
-            }
-            is JsonPrimitive -> {
-                if (element.isString && (element.content.startsWith("http://") || element.content.startsWith("https://"))) {
-                    urls.add(element.content)
-                }
-            }
+            is JsonArray -> element.forEach { collectResultUrls(it, urls) }
+            else -> Unit
         }
     }
 }

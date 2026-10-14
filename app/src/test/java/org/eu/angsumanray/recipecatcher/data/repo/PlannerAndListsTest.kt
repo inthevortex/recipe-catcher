@@ -382,4 +382,33 @@ class PlannerAndListsTest {
         assertEquals(null, entry!!.recipeId)
         assertEquals(2, entry.portions)
     }
+
+    @Test
+    fun `addSuggestedCookEntries skips filled slots and unknown recipes`() = runBlocking {
+        val date = LocalDate.of(2026, 10, 15)
+        val emptySlot = plannerRepository.insertSlot(PlanSlotEntity(date = date, name = "Lunch", time = LocalTime.of(13, 0)))
+        val filledSlot = plannerRepository.insertSlot(PlanSlotEntity(date = date, name = "Dinner", time = LocalTime.of(19, 0)))
+        val recipeId = database.recipeDao().insert(
+            RecipeEntity(sourceType = "manual", sourceKey = "suggest_1", title = "Dal", status = RecipeEntity.STATUS_SAVED)
+        )
+        plannerRepository.addCookEntry(slotId = filledSlot, recipeId = recipeId, portions = 2)
+
+        val added = plannerRepository.addSuggestedCookEntries(
+            picks = listOf(
+                Triple(emptySlot, recipeId, 4),
+                Triple(filledSlot, recipeId, 4),
+                Triple(emptySlot, 9999L, 4)
+            ),
+            skipOccupiedSlots = true
+        )
+
+        assertEquals(1, added)
+        assertEquals(1, database.plannerDao().getEntriesForSlot(emptySlot).size)
+        assertEquals(1, database.plannerDao().getEntriesForSlot(filledSlot).size)
+        assertEquals(4, database.plannerDao().getEntriesForSlot(emptySlot).single().portions)
+
+        val forcedAdd = plannerRepository.addSuggestedCookEntries(listOf(Triple(filledSlot, recipeId, 3)), skipOccupiedSlots = false)
+        assertEquals(1, forcedAdd)
+        assertEquals(2, database.plannerDao().getEntriesForSlot(filledSlot).size)
+    }
 }

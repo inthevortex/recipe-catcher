@@ -1,22 +1,28 @@
 package org.eu.angsumanray.recipecatcher.data.repo
 
 import android.content.Context
+import androidx.room.withTransaction
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.eu.angsumanray.recipecatcher.capture.CaptureWorker
-import org.eu.angsumanray.recipecatcher.core.llm.ChatPlanResult
 import org.eu.angsumanray.recipecatcher.core.llm.ChatPlanner
-import org.eu.angsumanray.recipecatcher.core.llm.RecipeIndexEntry
+import org.eu.angsumanray.recipecatcher.core.llm.LlmUsage
+import org.eu.angsumanray.recipecatcher.core.llm.WebPicks
+import org.eu.angsumanray.recipecatcher.core.llm.llmErrorMessage
 import org.eu.angsumanray.recipecatcher.core.model.ChatMessage
 import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
 import org.eu.angsumanray.recipecatcher.data.db.entity.ChatMessageEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.ChatSessionEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.LlmUsageEntity
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
+import java.time.LocalDate
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -26,165 +32,129 @@ class ChatRepository @Inject constructor(
     private val database: RecipeDatabase,
     private val chatPlanner: ChatPlanner,
     private val settingsStore: SettingsStore,
-    private val recipeRepository: RecipeRepository
+    private val recipeRepository: RecipeRepository,
+    private val recipeIndexBuilder: RecipeIndexBuilder
 ) {
     private val chatDao = database.chatDao()
-    private val recipeDao = database.recipeDao()
-    private val ingredientDao = database.ingredientDao()
-    private val recipeTagDao = database.recipeTagDao()
-    private val cookLogDao = database.cookLogDao()
     private val llmUsageDao = database.llmUsageDao()
     private val json = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true }
+
+    companion object {
+        const val DEFAULT_SESSION_TITLE = "New chat"
+        private const val TITLE_MAX_LENGTH = 60
+    }
 
     suspend fun getOrCreateDefaultSession(): Long {
         val first = chatDao.getFirstSession()
         if (first != null) return first.id
-        return chatDao.insertSession(ChatSessionEntity(title = "Default Session"))
+        return chatDao.insertSession(ChatSessionEntity(title = DEFAULT_SESSION_TITLE))
     }
 
-    fun observeMessages(sessionId: Long): Flow<List<ChatMessage>> {
-        return chatDao.observeMessagesForSession(sessionId).map { list ->
-            list.map { entity ->
-                ChatMessage(
-                    id = entity.id,
-                    sessionId = entity.sessionId,
-                    role = entity.role,
-                    text = entity.text,
-                    includeWeb = entity.includeWeb,
-                    suggestionsJson = entity.suggestionsJson,
-                    createdAt = entity.createdAt
-                )
-            }
-        }
-    }
+    fun observeMessages(sessionId: Long): Flow<List<ChatMessage>> =
+        chatDao.observeMessagesForSession(sessionId).map { list -> list.map { it.toModel() } }
 
+    /**
+     * Saves the user's message, then runs the library call and (when [includeWeb] is on) the web call
+     * in parallel. The assistant reply is saved as soon as the library call returns; web cards are
+     * added to that same message when the web call finishes.
+     */
     suspend fun sendMessage(
         sessionId: Long,
         userText: String,
         includeWeb: Boolean
-    ): Result<ChatMessage> {
+    ): Result<ChatMessage> = coroutineScope {
         val trimmed = userText.trim()
-        if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Message cannot be empty"))
+        if (trimmed.isEmpty()) return@coroutineScope Result.failure(IllegalArgumentException("Message cannot be empty"))
 
-        // 1. Insert user message into database
-        val userEntity = ChatMessageEntity(
-            sessionId = sessionId,
-            role = ChatMessageEntity.ROLE_USER,
-            text = trimmed,
-            includeWeb = includeWeb,
-            createdAt = System.currentTimeMillis()
-        )
-        chatDao.insertMessage(userEntity)
+        // History is read before the new message is stored, so it isn't sent twice.
+        val history = chatDao.getLastMessagesForSession(sessionId, limit = ChatPlanner.HISTORY_LIMIT)
+            .reversed()
+            .map { it.toModel() }
 
-        // 2. Build RecipeIndexEntry list from saved recipes
-        val savedRecipes = recipeDao.getAllSaved()
-        val indexEntries = savedRecipes.map { recipe ->
-            val ingredients = ingredientDao.getByRecipeId(recipe.id)
-            val tags = recipeTagDao.getTagsForRecipe(recipe.id)
-            val lastCookedDate = cookLogDao.getLastCookedDate(recipe.id)
-            val mainIngredients = ingredients.map { it.name }.filter { it.isNotBlank() }
-            val tagNames = tags.map { it.name }
-
-            RecipeIndexEntry(
-                id = recipe.id,
-                title = recipe.title.orEmpty(),
-                tags = tagNames,
-                mainIngredients = mainIngredients,
-                totalMinutes = recipe.totalMin,
-                complexity = recipe.complexity,
-                spiceLevel = recipe.spiceLevel,
-                dietType = recipe.dietType,
-                contains = emptyList(),
-                kcalPerServing = recipe.kcalPerServing,
-                makeAhead = recipe.makeAhead,
-                freezerFriendly = recipe.freezerFriendly,
-                equipment = emptyList(),
-                favourite = recipe.isFavourite,
-                lastCookedDate = lastCookedDate
+        val now = System.currentTimeMillis()
+        database.withTransaction {
+            chatDao.insertMessage(
+                ChatMessageEntity(
+                    sessionId = sessionId,
+                    role = ChatMessageEntity.ROLE_USER,
+                    text = trimmed,
+                    includeWeb = includeWeb,
+                    createdAt = now
+                )
             )
-        }
-
-        // 3. Load last 10 messages for conversation history
-        val lastEntities = chatDao.getLastMessagesForSession(sessionId, limit = 10)
-        // Reverse so it's in chronological order
-        val history = lastEntities.reversed().map { entity ->
-            ChatMessage(
-                id = entity.id,
-                sessionId = entity.sessionId,
-                role = entity.role,
-                text = entity.text,
-                includeWeb = entity.includeWeb,
-                suggestionsJson = entity.suggestionsJson,
-                createdAt = entity.createdAt
-            )
+            chatDao.touchSession(sessionId, now)
+            val session = chatDao.getSession(sessionId)
+            if (session != null && session.title == DEFAULT_SESSION_TITLE) {
+                chatDao.updateSessionTitle(sessionId, trimmed.take(TITLE_MAX_LENGTH))
+            }
         }
 
         val maxSearches = settingsStore.maxWebSearchesFlow.first()
+        val web = if (includeWeb) async { chatPlanner.searchWeb(trimmed, maxSearches) } else null
 
-        // 4. Call ChatPlanner
-        val planResult = chatPlanner.planChat(
-            userMessage = trimmed,
-            history = history,
-            libraryRecipes = indexEntries,
-            includeWeb = includeWeb,
-            maxWebSearches = maxSearches
-        )
-
-        if (planResult.isFailure) {
-            return Result.failure(planResult.exceptionOrNull() ?: RuntimeException("Chat planner failed"))
+        val libraryResult = try {
+            val index = recipeIndexBuilder.build()
+            val ftsHits = if (index.size > ChatPlanner.PRE_FILTER_THRESHOLD) {
+                recipeIndexBuilder.ftsHits(ChatPlanner.searchTerms(trimmed))
+            } else {
+                emptyMap()
+            }
+            chatPlanner.planLibrary(
+                userMessage = trimmed,
+                history = history,
+                libraryRecipes = index,
+                ftsHits = ftsHits,
+                today = LocalDate.now().toString()
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
         }
 
-        val result = planResult.getOrThrow()
-        val suggestionsJson = json.encodeToString(result)
+        if (libraryResult.isFailure) {
+            web?.cancel()
+            return@coroutineScope Result.failure(libraryResult.exceptionOrNull() ?: RuntimeException("Chat planner failed"))
+        }
 
-        // 5. Insert assistant response
+        val plan = libraryResult.getOrThrow()
+        val fallbackModel = settingsStore.chatModelIdFlow.first()
         val assistantEntity = ChatMessageEntity(
             sessionId = sessionId,
             role = ChatMessageEntity.ROLE_ASSISTANT,
-            text = result.reply,
+            text = plan.reply,
             includeWeb = includeWeb,
-            suggestionsJson = suggestionsJson,
-            createdAt = System.currentTimeMillis()
+            suggestionsJson = json.encodeToString(plan),
+            createdAt = maxOf(System.currentTimeMillis(), now + 1)
         )
-        val assistantMsgId = chatDao.insertMessage(assistantEntity)
-
-        // 6. Record LLM usage in DB
-        val fallbackModel = settingsStore.chatModelIdFlow.first()
-        if (result.usage.inputTokens > 0 || result.usage.outputTokens > 0) {
-            llmUsageDao.insert(
-                LlmUsageEntity(
-                    purpose = LlmUsageEntity.PURPOSE_CHAT,
-                    model = result.usage.model ?: fallbackModel,
-                    inputTokens = result.usage.inputTokens,
-                    outputTokens = result.usage.outputTokens,
-                    cacheReadTokens = result.usage.cacheReadTokens,
-                    webSearches = 0
-                )
-            )
-        }
-        if (result.usage.webSearches > 0) {
-            llmUsageDao.insert(
-                LlmUsageEntity(
-                    purpose = LlmUsageEntity.PURPOSE_WEB,
-                    model = result.usage.model ?: fallbackModel,
-                    inputTokens = 0,
-                    outputTokens = 0,
-                    cacheReadTokens = 0,
-                    webSearches = result.usage.webSearches
-                )
-            )
+        val assistantMsgId = database.withTransaction {
+            val id = chatDao.insertMessage(assistantEntity)
+            logUsage(LlmUsageEntity.PURPOSE_CHAT, plan.usage, fallbackModel)
+            chatDao.touchSession(sessionId, assistantEntity.createdAt)
+            id
         }
 
-        return Result.success(
-            ChatMessage(
-                id = assistantMsgId,
-                sessionId = sessionId,
-                role = ChatMessageEntity.ROLE_ASSISTANT,
-                text = result.reply,
-                includeWeb = includeWeb,
-                suggestionsJson = suggestionsJson,
-                createdAt = assistantEntity.createdAt
+        var finalPlan = plan
+        if (web != null) {
+            val webResult = try {
+                web.await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure<WebPicks>(e)
+            }
+            finalPlan = webResult.fold(
+                onSuccess = { plan.copy(webSuggestions = it.picks, webUsage = it.usage) },
+                onFailure = { plan.copy(webNote = "Web search failed: ${llmErrorMessage(it)}") }
             )
+            database.withTransaction {
+                chatDao.updateSuggestions(assistantMsgId, json.encodeToString(finalPlan))
+                finalPlan.webUsage?.let { logUsage(LlmUsageEntity.PURPOSE_WEB, it, fallbackModel) }
+            }
+        }
+
+        Result.success(
+            assistantEntity.copy(id = assistantMsgId, suggestionsJson = json.encodeToString(finalPlan)).toModel()
         )
     }
 
@@ -192,9 +162,9 @@ class ChatRepository @Inject constructor(
         chatDao.clearMessagesForSession(sessionId)
     }
 
-    suspend fun saveWebRecipe(url: String): Long? {
-        val captureStart = recipeRepository.startCapture(url)
-        return when (captureStart) {
+    /** Hands a web pick's URL to the importer; returns the recipe ID, or null if it isn't a usable link. */
+    suspend fun saveWebRecipe(url: String): Long? =
+        when (val captureStart = recipeRepository.startCapture(url)) {
             is CaptureStart.Created -> {
                 CaptureWorker.enqueue(context, captureStart.recipeId)
                 captureStart.recipeId
@@ -202,5 +172,28 @@ class ChatRepository @Inject constructor(
             is CaptureStart.Existing -> captureStart.recipeId
             CaptureStart.NoLink -> null
         }
+
+    private suspend fun logUsage(purpose: String, usage: LlmUsage, fallbackModel: String) {
+        if (usage.inputTokens == 0 && usage.outputTokens == 0 && usage.webSearches == 0) return
+        llmUsageDao.insert(
+            LlmUsageEntity(
+                purpose = purpose,
+                model = usage.model ?: fallbackModel,
+                inputTokens = usage.inputTokens,
+                outputTokens = usage.outputTokens,
+                cacheReadTokens = usage.cacheReadTokens,
+                webSearches = usage.webSearches
+            )
+        )
     }
+
+    private fun ChatMessageEntity.toModel() = ChatMessage(
+        id = id,
+        sessionId = sessionId,
+        role = role,
+        text = text,
+        includeWeb = includeWeb,
+        suggestionsJson = suggestionsJson,
+        createdAt = createdAt
+    )
 }

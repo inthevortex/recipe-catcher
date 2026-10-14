@@ -60,6 +60,42 @@ class DuckDuckGoSearchProviderTest {
     }
 
     @Test
+    fun testParseSkipsAdsDuplicatesAndDuckDuckGoLinks() {
+        val html = """
+        <div class="result result--ad">
+          <h2 class="result__title"><a class="result__a" href="https://duckduckgo.com/y.js?ad_domain=shop.com&u3=x">Buy paneer</a></h2>
+        </div>
+        <div class="result web-result">
+          <h2 class="result__title"><a class="result__a" href="https://duckduckgo.com/about">About DuckDuckGo</a></h2>
+        </div>
+        <div class="result web-result">
+          <h2 class="result__title"><a class="result__a" href="https://site.com/dal/">Dal</a></h2>
+        </div>
+        <div class="result web-result">
+          <h2 class="result__title"><a class="result__a" href="https://site.com/dal">Dal again</a></h2>
+        </div>
+        """.trimIndent()
+        val provider = DuckDuckGoSearchProvider(object : HttpFetcher {
+            override suspend fun get(url: String, headers: Map<String, String>) = HttpResponseData(200, html)
+        })
+
+        val results = provider.parseHtmlResults(html, maxResults = 5)
+
+        assertEquals(listOf("https://site.com/dal/"), results.map { it.url })
+    }
+
+    @Test
+    fun testMalformedOrBlockedPagesGiveNoResults() = runBlocking {
+        val provider = DuckDuckGoSearchProvider(object : HttpFetcher {
+            override suspend fun get(url: String, headers: Map<String, String>) = HttpResponseData(202, "<html><body>anomaly")
+        })
+
+        assertTrue(provider.search("dal", maxResults = 3).isEmpty())
+        assertTrue(provider.parseHtmlResults("<div class=\"result\"><a>no href", maxResults = 3).isEmpty())
+        assertTrue(provider.parseHtmlResults("", maxResults = 3).isEmpty())
+    }
+
+    @Test
     fun testSearchExecutesGetAndParses() = runBlocking {
         val fakeFetcher = object : HttpFetcher {
             override suspend fun get(url: String, headers: Map<String, String>): HttpResponseData {

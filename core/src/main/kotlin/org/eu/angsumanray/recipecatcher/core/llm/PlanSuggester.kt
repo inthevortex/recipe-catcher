@@ -11,7 +11,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -38,7 +37,10 @@ data class PlanSuggesterInput(
     val libraryRecipes: List<RecipeIndexEntry>,
     val inStockIngredients: List<String> = emptyList(),
     val lowStockIngredients: List<String> = emptyList(),
-    val availableLeftovers: List<String> = emptyList()
+    val availableLeftovers: List<String> = emptyList(),
+    /** Recipes whose cooked leftovers are still available; cooking them again is a last resort. */
+    val leftoverRecipeIds: Set<Long> = emptySet(),
+    val today: String? = null
 )
 
 @Serializable
@@ -63,6 +65,8 @@ class PlanSuggester(
 
     companion object {
         const val MAX_SUGGESTIONS_PER_SLOT = 3
+        const val MIN_PORTIONS = 1
+        const val MAX_PORTIONS = 50
 
         const val SYSTEM_PROMPT = """You are an intelligent meal planning assistant for an offline-first recipe app.
 Analyze the week's meal plan, available leftovers, pantry ingredients, and library recipes to suggest recipes for the empty plan slots.
@@ -70,9 +74,10 @@ Guidelines:
 1. Suggest meals ONLY by recipe_id from the provided recipe index.
 2. Prioritize using ingredients that are in stock or low in stock to prevent waste.
 3. Ensure variety across the week and avoid repeating recipes already planned.
-4. Favor user favourites and recipes that haven't been cooked recently.
-5. Provide a concise reason for each suggestion (e.g. "uses your spinach before it goes", "quick 20-min dinner").
-6. Provide up to 3 recipe suggestions per empty slot.
+4. Don't suggest cooking a recipe again while its leftovers are still available.
+5. Favor user favourites and recipes that haven't been cooked recently.
+6. Provide a concise reason for each suggestion (e.g. "uses your spinach before it goes", "quick 20-min dinner").
+7. Provide up to 3 recipe suggestions per empty slot, best first.
 
 You MUST respond strictly with a valid JSON array in a ```json ... ``` code fence adhering to this schema:
 ```json
@@ -85,6 +90,57 @@ You MUST respond strictly with a valid JSON array in a ```json ... ``` code fenc
   }
 ]
 ```"""
+
+        /**
+         * Validates raw proposals: known slots and recipes only, one entry per slot and recipe,
+         * portions clamped to [MIN_PORTIONS]..[MAX_PORTIONS], at most [MAX_SUGGESTIONS_PER_SLOT] per slot.
+         */
+        fun validate(
+            raw: List<ProposedSlotAssignment>,
+            validSlotIds: Set<Long>,
+            validRecipeIds: Set<Long>
+        ): List<ProposedSlotAssignment> {
+            val perSlotCount = mutableMapOf<Long, Int>()
+            val seen = mutableSetOf<Pair<Long, Long>>()
+            val validated = mutableListOf<ProposedSlotAssignment>()
+            for (suggestion in raw) {
+                if (suggestion.slotId !in validSlotIds || suggestion.recipeId !in validRecipeIds) continue
+                if (!seen.add(suggestion.slotId to suggestion.recipeId)) continue
+                val count = perSlotCount.getOrDefault(suggestion.slotId, 0)
+                if (count >= MAX_SUGGESTIONS_PER_SLOT) continue
+                validated.add(
+                    suggestion.copy(
+                        portions = suggestion.portions.coerceIn(MIN_PORTIONS, MAX_PORTIONS),
+                        reason = suggestion.reason.trim()
+                    )
+                )
+                perSlotCount[suggestion.slotId] = count + 1
+            }
+            return validated
+        }
+
+        /**
+         * One pick per slot for "Fill empty slots", in [slotOrder]. Each slot takes its best candidate
+         * that isn't already planned, picked for an earlier slot, or still around as leftovers; if every
+         * candidate repeats, it falls back to the model's first choice.
+         */
+        fun defaultSelection(
+            suggestions: List<ProposedSlotAssignment>,
+            slotOrder: List<Long>,
+            alreadyPlannedRecipeIds: Set<Long> = emptySet(),
+            leftoverRecipeIds: Set<Long> = emptySet()
+        ): List<ProposedSlotAssignment> {
+            val bySlot = suggestions.groupBy { it.slotId }
+            val used = (alreadyPlannedRecipeIds + leftoverRecipeIds).toMutableSet()
+            val picks = mutableListOf<ProposedSlotAssignment>()
+            for (slotId in slotOrder.distinct()) {
+                val candidates = bySlot[slotId].orEmpty()
+                val pick = candidates.firstOrNull { it.recipeId !in used } ?: candidates.firstOrNull() ?: continue
+                used.add(pick.recipeId)
+                picks.add(pick)
+            }
+            return picks
+        }
     }
 
     suspend fun suggestMeals(input: PlanSuggesterInput): Result<PlanSuggesterResult> {
@@ -102,15 +158,20 @@ You MUST respond strictly with a valid JSON array in a ```json ... ``` code fenc
         val validSlotIds = input.emptySlots.map { it.slotId }.toSet()
 
         val promptText = buildString {
+            input.today?.let {
+                appendLine("Today is $it.")
+                appendLine()
+            }
             appendLine("=== RECIPE INDEX (${input.libraryRecipes.size} recipes) ===")
-            appendLine("id | title | tags | main ingredients | total min | complexity | spice | diet | contains | kcal | make-ahead / freezer | equipment | favourite | last cooked")
+            appendLine(RecipeIndexEntry.HEADER)
             input.libraryRecipes.forEach { appendLine(it.toIndexLine()) }
             appendLine()
 
             if (input.existingAssignments.isNotEmpty()) {
                 appendLine("=== ALREADY PLANNED THIS WEEK ===")
                 input.existingAssignments.forEach {
-                    appendLine("- Day: ${it.day}, Slot: ${it.slotName} -> Recipe: ${it.recipeTitle}")
+                    val id = it.recipeId?.let { rId -> " (recipe_id $rId)" } ?: ""
+                    appendLine("- Day: ${it.day}, Slot: ${it.slotName} -> ${it.recipeTitle}$id")
                 }
                 appendLine()
             }
@@ -143,7 +204,7 @@ You MUST respond strictly with a valid JSON array in a ```json ... ``` code fenc
 
         val requestPayload = buildJsonObject {
             put("model", modelId)
-            put("max_tokens", 1500)
+            put("max_tokens", 2000)
             putJsonArray("system") {
                 add(buildJsonObject {
                     put("type", "text")
@@ -168,35 +229,17 @@ You MUST respond strictly with a valid JSON array in a ```json ... ``` code fenc
 
             val statusCode = response.status.value
             val responseBody = response.bodyAsText()
-
             if (statusCode !in 200..299) {
-                return Result.failure(RuntimeException("Anthropic API error: HTTP $statusCode $responseBody"))
+                return Result.failure(AnthropicSupport.httpError(statusCode, responseBody, modelId))
             }
 
             val anthropicResponse = json.decodeFromString<AnthropicMessageResponse>(responseBody)
-            val textContent = anthropicResponse.content.firstOrNull { it.type == "text" }?.text
-                ?: return Result.failure(RuntimeException("No text content returned from Claude"))
-
-            val jsonBlock = extractJsonBlock(textContent)
-            val rawSuggestions = json.decodeFromString<List<ProposedSlotAssignment>>(jsonBlock)
-
-            // Validate:
-            // 1. Must be in validSlotIds
-            // 2. Must be in validRecipeIds
-            // 3. At most 3 per slot
-            val perSlotCount = mutableMapOf<Long, Int>()
-            val validated = mutableListOf<ProposedSlotAssignment>()
-
-            for (suggestion in rawSuggestions) {
-                if (suggestion.slotId !in validSlotIds || suggestion.recipeId !in validRecipeIds) {
-                    continue
-                }
-                val count = perSlotCount.getOrDefault(suggestion.slotId, 0)
-                if (count < MAX_SUGGESTIONS_PER_SLOT) {
-                    validated.add(suggestion)
-                    perSlotCount[suggestion.slotId] = count + 1
-                }
+            val textContent = AnthropicSupport.responseText(anthropicResponse)
+            if (textContent.isBlank()) {
+                return Result.failure(RuntimeException("No text content returned from Claude"))
             }
+
+            val rawSuggestions = json.decodeFromString<List<ProposedSlotAssignment>>(AnthropicSupport.extractJsonBlock(textContent))
 
             val usage = LlmUsage(
                 inputTokens = anthropicResponse.usage?.inputTokens ?: 0,
@@ -205,31 +248,11 @@ You MUST respond strictly with a valid JSON array in a ```json ... ``` code fenc
                 model = anthropicResponse.model ?: modelId
             )
 
-            Result.success(PlanSuggesterResult(validated, usage))
+            Result.success(PlanSuggesterResult(validate(rawSuggestions, validSlotIds, validRecipeIds), usage))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
-    }
-
-    internal fun extractJsonBlock(text: String): String {
-        val trimmed = text.trim()
-        if (trimmed.startsWith("```json")) {
-            val content = trimmed.substringAfter("```json").substringBefore("```").trim()
-            if (content.isNotEmpty()) return content
-        }
-        if (trimmed.startsWith("```")) {
-            val content = trimmed.substringAfter("```").substringBefore("```").trim()
-            if (content.isNotEmpty()) return content
-        }
-
-        val firstArr = trimmed.indexOf('[')
-        val lastArr = trimmed.lastIndexOf(']')
-        if (firstArr != -1 && lastArr > firstArr) {
-            return trimmed.substring(firstArr, lastArr + 1)
-        }
-
-        return trimmed
     }
 }

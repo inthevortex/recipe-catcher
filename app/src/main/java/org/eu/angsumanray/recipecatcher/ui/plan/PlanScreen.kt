@@ -37,7 +37,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.runtime.mutableStateListOf
 import org.eu.angsumanray.recipecatcher.core.llm.ProposedSlotAssignment
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -115,7 +114,7 @@ fun PlanScreen(
                         )
                     } else {
                         IconButton(onClick = { viewModel.requestPlanSuggestions() }) {
-                            Icon(Icons.Default.Star, contentDescription = "Suggest meals with AI")
+                            Icon(Icons.Default.Star, contentDescription = "Fill empty slots with AI")
                         }
                     }
                     IconButton(onClick = { viewModel.copyLastWeekLayout() }) {
@@ -249,6 +248,7 @@ fun PlanScreen(
                         recipes = recipeMap,
                         onAddMeal = { selectedSlotForAddMeal = slot },
                         onDeleteSlot = { viewModel.deleteSlot(slot) },
+                        onSuggest = { viewModel.requestPlanSuggestions(slot.id) },
                         onToggleDone = { entryId -> viewModel.toggleEntryDone(entryId) },
                         onDeleteEntry = { entry -> viewModel.deleteEntry(entry) },
                         onMoveEntry = { entry -> entryToMove = entry },
@@ -358,9 +358,12 @@ fun PlanScreen(
     if (state.showSuggestionsDialog) {
         PlanSuggestionsDialog(
             suggestions = state.planSuggestions,
+            selection = state.suggestionSelection,
+            isApplying = state.isApplyingSuggestions,
             allSlots = state.weekSlots,
             allRecipes = state.allRecipes,
-            onApply = { selected -> viewModel.applyPlanSuggestions(selected) },
+            onToggle = { viewModel.toggleSuggestion(it) },
+            onApply = { viewModel.applyPlanSuggestions() },
             onDismiss = { viewModel.dismissSuggestionsDialog() }
         )
     }
@@ -373,6 +376,7 @@ fun SlotCard(
     recipes: Map<Long, RecipeEntity>,
     onAddMeal: () -> Unit,
     onDeleteSlot: () -> Unit,
+    onSuggest: () -> Unit,
     onToggleDone: (Long) -> Unit,
     onDeleteEntry: (PlanEntryEntity) -> Unit,
     onMoveEntry: (PlanEntryEntity) -> Unit,
@@ -418,6 +422,13 @@ fun SlotCard(
                         Icon(Icons.Default.MoreVert, contentDescription = "Slot options")
                     }
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Suggest with AI") },
+                            onClick = {
+                                showMenu = false
+                                onSuggest()
+                            }
+                        )
                         DropdownMenuItem(
                             text = { Text("Delete Slot") },
                             onClick = {
@@ -868,14 +879,17 @@ private fun leftoverLabel(
 @Composable
 fun PlanSuggestionsDialog(
     suggestions: List<ProposedSlotAssignment>,
+    selection: Map<Long, ProposedSlotAssignment>,
+    isApplying: Boolean,
     allSlots: List<PlanSlotEntity>,
     allRecipes: List<RecipeEntity>,
-    onApply: (List<ProposedSlotAssignment>) -> Unit,
+    onToggle: (ProposedSlotAssignment) -> Unit,
+    onApply: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val selected = remember { mutableStateListOf<ProposedSlotAssignment>().apply { addAll(suggestions) } }
     val slotsMap = remember(allSlots) { allSlots.associateBy { it.id } }
     val recipesMap = remember(allRecipes) { allRecipes.associateBy { it.id } }
+    val bySlot = remember(suggestions) { suggestions.groupBy { it.slotId } }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -887,73 +901,67 @@ fun PlanSuggestionsDialog(
                     .verticalScroll(rememberScrollState())
             ) {
                 Text(
-                    text = "Proposed recipe assignments for empty slots this week:",
+                    text = "Pick at most one recipe per slot. Untick a slot to leave it empty.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(modifier = Modifier.height(12.dp))
 
-                for (suggestion in suggestions) {
-                    val slot = slotsMap[suggestion.slotId]
-                    val recipe = recipesMap[suggestion.recipeId]
-                    val isChecked = selected.contains(suggestion)
+                for ((slotId, candidates) in bySlot) {
+                    val slot = slotsMap[slotId]
+                    val dayName = slot?.date?.dayOfWeek?.name?.lowercase()?.replaceFirstChar { it.uppercase() } ?: "Day"
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "$dayName ${slot?.date ?: ""} — ${slot?.name ?: "Slot"}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
 
-                    val dayName = slot?.date?.dayOfWeek?.name?.lowercase()
-                        ?.replaceFirstChar { it.uppercase() } ?: "Day"
-                    val slotTitle = "${slot?.date ?: ""} $dayName — ${slot?.name ?: "Slot"}"
-
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isChecked)
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                            else
-                                MaterialTheme.colorScheme.surfaceVariant
-                        )
-                    ) {
-                        Row(
+                    for (suggestion in candidates) {
+                        val isChecked = selection[slotId] == suggestion
+                        Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = isChecked,
-                                onCheckedChange = { checked ->
-                                    if (checked) {
-                                        if (!selected.contains(suggestion)) selected.add(suggestion)
-                                    } else {
-                                        selected.remove(suggestion)
-                                    }
-                                }
+                                .padding(vertical = 4.dp)
+                                .clickable(enabled = !isApplying) { onToggle(suggestion) },
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isChecked)
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                else
+                                    MaterialTheme.colorScheme.surfaceVariant
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = slotTitle,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Bold
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = isChecked,
+                                    enabled = !isApplying,
+                                    onCheckedChange = { onToggle(suggestion) }
                                 )
-                                Text(
-                                    text = recipe?.title ?: "Recipe #${suggestion.recipeId}",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                if (suggestion.reason.isNotBlank()) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = suggestion.reason,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        text = recipesMap[suggestion.recipeId]?.title ?: "Recipe #${suggestion.recipeId}",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    if (suggestion.reason.isNotBlank()) {
+                                        Text(
+                                            text = suggestion.reason,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Text(
+                                        text = "${suggestion.portions} portions",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.secondary
                                     )
                                 }
-                                Text(
-                                    text = "${suggestion.portions} portions",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.secondary
-                                )
                             }
                         }
                     }
@@ -962,14 +970,14 @@ fun PlanSuggestionsDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onApply(selected.toList()) },
-                enabled = selected.isNotEmpty()
+                onClick = onApply,
+                enabled = selection.isNotEmpty() && !isApplying
             ) {
-                Text("Apply (${selected.size})")
+                Text("Apply (${selection.size})")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = onDismiss, enabled = !isApplying) {
                 Text("Cancel")
             }
         }

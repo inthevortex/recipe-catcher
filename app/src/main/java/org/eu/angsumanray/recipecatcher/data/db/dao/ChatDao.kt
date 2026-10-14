@@ -12,11 +12,24 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.ChatSessionEntity
 @Dao
 interface ChatDao {
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    // ABORT, not REPLACE: replacing a session row would cascade-delete its messages.
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertSession(session: ChatSessionEntity): Long
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertMessage(message: ChatMessageEntity): Long
+
+    @Query("UPDATE chat_message SET suggestions_json = :suggestionsJson WHERE id = :id")
+    suspend fun updateSuggestions(id: Long, suggestionsJson: String?)
+
+    @Query("UPDATE chat_session SET updated_at = :updatedAt WHERE id = :id")
+    suspend fun touchSession(id: Long, updatedAt: Long)
+
+    @Query("UPDATE chat_session SET title = :title WHERE id = :id")
+    suspend fun updateSessionTitle(id: Long, title: String)
+
+    @Query("SELECT * FROM chat_session WHERE id = :id LIMIT 1")
+    suspend fun getSession(id: Long): ChatSessionEntity?
 
     @Delete
     suspend fun deleteSession(session: ChatSessionEntity)
@@ -24,10 +37,10 @@ interface ChatDao {
     @Query("SELECT * FROM chat_session ORDER BY updated_at DESC")
     fun observeSessions(): Flow<List<ChatSessionEntity>>
 
-    @Query("SELECT * FROM chat_message WHERE session_id = :sessionId ORDER BY created_at ASC")
+    @Query("SELECT * FROM chat_message WHERE session_id = :sessionId ORDER BY created_at ASC, id ASC")
     fun observeMessagesForSession(sessionId: Long): Flow<List<ChatMessageEntity>>
 
-    @Query("SELECT * FROM chat_message WHERE session_id = :sessionId ORDER BY created_at DESC LIMIT :limit")
+    @Query("SELECT * FROM chat_message WHERE session_id = :sessionId ORDER BY created_at DESC, id DESC LIMIT :limit")
     suspend fun getLastMessagesForSession(sessionId: Long, limit: Int = 10): List<ChatMessageEntity>
 
     @Query("SELECT * FROM chat_session ORDER BY id ASC LIMIT 1")
@@ -39,6 +52,6 @@ interface ChatDao {
     @Query("DELETE FROM chat_message")
     suspend fun clearAllMessages()
 
-    @Query("SELECT * FROM chat_message WHERE session_id = :sessionId ORDER BY created_at ASC")
+    @Query("SELECT * FROM chat_message WHERE session_id = :sessionId ORDER BY created_at ASC, id ASC")
     suspend fun getMessagesForSession(sessionId: Long): List<ChatMessageEntity>
 }

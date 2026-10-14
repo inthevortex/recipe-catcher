@@ -63,6 +63,9 @@ class SettingsStore @Inject constructor(
         private val KEY_CHAT_MODEL_ID = stringPreferencesKey("chat_model_id")
         private val KEY_INCLUDE_WEB_DEFAULT = androidx.datastore.preferences.core.booleanPreferencesKey("include_web_default")
         private val KEY_MAX_WEB_SEARCHES = androidx.datastore.preferences.core.intPreferencesKey("max_web_searches")
+        const val DEFAULT_MAX_WEB_SEARCHES = 3
+        const val MIN_WEB_SEARCHES = 1
+        const val MAX_WEB_SEARCHES = 10
     }
 
     val weekStartsOnFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
@@ -171,7 +174,9 @@ class SettingsStore @Inject constructor(
     }
 
     val chatModelIdFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
-        prefs[KEY_CHAT_MODEL_ID] ?: prefs[KEY_MODEL_ID] ?: DEFAULT_MODEL_ID
+        prefs[KEY_CHAT_MODEL_ID]?.takeIf { it.isNotBlank() }
+            ?: prefs[KEY_MODEL_ID]?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_MODEL_ID
     }
 
     val includeWebDefaultFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
@@ -179,12 +184,18 @@ class SettingsStore @Inject constructor(
     }
 
     val maxWebSearchesFlow: Flow<Int> = context.settingsDataStore.data.map { prefs ->
-        prefs[KEY_MAX_WEB_SEARCHES] ?: 3
+        (prefs[KEY_MAX_WEB_SEARCHES] ?: DEFAULT_MAX_WEB_SEARCHES).coerceIn(MIN_WEB_SEARCHES, MAX_WEB_SEARCHES)
+    }
+
+    /** The chat model as typed in Settings; blank means "same as the extraction model". */
+    val chatModelIdSettingFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_CHAT_MODEL_ID].orEmpty()
     }
 
     suspend fun setChatModelId(modelId: String) {
         context.settingsDataStore.edit { prefs ->
-            prefs[KEY_CHAT_MODEL_ID] = modelId.trim().ifEmpty { DEFAULT_MODEL_ID }
+            val trimmed = modelId.trim()
+            if (trimmed.isEmpty()) prefs.remove(KEY_CHAT_MODEL_ID) else prefs[KEY_CHAT_MODEL_ID] = trimmed
         }
     }
 
@@ -196,7 +207,7 @@ class SettingsStore @Inject constructor(
 
     suspend fun setMaxWebSearches(max: Int) {
         context.settingsDataStore.edit { prefs ->
-            prefs[KEY_MAX_WEB_SEARCHES] = max.coerceIn(1, 10)
+            prefs[KEY_MAX_WEB_SEARCHES] = max.coerceIn(MIN_WEB_SEARCHES, MAX_WEB_SEARCHES)
         }
     }
 

@@ -1,7 +1,9 @@
 package org.eu.angsumanray.recipecatcher.ui.chat
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -94,7 +96,9 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(state.messages.size) {
+    // Also re-runs when web cards are added to the last reply.
+    val lastMessage = state.messages.lastOrNull()
+    LaunchedEffect(state.messages.size, lastMessage?.suggestionsJson) {
         if (state.messages.isNotEmpty()) {
             listState.animateScrollToItem(state.messages.size - 1)
         }
@@ -172,6 +176,7 @@ fun ChatScreen(
                                 message = message,
                                 viewModel = viewModel,
                                 recipeTitles = state.recipeTitles,
+                                savingUrls = state.savingUrls,
                                 onNavigateToViewer = onNavigateToViewer,
                                 onNavigateToReview = onNavigateToReview
                             )
@@ -198,6 +203,7 @@ fun ChatScreen(
                 for (prompt in quickPrompts) {
                     AssistChip(
                         onClick = { viewModel.sendMessage(prompt) },
+                        enabled = !state.isSending && !state.isLoading,
                         label = { Text(prompt, style = MaterialTheme.typography.bodySmall) }
                     )
                 }
@@ -309,6 +315,7 @@ private fun ChatMessageItem(
     message: ChatMessage,
     viewModel: ChatViewModel,
     recipeTitles: Map<Long, String>,
+    savingUrls: Set<String>,
     onNavigateToViewer: (Long) -> Unit,
     onNavigateToReview: (Long) -> Unit
 ) {
@@ -375,10 +382,13 @@ private fun ChatMessageItem(
                             )
                             Spacer(modifier = Modifier.height(6.dp))
                             for (suggestion in planResult.suggestions) {
+                                val title = recipeTitles[suggestion.recipeId]
                                 LibraryRecipeCard(
                                     suggestion = suggestion,
-                                    recipeTitle = recipeTitles[suggestion.recipeId] ?: "Recipe #${suggestion.recipeId}",
-                                    onTap = { onNavigateToViewer(suggestion.recipeId) }
+                                    recipeTitle = title ?: "No longer in your library",
+                                    onTap = if (title != null) {
+                                        { onNavigateToViewer(suggestion.recipeId) }
+                                    } else null
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                             }
@@ -397,6 +407,7 @@ private fun ChatMessageItem(
                             for (webPick in planResult.webSuggestions) {
                                 WebRecipeCard(
                                     suggestion = webPick,
+                                    isSaving = webPick.url in savingUrls,
                                     onSave = {
                                         viewModel.saveWebRecipe(webPick.url) { savedId ->
                                             onNavigateToReview(savedId)
@@ -405,6 +416,24 @@ private fun ChatMessageItem(
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                             }
+                        }
+
+                        if (planResult.webNote.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = planResult.webNote,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontStyle = FontStyle.Italic,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        } else if (planResult.webUsage != null && planResult.webSuggestions.isEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "No full web recipes matched this time.",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontStyle = FontStyle.Italic,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
@@ -443,12 +472,12 @@ private fun ChatMessageItem(
 private fun LibraryRecipeCard(
     suggestion: RecipeSuggestion,
     recipeTitle: String,
-    onTap: () -> Unit
+    onTap: (() -> Unit)?
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onTap),
+            .then(if (onTap != null) Modifier.clickable(onClick = onTap) else Modifier),
         shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
@@ -465,7 +494,8 @@ private fun LibraryRecipeCard(
                     text = recipeTitle,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
+                    fontStyle = if (onTap == null) FontStyle.Italic else FontStyle.Normal,
+                    color = if (onTap != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Icon(
                     Icons.Default.Star,
@@ -499,6 +529,7 @@ private fun LibraryRecipeCard(
 @Composable
 private fun WebRecipeCard(
     suggestion: WebRecipeSuggestion,
+    isSaving: Boolean,
     onSave: () -> Unit
 ) {
     val context = LocalContext.current
@@ -556,10 +587,9 @@ private fun WebRecipeCard(
                 OutlinedButton(
                     onClick = {
                         try {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(suggestion.url))
-                            context.startActivity(intent)
-                        } catch (e: Exception) {
-                            // Ignored if browser not available
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(suggestion.url)))
+                        } catch (e: ActivityNotFoundException) {
+                            Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
                         }
                     },
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
@@ -578,10 +608,11 @@ private fun WebRecipeCard(
 
                 Button(
                     onClick = onSave,
+                    enabled = !isSaving,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                     modifier = Modifier.height(32.dp)
                 ) {
-                    Text("Save", style = MaterialTheme.typography.labelSmall)
+                    Text(if (isSaving) "Saving…" else "Save", style = MaterialTheme.typography.labelSmall)
                 }
             }
         }

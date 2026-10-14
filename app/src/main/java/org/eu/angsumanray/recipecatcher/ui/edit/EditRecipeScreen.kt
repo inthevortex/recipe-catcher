@@ -53,6 +53,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,7 +72,8 @@ fun EditRecipeScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     var showPasteDialog by remember { mutableStateOf(false) }
-    var showFindWithAiDialog by remember { mutableStateOf(false) }
+    var showFindWithAiDialog by rememberSaveable { mutableStateOf(false) }
+    var pendingCandidate by remember { mutableStateOf<WebRecipeSuggestion?>(null) }
     var pasteInput by remember { mutableStateOf("") }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
 
@@ -598,13 +600,41 @@ fun EditRecipeScreen(
                 viewModel.searchFindWithAi(dish, hints)
             },
             onSelectCandidate = { candidate ->
-                viewModel.applyAiCandidate(candidate) {
-                    showFindWithAiDialog = false
+                if (EditRecipeViewModel.formHasContent(state)) {
+                    pendingCandidate = candidate
+                } else {
+                    viewModel.applyAiCandidate(candidate, replaceExisting = true) {
+                        showFindWithAiDialog = false
+                    }
                 }
             },
             onFillMissingMetadata = {
                 viewModel.fillMissingMetadataWithAi {
                     showFindWithAiDialog = false
+                }
+            }
+        )
+    }
+
+    // Dialog: the form already has content, so ask before Find with AI touches it
+    pendingCandidate?.let { candidate ->
+        AlertDialog(
+            onDismissRequest = { pendingCandidate = null },
+            title = { Text("Use \"${candidate.title}\"?") },
+            text = { Text("This form already has content. Fill only the empty fields, or replace everything with the found recipe?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingCandidate = null
+                    viewModel.applyAiCandidate(candidate, replaceExisting = false) { showFindWithAiDialog = false }
+                }) { Text("Fill empty") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { pendingCandidate = null }) { Text("Cancel") }
+                    TextButton(onClick = {
+                        pendingCandidate = null
+                        viewModel.applyAiCandidate(candidate, replaceExisting = true) { showFindWithAiDialog = false }
+                    }) { Text("Replace") }
                 }
             }
         )
@@ -643,8 +673,8 @@ fun FindWithAiDialog(
     onSelectCandidate: (WebRecipeSuggestion) -> Unit,
     onFillMissingMetadata: () -> Unit
 ) {
-    var dishNameInput by remember { mutableStateOf(state.title) }
-    var hintsInput by remember { mutableStateOf("") }
+    var dishNameInput by rememberSaveable { mutableStateOf(state.title) }
+    var hintsInput by rememberSaveable { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
