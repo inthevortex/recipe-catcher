@@ -86,7 +86,8 @@ fun LibraryScreen(
     onNavigateToWriteRecipe: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onNavigateToViewer: (Long) -> Unit,
-    onNavigateToEdit: (Long) -> Unit
+    onNavigateToEdit: (Long) -> Unit,
+    onNavigateToReview: (Long) -> Unit
 ) {
     val filter by viewModel.filter.collectAsState()
     val savedRecipes by viewModel.savedRecipes.collectAsState()
@@ -227,7 +228,7 @@ fun LibraryScreen(
                                         pendingRecipes.forEach { pending ->
                                             PendingCard(
                                                 recipe = pending,
-                                                onEditManually = { onNavigateToEdit(pending.id) },
+                                                onReview = { onNavigateToReview(pending.id) },
                                                 onRetry = { viewModel.retryCapture(pending) },
                                                 onDelete = { viewModel.deleteRecipe(pending.id) }
                                             )
@@ -431,99 +432,44 @@ private fun FilterChipsRow(
             }
         }
 
-        // Favourites
-        FilterChip(
-            selected = filter.isFavourite == true,
-            onClick = onFavouriteToggled,
-            label = { Text("Favourites") }
-        )
-
-        // Never Cooked
-        FilterChip(
-            selected = filter.neverCooked,
-            onClick = onNeverCookedToggled,
-            label = { Text("Never cooked") }
-        )
-
-        // To review (bulk imports)
-        FilterChip(
-            selected = filter.toReview == true,
-            onClick = onToReviewToggled,
-            label = { Text("To review") }
-        )
-
-        // Diet Type Filters
-        listOf("vegan", "vegetarian", "eggetarian", "non-veg").forEach { diet ->
-            FilterChip(
-                selected = filter.dietType.equals(diet, ignoreCase = true),
-                onClick = { onDietSelected(diet) },
-                label = { Text(diet.capitalize()) }
-            )
+        val chips = buildList {
+            add(FilterChipSpec("Favourites", filter.isFavourite == true, onFavouriteToggled))
+            add(FilterChipSpec("Never cooked", filter.neverCooked, onNeverCookedToggled))
+            add(FilterChipSpec("To review", filter.toReview == true, onToReviewToggled))
+            listOf("vegan", "vegetarian", "eggetarian", "non-veg").forEach { diet ->
+                add(FilterChipSpec(diet.capitalize(), filter.dietType.equals(diet, ignoreCase = true)) { onDietSelected(diet) })
+            }
+            allDiet.forEach { dietTag ->
+                add(FilterChipSpec("Without ${dietTag.name}", dietTag.id in filter.withoutDietTagIds) { onWithoutDietToggled(dietTag.id) })
+            }
+            listOf("easy", "medium", "hard").forEach { level ->
+                add(FilterChipSpec(level.capitalize(), filter.complexity.equals(level, ignoreCase = true)) { onComplexitySelected(level) })
+            }
+            allEquipment.forEach { eqTag ->
+                add(FilterChipSpec(eqTag.name, eqTag.id in filter.equipmentTagIds) { onEquipmentToggled(eqTag.id) })
+            }
+            listOf("mild", "medium", "hot").forEach { spice ->
+                add(FilterChipSpec("${spice.capitalize()} spice", filter.spiceLevel.equals(spice, ignoreCase = true)) { onSpiceSelected(spice) })
+            }
+            add(FilterChipSpec("Make-ahead", filter.makeAhead == true, onMakeAheadToggled))
+            add(FilterChipSpec("Freezer-friendly", filter.freezerFriendly == true, onFreezerToggled))
+            allTags.forEach { tag ->
+                add(FilterChipSpec(tag.name, tag.id in filter.tagIds) { onTagToggled(tag.id) })
+            }
         }
 
-        // Without Diet Filters ("Without Dairy", "Without Gluten", etc.)
-        allDiet.forEach { dietTag ->
-            val isExcluded = filter.withoutDietTagIds.contains(dietTag.id)
+        // Selected chips stay pinned at the start of the row.
+        chips.sortedByDescending { it.selected }.forEach { chip ->
             FilterChip(
-                selected = isExcluded,
-                onClick = { onWithoutDietToggled(dietTag.id) },
-                label = { Text("Without ${dietTag.name}") }
-            )
-        }
-
-        // Complexity
-        listOf("easy", "medium", "hard").forEach { level ->
-            FilterChip(
-                selected = filter.complexity.equals(level, ignoreCase = true),
-                onClick = { onComplexitySelected(level) },
-                label = { Text(level.capitalize()) }
-            )
-        }
-
-        // Equipment
-        allEquipment.forEach { eqTag ->
-            val isSelected = filter.equipmentTagIds.contains(eqTag.id)
-            FilterChip(
-                selected = isSelected,
-                onClick = { onEquipmentToggled(eqTag.id) },
-                label = { Text(eqTag.name) }
-            )
-        }
-
-        // Spice Level
-        listOf("mild", "medium", "hot").forEach { spice ->
-            FilterChip(
-                selected = filter.spiceLevel.equals(spice, ignoreCase = true),
-                onClick = { onSpiceSelected(spice) },
-                label = { Text(spice.capitalize()) }
-            )
-        }
-
-        // Make-ahead
-        FilterChip(
-            selected = filter.makeAhead == true,
-            onClick = onMakeAheadToggled,
-            label = { Text("Make-ahead") }
-        )
-
-        // Freezer-friendly
-        FilterChip(
-            selected = filter.freezerFriendly == true,
-            onClick = onFreezerToggled,
-            label = { Text("Freezer-friendly") }
-        )
-
-        // General Tags
-        allTags.forEach { tag ->
-            val isSelected = filter.tagIds.contains(tag.id)
-            FilterChip(
-                selected = isSelected,
-                onClick = { onTagToggled(tag.id) },
-                label = { Text(tag.name) }
+                selected = chip.selected,
+                onClick = chip.onClick,
+                label = { Text(chip.label) }
             )
         }
     }
 }
+
+private data class FilterChipSpec(val label: String, val selected: Boolean, val onClick: () -> Unit)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -673,7 +619,7 @@ private fun RecipeGridCard(
 @Composable
 private fun PendingCard(
     recipe: RecipeEntity,
-    onEditManually: () -> Unit,
+    onReview: () -> Unit,
     onRetry: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -753,10 +699,13 @@ private fun PendingCard(
                     }
                 }
 
-                Button(onClick = onEditManually) {
+                // Nothing to review until the capture job has fetched and read the post.
+                val isCapturing = recipe.status == RecipeEntity.STATUS_PENDING_FETCH ||
+                    recipe.status == RecipeEntity.STATUS_PENDING_EXTRACT
+                Button(onClick = onReview, enabled = !isCapturing) {
                     Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text(if (recipe.status == RecipeEntity.STATUS_NEEDS_REVIEW) "Review" else "Edit manually")
+                    Text("Review")
                 }
             }
         }

@@ -46,7 +46,7 @@ class ShareReceiverActivity : ComponentActivity() {
                 Toast.makeText(this, "Already saved", Toast.LENGTH_SHORT).show()
                 startActivity(Intent(this, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    putExtra("recipe_id", start.recipeId)
+                    putExtra(MainActivity.EXTRA_RECIPE_ID, start.recipeId)
                 })
             }
             is CaptureStart.Created -> {
@@ -54,7 +54,7 @@ class ShareReceiverActivity : ComponentActivity() {
                 Toast.makeText(this, "Capturing recipe...", Toast.LENGTH_SHORT).show()
                 startActivity(Intent(this, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    putExtra("pending_recipe_id", start.recipeId)
+                    putExtra(MainActivity.EXTRA_PENDING_RECIPE_ID, start.recipeId)
                 })
             }
         }

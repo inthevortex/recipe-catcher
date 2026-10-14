@@ -70,6 +70,9 @@ interface RecipeTagDao {
     @Query("DELETE FROM recipe_tag WHERE tag_id = :tagId")
     suspend fun deleteByTagId(tagId: Long)
 
+    @Query("SELECT tag_id FROM recipe_tag WHERE recipe_id = :recipeId AND source = :source")
+    suspend fun getTagIdsForRecipe(recipeId: Long, source: String): List<Long>
+
     @Query("SELECT recipe_id FROM recipe_tag WHERE tag_id = :tagId")
     suspend fun getRecipeIdsForTag(tagId: Long): List<Long>
 }

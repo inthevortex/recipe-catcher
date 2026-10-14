@@ -10,15 +10,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractionInput
+import org.eu.angsumanray.recipecatcher.core.llm.NoRecipeFoundException
 import org.eu.angsumanray.recipecatcher.core.llm.RecipeExtractor
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.eu.angsumanray.recipecatcher.data.db.dao.TagDao
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
+import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeTagEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.StepEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.data.repo.TagRepository
+import org.eu.angsumanray.recipecatcher.data.repo.toExtractionUsageEntity
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import java.util.UUID
 import javax.inject.Inject
@@ -29,7 +32,7 @@ data class EditRecipeUiState(
     val isNewRecipe: Boolean = true,
     val title: String = "",
     val description: String = "",
-    val servings: Int = 4,
+    val servingsText: String = "4",
     val prepMin: Int = 0,
     val cookMin: Int = 0,
     val totalMin: Int = 0,
@@ -46,6 +49,8 @@ data class EditRecipeUiState(
     val imagePath: String? = null,
     val coverPhotoPath: String? = null,
     val ingredients: List<IngredientEntity> = emptyList(),
+    /** Quantity text as typed, one per ingredient, so partial input like "1." or "2-" survives. */
+    val quantityTexts: List<String> = emptyList(),
     val steps: List<StepEntity> = emptyList(),
     val allTags: List<TagEntity> = emptyList(),
     val allDiet: List<TagEntity> = emptyList(),
@@ -88,12 +93,12 @@ class EditRecipeViewModel @Inject constructor(
                     isLoading = false,
                     recipeId = 0L,
                     isNewRecipe = true,
-                    servings = 4,
                     allTags = allTags,
                     allDiet = allDiet,
                     allEquipment = allEquipment,
                     allConsumables = allConsumables,
                     ingredients = listOf(IngredientEntity(recipeId = 0, position = 0, name = "", baseName = "", category = "pantry", rawText = "")),
+                    quantityTexts = listOf(""),
                     steps = listOf(StepEntity(recipeId = 0, position = 0, text = ""))
                 )
             } else {
@@ -106,6 +111,9 @@ class EditRecipeViewModel @Inject constructor(
                 val ingredients = recipeRepository.observeIngredients(recipeId).first()
                 val steps = recipeRepository.observeSteps(recipeId).first()
                 val selectedTags = recipeRepository.observeTags(recipeId).first()
+                val formIngredients = ingredients.ifEmpty {
+                    listOf(IngredientEntity(recipeId = recipeId, position = 0, name = "", baseName = "", category = "pantry", rawText = ""))
+                }
 
                 _uiState.value = EditRecipeUiState(
                     isLoading = false,
@@ -113,7 +121,7 @@ class EditRecipeViewModel @Inject constructor(
                     isNewRecipe = false,
                     title = recipe.title.orEmpty(),
                     description = recipe.description.orEmpty(),
-                    servings = recipe.servings ?: 4,
+                    servingsText = (recipe.servings ?: 4).toString(),
                     prepMin = recipe.prepMin ?: 0,
                     cookMin = recipe.cookMin ?: 0,
                     totalMin = recipe.totalMin ?: 0,
@@ -129,9 +137,8 @@ class EditRecipeViewModel @Inject constructor(
                     captionRaw = recipe.captionRaw.orEmpty(),
                     imagePath = recipe.imagePath,
                     coverPhotoPath = recipe.coverPhotoPath,
-                    ingredients = if (ingredients.isEmpty()) {
-                        listOf(IngredientEntity(recipeId = recipeId, position = 0, name = "", baseName = "", category = "pantry", rawText = ""))
-                    } else ingredients,
+                    ingredients = formIngredients,
+                    quantityTexts = formIngredients.map { formatQuantityText(it.quantity, it.quantityMax) },
                     steps = if (steps.isEmpty()) {
                         listOf(StepEntity(recipeId = recipeId, position = 0, text = ""))
                     } else steps,
@@ -147,7 +154,9 @@ class EditRecipeViewModel @Inject constructor(
 
     fun updateTitle(title: String) { _uiState.value = _uiState.value.copy(title = title) }
     fun updateDescription(description: String) { _uiState.value = _uiState.value.copy(description = description) }
-    fun updateServings(servings: Int) { _uiState.value = _uiState.value.copy(servings = servings.coerceIn(1, 50)) }
+    fun updateServings(text: String) {
+        _uiState.value = _uiState.value.copy(servingsText = text.filter { it.isDigit() }.take(2))
+    }
     fun updateTimes(prep: Int, cook: Int, total: Int) {
         _uiState.value = _uiState.value.copy(prepMin = prep, cookMin = cook, totalMin = total)
     }
@@ -171,23 +180,30 @@ class EditRecipeViewModel @Inject constructor(
     fun addIngredient() {
         val current = _uiState.value.ingredients.toMutableList()
         current.add(IngredientEntity(recipeId = recipeId, position = current.size, name = "", baseName = "", category = "pantry", rawText = ""))
-        _uiState.value = _uiState.value.copy(ingredients = current)
+        _uiState.value = _uiState.value.copy(ingredients = current, quantityTexts = _uiState.value.quantityTexts + "")
     }
 
-    fun updateIngredient(index: Int, name: String, quantity: Double?, unit: String?, note: String?, groupName: String?) {
+    fun updateIngredient(index: Int, name: String, quantityText: String, unit: String?, note: String?, groupName: String?) {
         val current = _uiState.value.ingredients.toMutableList()
         if (index in current.indices) {
-            val prev = current[index]
-            current[index] = prev.copy(
+            val (quantity, quantityMax) = parseQuantityText(quantityText)
+            val trimmedUnit = unit?.trim()?.ifEmpty { null }
+            current[index] = current[index].copy(
                 name = name,
                 baseName = name.trim().lowercase(),
                 quantity = quantity,
-                unit = unit?.trim()?.ifEmpty { null },
+                quantityMax = quantityMax,
+                unit = trimmedUnit,
                 note = note?.trim()?.ifEmpty { null },
                 groupName = groupName?.trim()?.ifEmpty { null },
-                rawText = "${quantity ?: ""} ${unit ?: ""} $name".trim()
+                rawText = listOf(formatQuantityText(quantity, quantityMax), trimmedUnit.orEmpty(), name.trim())
+                    .filter { it.isNotEmpty() }
+                    .joinToString(" ")
             )
-            _uiState.value = _uiState.value.copy(ingredients = current)
+            val texts = _uiState.value.quantityTexts.toMutableList()
+            while (texts.size < current.size) texts.add("")
+            texts[index] = quantityText
+            _uiState.value = _uiState.value.copy(ingredients = current, quantityTexts = texts)
         }
     }
 
@@ -195,7 +211,9 @@ class EditRecipeViewModel @Inject constructor(
         val current = _uiState.value.ingredients.toMutableList()
         if (index in current.indices) {
             current.removeAt(index)
-            _uiState.value = _uiState.value.copy(ingredients = current)
+            val texts = _uiState.value.quantityTexts.toMutableList()
+            if (index in texts.indices) texts.removeAt(index)
+            _uiState.value = _uiState.value.copy(ingredients = current, quantityTexts = texts)
         }
     }
 
@@ -247,8 +265,10 @@ class EditRecipeViewModel @Inject constructor(
                     )
                 )
 
+                val activeModel = settingsStore.modelIdFlow.first()
                 result.fold(
                     onSuccess = { extracted ->
+                        recipeRepository.logUsage(extracted.usage.toExtractionUsageEntity(activeModel))
                         val allDbTags = tagRepository.getAllTags()
                         val tagIdMap = allDbTags.associate { (it.name.lowercase() to it.kind) to it.id }
 
@@ -298,7 +318,7 @@ class EditRecipeViewModel @Inject constructor(
                             isExtractingText = false,
                             title = extracted.title?.ifBlank { _uiState.value.title } ?: _uiState.value.title,
                             description = extracted.description?.ifBlank { _uiState.value.description } ?: _uiState.value.description,
-                            servings = extracted.servings?.takeIf { it > 0 } ?: _uiState.value.servings,
+                            servingsText = extracted.servings?.takeIf { it > 0 }?.toString() ?: _uiState.value.servingsText,
                             prepMin = extracted.prepMinutes?.takeIf { it > 0 } ?: _uiState.value.prepMin,
                             cookMin = extracted.cookMinutes?.takeIf { it > 0 } ?: _uiState.value.cookMin,
                             totalMin = extracted.totalMinutes?.takeIf { it > 0 } ?: _uiState.value.totalMin,
@@ -312,12 +332,18 @@ class EditRecipeViewModel @Inject constructor(
                             freezerFriendly = extracted.freezerFriendly || _uiState.value.freezerFriendly,
                             captionRaw = text,
                             ingredients = if (ingredientEntities.isNotEmpty()) ingredientEntities else _uiState.value.ingredients,
+                            quantityTexts = if (ingredientEntities.isNotEmpty()) {
+                                ingredientEntities.map { formatQuantityText(it.quantity, it.quantityMax) }
+                            } else _uiState.value.quantityTexts,
                             steps = if (stepEntities.isNotEmpty()) stepEntities else _uiState.value.steps,
                             selectedTagIds = matchedTagIds
                         )
                         onFinished()
                     },
                     onFailure = { err ->
+                        if (err is NoRecipeFoundException) {
+                            err.usage?.let { recipeRepository.logUsage(it.toExtractionUsageEntity(activeModel)) }
+                        }
                         _uiState.value = _uiState.value.copy(
                             isExtractingText = false,
                             extractError = err.message ?: "Failed to extract recipe from pasted text"
@@ -337,6 +363,7 @@ class EditRecipeViewModel @Inject constructor(
         viewModelScope.launch {
             val state = _uiState.value
             val now = System.currentTimeMillis()
+            val servings = (state.servingsText.toIntOrNull() ?: 4).coerceIn(1, 50)
 
             val recipeToSave = if (state.isNewRecipe) {
                 RecipeEntity(
@@ -347,7 +374,7 @@ class EditRecipeViewModel @Inject constructor(
                     captionRaw = state.captionRaw.ifBlank { null },
                     title = state.title.trim().ifEmpty { "Untitled Recipe" },
                     description = state.description.trim().takeIf { it.isNotEmpty() },
-                    servings = state.servings,
+                    servings = servings,
                     prepMin = state.prepMin.takeIf { it > 0 },
                     cookMin = state.cookMin.takeIf { it > 0 },
                     totalMin = (if (state.totalMin > 0) state.totalMin else state.prepMin + state.cookMin).takeIf { it > 0 },
@@ -371,7 +398,7 @@ class EditRecipeViewModel @Inject constructor(
                 existing.copy(
                     title = state.title.trim().ifEmpty { "Untitled Recipe" },
                     description = state.description.trim().takeIf { it.isNotEmpty() },
-                    servings = state.servings,
+                    servings = servings,
                     prepMin = state.prepMin.takeIf { it > 0 },
                     cookMin = state.cookMin.takeIf { it > 0 },
                     totalMin = (if (state.totalMin > 0) state.totalMin else state.prepMin + state.cookMin).takeIf { it > 0 },
@@ -384,6 +411,7 @@ class EditRecipeViewModel @Inject constructor(
                     makeAhead = state.makeAhead,
                     freezerFriendly = state.freezerFriendly,
                     personalNote = state.personalNote.trim().takeIf { it.isNotEmpty() },
+                    captionRaw = state.captionRaw.ifBlank { null } ?: existing.captionRaw,
                     reviewed = true, // Clear "To review" mark on save
                     status = RecipeEntity.STATUS_SAVED,
                     savedAt = existing.savedAt ?: now,
@@ -398,7 +426,8 @@ class EditRecipeViewModel @Inject constructor(
                 recipe = recipeToSave,
                 ingredients = validIngredients,
                 steps = validSteps,
-                tagIds = state.selectedTagIds.toList()
+                tagIds = state.selectedTagIds.toList(),
+                source = RecipeTagEntity.SOURCE_USER
             )
 
             _uiState.value = _uiState.value.copy(isSaved = true)
@@ -415,5 +444,25 @@ class EditRecipeViewModel @Inject constructor(
         } else {
             onDeleted()
         }
+    }
+
+    companion object {
+        /** Parses "2", "1.5", "1,5" or a range "2-3" / "2–3" into (quantity, quantityMax). */
+        fun parseQuantityText(text: String): Pair<Double?, Double?> {
+            val parts = text.trim().split('-', '–').map { it.trim().replace(',', '.') }
+            val quantity = parts.firstOrNull()?.toDoubleOrNull()?.takeIf { it > 0 }
+            val quantityMax = if (quantity != null && parts.size == 2) {
+                parts[1].toDoubleOrNull()?.takeIf { it > quantity }
+            } else null
+            return quantity to quantityMax
+        }
+
+        fun formatQuantityText(quantity: Double?, quantityMax: Double?): String {
+            if (quantity == null) return ""
+            return listOfNotNull(quantity, quantityMax).joinToString("–") { formatNumber(it) }
+        }
+
+        private fun formatNumber(value: Double): String =
+            if (value % 1.0 == 0.0) value.toLong().toString() else value.toString()
     }
 }

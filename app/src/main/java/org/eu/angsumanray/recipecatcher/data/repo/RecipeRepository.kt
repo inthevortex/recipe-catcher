@@ -82,25 +82,23 @@ class RecipeRepository @Inject constructor(
         recipeDao.updateFavourite(id, isFavourite)
     }
 
-    suspend fun updatePersonalNote(id: Long, personalNote: String?) {
+    suspend fun updatePersonalNote(id: Long, personalNote: String?) = database.withTransaction {
         recipeDao.updatePersonalNote(id, personalNote)
-        val recipe = recipeDao.getById(id)
-        if (recipe != null) {
-            val ingredients = ingredientDao.getByRecipeId(id)
-            val steps = stepDao.getByRecipeId(id)
-            val ingredientsText = ingredients.joinToString(" ") { "${it.name} ${it.rawText}" }
-            val stepsText = steps.joinToString(" ") { it.text }
-            val fts = RecipeFtsEntity(
-                rowid = id,
-                title = recipe.title.orEmpty(),
-                ingredients = ingredientsText,
-                steps = stepsText,
-                caption = recipe.captionRaw.orEmpty(),
-                author = recipe.authorHandle.orEmpty(),
-                notes = personalNote.orEmpty()
-            )
-            recipeFtsDao.insert(fts)
-        }
+        val recipe = recipeDao.getById(id) ?: return@withTransaction
+        val ingredients = ingredientDao.getByRecipeId(id)
+        val steps = stepDao.getByRecipeId(id)
+        val ingredientsText = ingredients.joinToString(" ") { "${it.name} ${it.rawText}" }
+        val stepsText = steps.joinToString(" ") { it.text }
+        val fts = RecipeFtsEntity(
+            rowid = id,
+            title = recipe.title.orEmpty(),
+            ingredients = ingredientsText,
+            steps = stepsText,
+            caption = recipe.captionRaw.orEmpty(),
+            author = recipe.authorHandle.orEmpty(),
+            notes = personalNote.orEmpty()
+        )
+        recipeFtsDao.insert(fts)
     }
 
     suspend fun updateCoverPhotoPath(id: Long, coverPhotoPath: String?) {
@@ -152,6 +150,11 @@ class RecipeRepository @Inject constructor(
         tagIds: List<Long>,
         usage: LlmUsageEntity
     ) = database.withTransaction {
+        // The user may have saved the row by hand while extraction ran; their version wins.
+        if (recipeDao.getById(recipe.id)?.status == RecipeEntity.STATUS_SAVED) {
+            llmUsageDao.insert(usage)
+            return@withTransaction
+        }
         recipeDao.update(recipe)
         ingredientDao.deleteByRecipeId(recipe.id)
         ingredientDao.insertAll(ingredients)
@@ -230,25 +233,53 @@ class RecipeRepository @Inject constructor(
         recipeId
     }
 
-    suspend fun deleteRecipe(recipeId: Long) = database.withTransaction {
-        val recipe = recipeDao.getById(recipeId)
-        val cookLogs = cookLogDao.getAllByRecipe(recipeId)
-
-        // Delete associated image files
-        imageStorageManager?.let { mgr ->
-            recipe?.imagePath?.let { mgr.deleteImage(it) }
-            recipe?.coverPhotoPath?.let { mgr.deleteImage(it) }
-            cookLogs.forEach { log ->
-                log.photoPath?.let { mgr.deleteImage(it) }
-            }
-        }
-
-        recipeDao.deleteById(recipeId)
-        recipeFtsDao.deleteByRowid(recipeId)
+    /**
+     * Replaces a saved recipe's extracted content. The row is re-read here so personal touches
+     * changed while the extraction call ran survive, and tags the user picked are kept.
+     */
+    suspend fun saveReExtraction(
+        recipeId: Long,
+        ingredients: List<IngredientEntity>,
+        steps: List<StepEntity>,
+        aiTagIds: List<Long>,
+        usage: LlmUsageEntity,
+        applyExtraction: (RecipeEntity) -> RecipeEntity
+    ): Boolean = database.withTransaction {
+        val current = recipeDao.getById(recipeId) ?: return@withTransaction false
+        val userTagIds = recipeTagDao.getTagIdsForRecipe(recipeId, RecipeTagEntity.SOURCE_USER)
+        val updated = applyExtraction(current).copy(
+            id = current.id,
+            isFavourite = current.isFavourite,
+            personalNote = current.personalNote,
+            coverPhotoPath = current.coverPhotoPath
+        )
+        saveFullRecipe(updated, ingredients, steps, aiTagIds.distinct() - userTagIds.toSet())
+        recipeTagDao.insertAll(userTagIds.map { RecipeTagEntity(recipeId = recipeId, tagId = it, source = RecipeTagEntity.SOURCE_USER) })
+        llmUsageDao.insert(usage)
+        true
     }
 
-    suspend fun cleanOrphanedImages(): Int {
+    suspend fun deleteRecipe(recipeId: Long) {
+        // Files go only after the rows are gone, so a failed delete never leaves a recipe without its images.
+        val imagePaths = database.withTransaction {
+            val recipe = recipeDao.getById(recipeId)
+            val cookPhotos = cookLogDao.getAllByRecipe(recipeId).mapNotNull { it.photoPath }
+            recipeDao.deleteById(recipeId)
+            recipeFtsDao.deleteByRowid(recipeId)
+            listOfNotNull(recipe?.imagePath, recipe?.coverPhotoPath) + cookPhotos
+        }
+        imageStorageManager?.let { mgr -> imagePaths.distinct().forEach { mgr.deleteImage(it) } }
+    }
+
+    /**
+     * Deletes image files no recipe or cook log references. Files modified after [modifiedBefore]
+     * are kept, so a capture or cook photo written just before its row is saved survives.
+     */
+    suspend fun cleanOrphanedImages(
+        modifiedBefore: Long = System.currentTimeMillis() - ORPHAN_GRACE_MILLIS
+    ): Int {
         val mgr = imageStorageManager ?: return 0
+        mgr.deleteStaleCameraFiles(modifiedBefore)
         val diskFiles = mgr.scanAllImageFiles()
         if (diskFiles.isEmpty()) return 0
 
@@ -258,7 +289,7 @@ class RecipeRepository @Inject constructor(
 
         var deletedCount = 0
         for (file in diskFiles) {
-            if (file !in referenced) {
+            if (file !in referenced && mgr.getFile(file).lastModified() < modifiedBefore) {
                 if (mgr.deleteImage(file)) {
                     deletedCount++
                 }
@@ -274,13 +305,15 @@ class RecipeRepository @Inject constructor(
     }
 
     companion object {
+        private const val ORPHAN_GRACE_MILLIS = 24L * 60 * 60 * 1000
+
         fun sanitizeFtsQuery(query: String): String {
             // Keep letters and digits in any script (unicode61 tokenizer); drop FTS syntax like * " : -
             val clean = query.replace("[^\\p{L}\\p{M}\\p{N}\\s]".toRegex(), " ").trim()
             val tokens = clean.split("\\s+".toRegex()).filter { it.isNotBlank() }
             if (tokens.isEmpty()) return ""
-            // Append wildcard prefix search to each term: "pan" -> "pan*"
-            return tokens.joinToString(" ") { "$it*" }
+            // Lowercase so a typed AND, OR, NOT or NEAR stays a search word, not an FTS operator.
+            return tokens.joinToString(" ") { "${it.lowercase()}*" }
         }
     }
 }

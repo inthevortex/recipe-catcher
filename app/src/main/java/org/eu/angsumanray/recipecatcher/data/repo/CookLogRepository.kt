@@ -1,5 +1,6 @@
 package org.eu.angsumanray.recipecatcher.data.repo
 
+import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
 import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
 import org.eu.angsumanray.recipecatcher.data.db.entity.CookLogEntity
@@ -14,6 +15,7 @@ class CookLogRepository @Inject constructor(
     private val imageStorageManager: ImageStorageManager
 ) {
     private val cookLogDao = database.cookLogDao()
+    private val recipeDao = database.recipeDao()
 
     fun observeCookLogs(recipeId: Long): Flow<List<CookLogEntity>> =
         cookLogDao.observeByRecipeId(recipeId)
@@ -57,8 +59,14 @@ class CookLogRepository @Inject constructor(
     }
 
     suspend fun deleteCookLog(entry: CookLogEntity) {
+        database.withTransaction {
+            cookLogDao.delete(entry)
+            val photo = entry.photoPath ?: return@withTransaction
+            if (recipeDao.getById(entry.recipeId)?.coverPhotoPath == photo) {
+                recipeDao.updateCoverPhotoPath(entry.recipeId, null)
+            }
+        }
         entry.photoPath?.let { imageStorageManager.deleteImage(it) }
-        cookLogDao.delete(entry)
     }
 
     suspend fun deleteCookLogById(id: Long) {

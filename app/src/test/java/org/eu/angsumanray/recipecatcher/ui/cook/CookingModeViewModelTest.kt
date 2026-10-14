@@ -1,5 +1,8 @@
 package org.eu.angsumanray.recipecatcher.ui.cook
 
+import android.Manifest
+import android.app.Application
+import android.app.NotificationManager
 import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.room.Room
@@ -7,6 +10,7 @@ import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -27,6 +31,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.time.LocalDate
 
@@ -40,12 +45,13 @@ class CookingModeViewModelTest {
     private lateinit var repository: RecipeRepository
     private lateinit var cookLogRepository: CookLogRepository
     private lateinit var imageStorageManager: ImageStorageManager
+    private lateinit var context: Context
     private var recipeId: Long = 0L
 
     @Before
     fun setup() = runTest(testDispatcher) {
         Dispatchers.setMain(testDispatcher)
-        val context = ApplicationProvider.getApplicationContext<Context>()
+        context = ApplicationProvider.getApplicationContext<Context>()
         database = Room.inMemoryDatabaseBuilder(context, RecipeDatabase::class.java)
             .setQueryExecutor(Runnable::run)
             .setTransactionExecutor(Runnable::run)
@@ -82,6 +88,20 @@ class CookingModeViewModelTest {
         recipeId = repository.saveFullRecipe(recipe, ingredients, steps, emptyList())
     }
 
+    private fun TestScope.createViewModel(servings: Int? = null): CookingModeViewModel {
+        val args = buildMap<String, Any> {
+            put("recipeId", recipeId)
+            servings?.let { put("servings", it) }
+        }
+        return CookingModeViewModel(
+            recipeRepository = repository,
+            cookLogRepository = cookLogRepository,
+            imageStorageManager = imageStorageManager,
+            timerAlerts = CookingTimerAlerts(context),
+            savedStateHandle = SavedStateHandle(args)
+        ).also { vm -> vm.elapsedRealtime = { testScheduler.currentTime } }
+    }
+
     @After
     fun teardown() {
         org.robolectric.shadows.ShadowLooper.idleMainLooper()
@@ -91,13 +111,7 @@ class CookingModeViewModelTest {
 
     @Test
     fun `step navigation boundaries and current step index`() = runTest(testDispatcher) {
-        val savedStateHandle = SavedStateHandle(mapOf("recipeId" to recipeId))
-        val viewModel = CookingModeViewModel(
-            recipeRepository = repository,
-            cookLogRepository = cookLogRepository,
-            imageStorageManager = imageStorageManager,
-            savedStateHandle = savedStateHandle
-        )
+        val viewModel = createViewModel()
         advanceUntilIdle()
 
         assertEquals(0, viewModel.uiState.value.currentStepIndex)
@@ -126,13 +140,7 @@ class CookingModeViewModelTest {
 
     @Test
     fun `timers are initialized and can be started, paused, and reset`() = runTest(testDispatcher) {
-        val savedStateHandle = SavedStateHandle(mapOf("recipeId" to recipeId))
-        val viewModel = CookingModeViewModel(
-            recipeRepository = repository,
-            cookLogRepository = cookLogRepository,
-            imageStorageManager = imageStorageManager,
-            savedStateHandle = savedStateHandle
-        )
+        val viewModel = createViewModel()
         advanceUntilIdle()
 
         val timers = viewModel.uiState.value.timers
@@ -163,13 +171,7 @@ class CookingModeViewModelTest {
 
     @Test
     fun `cooking mode ingredients checklist and mark as cooked completion`() = runTest(testDispatcher) {
-        val savedStateHandle = SavedStateHandle(mapOf("recipeId" to recipeId))
-        val viewModel = CookingModeViewModel(
-            recipeRepository = repository,
-            cookLogRepository = cookLogRepository,
-            imageStorageManager = imageStorageManager,
-            savedStateHandle = savedStateHandle
-        )
+        val viewModel = createViewModel()
         advanceUntilIdle()
 
         val ingId = viewModel.uiState.value.ingredients.first().id
@@ -189,5 +191,69 @@ class CookingModeViewModelTest {
         assertTrue(callbackCalled)
         assertTrue(viewModel.uiState.value.isMarkedCooked)
         assertEquals(1, cookLogRepository.getTimesCooked(recipeId))
+    }
+
+    @Test
+    fun `ingredients sheet is scaled to the servings passed from the viewer`() = runTest(testDispatcher) {
+        val defaultVm = createViewModel()
+        advanceUntilIdle()
+        assertEquals(2, defaultVm.uiState.value.servings)
+        assertEquals(200.0, defaultVm.uiState.value.ingredients.first().quantity!!, 0.001)
+
+        val scaledVm = createViewModel(servings = 4)
+        advanceUntilIdle()
+        assertEquals(4, scaledVm.uiState.value.servings)
+        assertEquals(400.0, scaledVm.uiState.value.ingredients.first().quantity!!, 0.001)
+        assertEquals(200.0, scaledVm.uiState.value.rawIngredients.first().quantity!!, 0.001)
+
+        val unsetVm = createViewModel(servings = -1)
+        advanceUntilIdle()
+        assertEquals(2, unsetVm.uiState.value.servings)
+    }
+
+    @Test
+    fun `repeated mark as cooked while saving logs one entry`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        var completions = 0
+        viewModel.markAsCooked(LocalDate.of(2026, 10, 15)) { completions++ }
+        assertTrue(viewModel.uiState.value.isSaving)
+        viewModel.markAsCooked(LocalDate.of(2026, 10, 15)) { completions++ }
+        advanceUntilIdle()
+
+        assertEquals(1, completions)
+        assertFalse(viewModel.uiState.value.isSaving)
+        assertEquals(1, cookLogRepository.getTimesCooked(recipeId))
+    }
+
+    @Test
+    fun `paused timer keeps partial seconds and alerts when it finishes`() = runTest(testDispatcher) {
+        shadowOf(context as Application).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.startTimer(0)
+        advanceTimeBy(1500)
+        viewModel.pauseTimer(0)
+        assertEquals(58_500L, viewModel.uiState.value.timers[0]!!.remainingMillis)
+        assertEquals(59, viewModel.uiState.value.timers[0]!!.remainingSeconds)
+
+        // A paused timer doesn't move.
+        advanceTimeBy(10_000)
+        assertEquals(58_500L, viewModel.uiState.value.timers[0]!!.remainingMillis)
+
+        viewModel.startTimer(0)
+        advanceTimeBy(58_499)
+        assertEquals(1, viewModel.uiState.value.timers[0]!!.remainingSeconds)
+        assertTrue(viewModel.uiState.value.timers[0]!!.isRunning)
+
+        advanceTimeBy(2)
+        val finished = viewModel.uiState.value.timers[0]!!
+        assertEquals(0, finished.remainingSeconds)
+        assertFalse(finished.isRunning)
+
+        val notificationManager = context.getSystemService(NotificationManager::class.java)
+        assertEquals(1, shadowOf(notificationManager).allNotifications.size)
     }
 }

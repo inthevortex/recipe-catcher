@@ -3,6 +3,7 @@ package org.eu.angsumanray.recipecatcher.ui.library
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.WorkManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -159,6 +160,8 @@ class LibraryViewModel @Inject constructor(
 
     fun deleteRecipe(recipeId: Long) {
         viewModelScope.launch {
+            // Stop an in-flight capture so it can't write a thumbnail or extraction for the deleted row.
+            WorkManager.getInstance(context).cancelUniqueWork("capture_recipe_$recipeId")
             recipeRepository.deleteRecipe(recipeId)
         }
     }

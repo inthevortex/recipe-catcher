@@ -1,5 +1,6 @@
 package org.eu.angsumanray.recipecatcher.ui.viewer
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -60,6 +61,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,6 +76,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.core.domain.FractionFormatter
 import org.eu.angsumanray.recipecatcher.data.db.entity.CookLogEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
@@ -84,19 +88,20 @@ import java.time.LocalDate
 fun RecipeViewerScreen(
     viewModel: RecipeViewerViewModel,
     onNavigateBack: () -> Unit,
-    onNavigateToCookingMode: (Long) -> Unit,
+    onNavigateToCookingMode: (recipeId: Long, servings: Int) -> Unit,
     onNavigateToEdit: (Long) -> Unit
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showReExtractDialog by remember { mutableStateOf(false) }
     var showEditNoteDialog by remember { mutableStateOf(false) }
     var noteInput by remember { mutableStateOf("") }
-    var showMarkCookedDialog by remember { mutableStateOf(false) }
+    var showMarkCookedDialog by rememberSaveable { mutableStateOf(false) }
     var selectedPhotoForCover by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(state.reExtractError) {
@@ -138,7 +143,11 @@ fun RecipeViewerScreen(
                                     onClick = {
                                         showMenu = false
                                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(recipe.sourceUrl))
-                                        context.startActivity(intent)
+                                        try {
+                                            context.startActivity(intent)
+                                        } catch (e: ActivityNotFoundException) {
+                                            scope.launch { snackbarHostState.showSnackbar("No app can open this link") }
+                                        }
                                     }
                                 )
                             }
@@ -193,7 +202,7 @@ fun RecipeViewerScreen(
                         }
                         Button(
                             modifier = Modifier.weight(1f),
-                            onClick = { onNavigateToCookingMode(recipe.id) }
+                            onClick = { onNavigateToCookingMode(recipe.id, state.currentServings) }
                         ) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
                             Spacer(modifier = Modifier.width(6.dp))
@@ -787,10 +796,11 @@ private fun MarkCookedDialog(
     onConfirm: (LocalDate, String?, Uri?) -> Unit,
     onCreateTempCameraUri: () -> Pair<Uri, File>
 ) {
-    var note by remember { mutableStateOf("") }
-    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
-    var photoUri by remember { mutableStateOf<Uri?>(null) }
-    var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
+    // Saveable so a camera round trip that recreates the activity keeps the dialog's input.
+    var note by rememberSaveable { mutableStateOf("") }
+    var selectedDate by rememberSaveable { mutableStateOf(LocalDate.now()) }
+    var photoUri by rememberSaveable { mutableStateOf<Uri?>(null) }
+    var tempCameraUri by rememberSaveable { mutableStateOf<Uri?>(null) }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -887,15 +897,5 @@ private fun MarkCookedDialog(
     )
 }
 
-private fun formatIngredientQuantity(ingredient: IngredientEntity): String {
-    val q = ingredient.quantity ?: return ""
-    val qMax = ingredient.quantityMax
-
-    return if (qMax != null && qMax > 0) {
-        val minFormatted = FractionFormatter.formatSingle(q, null).valueText
-        val maxFormatted = FractionFormatter.formatSingle(qMax, ingredient.unit).displayText
-        "$minFormatted–$maxFormatted"
-    } else {
-        FractionFormatter.formatSingle(q, ingredient.unit).displayText
-    }
-}
+private fun formatIngredientQuantity(ingredient: IngredientEntity): String =
+    FractionFormatter.format(ingredient.quantity, ingredient.quantityMax, ingredient.unit)

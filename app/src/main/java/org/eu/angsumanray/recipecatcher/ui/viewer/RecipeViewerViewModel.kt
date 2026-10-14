@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.core.domain.QuantityScaler
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractionInput
+import org.eu.angsumanray.recipecatcher.core.llm.NoRecipeFoundException
 import org.eu.angsumanray.recipecatcher.core.llm.RecipeExtractor
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.eu.angsumanray.recipecatcher.data.db.entity.CookLogEntity
@@ -26,6 +27,7 @@ import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
 import org.eu.angsumanray.recipecatcher.data.repo.CookLogRepository
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.data.repo.TagRepository
+import org.eu.angsumanray.recipecatcher.data.repo.toExtractionUsageEntity
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import java.time.LocalDate
 import javax.inject.Inject
@@ -258,6 +260,7 @@ class RecipeViewerViewModel @Inject constructor(
                     else -> SourceType.WEB
                 }
 
+                val activeModel = settingsStore.modelIdFlow.first()
                 val result = recipeExtractor.extract(
                     ExtractionInput(
                         sourceType = sourceType,
@@ -274,22 +277,15 @@ class RecipeViewerViewModel @Inject constructor(
 
                 result.fold(
                     onSuccess = { extracted ->
-                        val allDbTags = tagRepository.getAllTags()
-                        val tagIdMap = allDbTags.associate { (it.name.lowercase() to it.kind) to it.id }
-
-                        val matchedTagIds = mutableListOf<Long>()
-                        extracted.tags.forEach { name ->
-                            tagIdMap[name.lowercase() to TagEntity.KIND_TAG]?.let { matchedTagIds.add(it) }
+                        val tagsByKind = tagRepository.getAllTags().groupBy { it.kind }
+                        fun tagIds(kind: String, names: List<String>): List<Long> {
+                            val byName = tagsByKind[kind].orEmpty().associateBy { it.name.trim().lowercase() }
+                            return names.mapNotNull { byName[it.trim().lowercase()]?.id }
                         }
-                        extracted.contains.forEach { name ->
-                            tagIdMap[name.lowercase() to TagEntity.KIND_DIET]?.let { matchedTagIds.add(it) }
-                        }
-                        extracted.equipment.forEach { name ->
-                            tagIdMap[name.lowercase() to TagEntity.KIND_EQUIPMENT]?.let { matchedTagIds.add(it) }
-                        }
-                        extracted.consumables.forEach { name ->
-                            tagIdMap[name.lowercase() to TagEntity.KIND_CONSUMABLE]?.let { matchedTagIds.add(it) }
-                        }
+                        val matchedTagIds = tagIds(TagEntity.KIND_TAG, extracted.tags) +
+                            tagIds(TagEntity.KIND_DIET, extracted.contains) +
+                            tagIds(TagEntity.KIND_EQUIPMENT, extracted.equipment) +
+                            tagIds(TagEntity.KIND_CONSUMABLE, extracted.consumables)
 
                         var ingPos = 0
                         val ingredientEntities = extracted.ingredientGroups.flatMap { group ->
@@ -319,37 +315,42 @@ class RecipeViewerViewModel @Inject constructor(
                             )
                         }
 
-                        // Preserve personal touches: is_favourite, personal_note, cover_photo_path, cook_log
-                        val updatedRecipe = recipe.copy(
-                            title = extracted.title?.ifBlank { recipe.title } ?: recipe.title,
-                            description = extracted.description?.ifBlank { null },
-                            servings = extracted.servings?.takeIf { it > 0 } ?: recipe.servings,
-                            prepMin = extracted.prepMinutes?.takeIf { it > 0 },
-                            cookMin = extracted.cookMinutes?.takeIf { it > 0 },
-                            totalMin = extracted.totalMinutes?.takeIf { it > 0 },
-                            cuisine = extracted.cuisine?.ifBlank { null },
-                            complexity = extracted.complexity?.ifBlank { null },
-                            complexityReason = extracted.complexityReason?.ifBlank { null },
-                            spiceLevel = extracted.spiceLevel?.ifBlank { null },
-                            dietType = extracted.dietType?.ifBlank { null },
-                            kcalPerServing = extracted.kcalPerServing?.takeIf { it > 0 },
-                            makeAhead = extracted.makeAhead,
-                            freezerFriendly = extracted.freezerFriendly,
-                            status = RecipeEntity.STATUS_SAVED,
-                            updatedAt = System.currentTimeMillis()
-                        )
-
-                        recipeRepository.saveFullRecipe(
-                            recipe = updatedRecipe,
+                        val model = extracted.usage.model ?: activeModel
+                        recipeRepository.saveReExtraction(
+                            recipeId = recipe.id,
                             ingredients = ingredientEntities,
                             steps = stepEntities,
-                            tagIds = matchedTagIds
-                        )
+                            aiTagIds = matchedTagIds,
+                            usage = extracted.usage.toExtractionUsageEntity(model)
+                        ) { current ->
+                            current.copy(
+                                title = extracted.title?.ifBlank { current.title } ?: current.title,
+                                description = extracted.description?.ifBlank { null },
+                                servings = extracted.servings?.takeIf { it > 0 } ?: current.servings,
+                                prepMin = extracted.prepMinutes?.takeIf { it > 0 },
+                                cookMin = extracted.cookMinutes?.takeIf { it > 0 },
+                                totalMin = extracted.totalMinutes?.takeIf { it > 0 },
+                                cuisine = extracted.cuisine?.ifBlank { null },
+                                complexity = extracted.complexity?.ifBlank { null },
+                                complexityReason = extracted.complexityReason?.ifBlank { null },
+                                spiceLevel = extracted.spiceLevel?.ifBlank { null },
+                                dietType = extracted.dietType?.ifBlank { null },
+                                kcalPerServing = extracted.kcalPerServing?.takeIf { it > 0 },
+                                makeAhead = extracted.makeAhead,
+                                freezerFriendly = extracted.freezerFriendly,
+                                llmModel = model,
+                                status = RecipeEntity.STATUS_SAVED,
+                                updatedAt = System.currentTimeMillis()
+                            )
+                        }
 
                         _uiState.value = _uiState.value.copy(isReExtracting = false)
                         onComplete()
                     },
                     onFailure = { err ->
+                        if (err is NoRecipeFoundException) {
+                            err.usage?.let { recipeRepository.logUsage(it.toExtractionUsageEntity(activeModel)) }
+                        }
                         _uiState.value = _uiState.value.copy(
                             isReExtracting = false,
                             reExtractError = err.message ?: "Re-extraction failed"

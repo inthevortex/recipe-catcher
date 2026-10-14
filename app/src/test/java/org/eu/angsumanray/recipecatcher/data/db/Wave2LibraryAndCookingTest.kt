@@ -407,12 +407,94 @@ class Wave2LibraryAndCookingTest {
         orphan2.writeBytes(byteArrayOf(88))
         assertTrue(orphan2.exists())
 
+        val old = System.currentTimeMillis() - 2L * 24 * 60 * 60 * 1000
+        orphan1.setLastModified(old)
+        orphan2.setLastModified(old)
+
+        // A fresh file may belong to a capture or cook photo whose row isn't written yet.
+        val fresh = File(imageStorageManager.cookedImagesDir, "fresh_unsaved.jpg")
+        fresh.writeBytes(byteArrayOf(77))
+
         val deleted = repository.cleanOrphanedImages()
         assertTrue(deleted >= 2)
+        assertTrue(fresh.exists())
         assertFalse(orphan1.exists())
         assertFalse(orphan2.exists())
 
         // Valid referenced file must stay intact!
         assertTrue(File(context.filesDir, validSourcePath).exists())
+    }
+
+    @Test
+    fun `renaming a tag onto an existing name merges instead of failing`() = runBlocking {
+        val tagIdA = tagRepository.addTag(TagEntity.KIND_EQUIPMENT, "Air fryer oven")
+        val tagIdB = tagRepository.addTag(TagEntity.KIND_EQUIPMENT, "OTG")
+        val r1 = insertRecipeHelper(title = "R1", sourceKey = "RN1", equipmentNames = listOf("Air fryer oven"))
+        val r2 = insertRecipeHelper(title = "R2", sourceKey = "RN2", equipmentNames = listOf("Air fryer oven", "OTG"))
+
+        tagRepository.renameTag(tagIdA, "otg")
+
+        assertNull(database.tagDao().getById(tagIdA))
+        assertEquals(listOf(tagIdB), repository.getTags(r1).map { it.id })
+        assertEquals(listOf(tagIdB), repository.getTags(r2).map { it.id })
+
+        // A case-only rename of the same entry is a plain rename.
+        tagRepository.renameTag(tagIdB, "Otg")
+        assertEquals("Otg", database.tagDao().getById(tagIdB)!!.name)
+    }
+
+    @Test
+    fun `deleting a cook log removes its photo and clears it as cover`() = runBlocking {
+        val recipeId = insertRecipeHelper(title = "Dal", sourceKey = "DAL1")
+        val photo = imageStorageManager.saveCookedImageBytes(byteArrayOf(1, 2))
+        val logId = cookLogRepository.addCookLog(recipeId, LocalDate.now(), photoPath = photo)
+        repository.updateCoverPhotoPath(recipeId, photo)
+
+        cookLogRepository.deleteCookLogById(logId)
+
+        assertEquals(0, cookLogRepository.getTimesCooked(recipeId))
+        assertNull(repository.getRecipe(recipeId)!!.coverPhotoPath)
+        assertFalse(File(context.filesDir, photo).exists())
+    }
+
+    @Test
+    fun `fts query keeps uppercase operator words as search terms`() = runBlocking {
+        assertEquals("salt* and* pepper*", RecipeRepository.sanitizeFtsQuery("Salt AND pepper"))
+        insertRecipeHelper(title = "Not just dal", sourceKey = "NOT1")
+        assertEquals(1, repository.search("NOT").size)
+    }
+
+    @Test
+    fun `re-extraction keeps personal touches set meanwhile and user tags`() = runBlocking {
+        val recipeId = insertRecipeHelper(title = "Old title", sourceKey = "REX1")
+        val userTag = tagRepository.addTag(TagEntity.KIND_TAG, "Sunday")
+        val aiTag = tagRepository.addTag(TagEntity.KIND_TAG, "Weeknight")
+        database.recipeTagDao().insertAll(listOf(RecipeTagEntity(recipeId, userTag, RecipeTagEntity.SOURCE_USER)))
+        cookLogRepository.addCookLog(recipeId, LocalDate.of(2026, 10, 1))
+
+        // Personal touches change after the extraction snapshot was taken.
+        repository.toggleFavourite(recipeId, true)
+        repository.updatePersonalNote(recipeId, "Use ghee")
+        repository.updateCoverPhotoPath(recipeId, "images/cooked/cover.jpg")
+
+        val saved = repository.saveReExtraction(
+            recipeId = recipeId,
+            ingredients = listOf(IngredientEntity(recipeId = recipeId, position = 0, name = "rice", baseName = "rice", category = "grains", rawText = "1 cup rice")),
+            steps = listOf(StepEntity(recipeId = recipeId, position = 0, text = "Boil")),
+            aiTagIds = listOf(aiTag),
+            usage = org.eu.angsumanray.recipecatcher.data.db.entity.LlmUsageEntity(purpose = "extraction", model = "m", inputTokens = 10, outputTokens = 5, cacheReadTokens = 0)
+        ) { it.copy(title = "New title", isFavourite = false, personalNote = null, coverPhotoPath = null) }
+
+        assertTrue(saved)
+        val recipe = repository.getRecipe(recipeId)!!
+        assertEquals("New title", recipe.title)
+        assertTrue(recipe.isFavourite)
+        assertEquals("Use ghee", recipe.personalNote)
+        assertEquals("images/cooked/cover.jpg", recipe.coverPhotoPath)
+        assertEquals(setOf(userTag, aiTag), repository.getTags(recipeId).map { it.id }.toSet())
+        assertEquals(1, cookLogRepository.getTimesCooked(recipeId))
+        assertEquals(listOf("rice"), repository.getIngredients(recipeId).map { it.name })
+        assertEquals(1, database.llmUsageDao().getAll().size)
+        assertEquals(1, repository.search("ghee").size)
     }
 }

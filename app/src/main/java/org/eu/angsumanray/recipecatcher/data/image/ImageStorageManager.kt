@@ -3,6 +3,8 @@ package org.eu.angsumanray.recipecatcher.data.image
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import androidx.core.content.FileProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -10,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -86,7 +89,11 @@ class ImageStorageManager @Inject constructor(
         try {
             val inputStream = context.contentResolver.openInputStream(uri) ?: return@withContext null
             val rawBytes = inputStream.use { it.readBytes() }
-            saveCookedImageBytes(rawBytes)
+            saveCookedImageBytes(rawBytes).also {
+                if (uri.authority == fileProviderAuthority) {
+                    uri.lastPathSegment?.let { name -> File(cameraDir, name).delete() }
+                }
+            }
         } catch (e: Exception) {
             null
         }
@@ -133,11 +140,12 @@ class ImageStorageManager @Inject constructor(
         val filename = "$id.jpg"
         val targetFile = File(cookedImagesDir, filename)
 
-        if (targetBitmap != null) {
+        val bitmapToSave = targetBitmap?.let { applyExifOrientation(it, bytes) }
+        if (bitmapToSave != null) {
             FileOutputStream(targetFile).use { fos ->
-                targetBitmap.compress(Bitmap.CompressFormat.JPEG, 85, fos)
+                bitmapToSave.compress(Bitmap.CompressFormat.JPEG, 85, fos)
             }
-            targetBitmap.recycle()
+            bitmapToSave.recycle()
         } else {
             // Fallback: write raw bytes directly
             FileOutputStream(targetFile).use { it.write(bytes) }
@@ -146,21 +154,53 @@ class ImageStorageManager @Inject constructor(
         "images/cooked/$filename"
     }
 
+    /** Re-encoding drops EXIF, so camera photos stored sideways with an orientation tag are rotated here. */
+    private fun applyExifOrientation(bitmap: Bitmap, bytes: ByteArray): Bitmap {
+        val exif = try {
+            ExifInterface(ByteArrayInputStream(bytes))
+        } catch (e: Exception) {
+            return bitmap
+        }
+        val orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        val (degrees, flipped) = when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90f to false
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f to false
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270f to false
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> 0f to true
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> 180f to true
+            ExifInterface.ORIENTATION_TRANSPOSE -> 90f to true
+            ExifInterface.ORIENTATION_TRANSVERSE -> 270f to true
+            else -> return bitmap
+        }
+        val matrix = Matrix().apply {
+            postRotate(degrees)
+            if (flipped) postScale(-1f, 1f)
+        }
+        val oriented = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        if (oriented != bitmap) bitmap.recycle()
+        return oriented
+    }
+
+    private val fileProviderAuthority: String
+        get() = "${context.packageName}.fileprovider"
+
+    private val cameraDir: File
+        get() = File(context.cacheDir, "camera").apply {
+            if (!exists()) mkdirs()
+        }
+
     /**
      * Creates a temporary file in cacheDir/camera/ and returns its content Uri via FileProvider.
      */
     fun createTempCameraUri(): Pair<Uri, File> {
-        val cameraDir = File(context.cacheDir, "camera").apply {
-            if (!exists()) mkdirs()
-        }
         val file = File(cameraDir, "camera_${UUID.randomUUID()}.jpg")
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file
-        )
+        val uri = FileProvider.getUriForFile(context, fileProviderAuthority, file)
         return Pair(uri, file)
     }
+
+    /** Deletes camera captures left behind by a cancelled dialog. */
+    fun deleteStaleCameraFiles(modifiedBefore: Long): Int =
+        cameraDir.listFiles()?.count { it.isFile && it.lastModified() < modifiedBefore && it.delete() } ?: 0
 
     fun deleteImage(relativePath: String): Boolean {
         return try {

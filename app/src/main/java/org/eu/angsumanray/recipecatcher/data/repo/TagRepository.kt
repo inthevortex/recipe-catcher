@@ -38,11 +38,17 @@ class TagRepository @Inject constructor(
         )
     }
 
-    suspend fun renameTag(id: Long, newName: String) {
+    /** Renaming onto another entry's name in the same list merges into that entry. */
+    suspend fun renameTag(id: Long, newName: String) = database.withTransaction {
         val trimmed = newName.trim()
-        if (trimmed.isBlank()) return
-        val tag = tagDao.getById(id) ?: return
-        tagDao.update(tag.copy(name = trimmed))
+        if (trimmed.isBlank()) return@withTransaction
+        val tag = tagDao.getById(id) ?: return@withTransaction
+        val clash = tagDao.getByKind(tag.kind).find { it.id != id && it.name.equals(trimmed, ignoreCase = true) }
+        if (clash != null) {
+            mergeTags(id, clash.id)
+        } else {
+            tagDao.update(tag.copy(name = trimmed))
+        }
     }
 
     suspend fun deleteTag(id: Long) = database.withTransaction {

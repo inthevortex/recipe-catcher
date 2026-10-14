@@ -9,6 +9,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -17,6 +18,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dagger.hilt.android.AndroidEntryPoint
 import org.eu.angsumanray.recipecatcher.capture.ImageCleanupWorker
+import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import org.eu.angsumanray.recipecatcher.ui.cook.CookingModeScreen
@@ -50,8 +52,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Schedule periodic orphaned image cleanup weekly
         ImageCleanupWorker.scheduleWeekly(this)
+        // After recreation the nav back stack is restored, so only a fresh launch acts on its intent.
+        if (savedInstanceState == null) launchIntentState.value = intent
 
         setContent {
             val themeSetting by settingsStore.themeFlow.collectAsState(initial = SettingsStore.THEME_DARK)
@@ -64,13 +67,17 @@ class MainActivity : ComponentActivity() {
             RecipeCatcherTheme(darkTheme = isDark) {
                 val navController = rememberNavController()
 
-                // Check intent extras for incoming recipe
-                LaunchedEffect(intent) {
-                    val pendingId = intent?.getLongExtra("pending_recipe_id", -1L) ?: -1L
-                    val recipeId = intent?.getLongExtra("recipe_id", -1L) ?: -1L
-                    val targetId = if (pendingId != -1L) pendingId else recipeId
-                    if (targetId != -1L) {
-                        navController.navigate("edit/$targetId")
+                val launchIntent by launchIntentState
+                LaunchedEffect(launchIntent) {
+                    val incoming = launchIntent ?: return@LaunchedEffect
+                    val pendingId = incoming.getLongExtra(EXTRA_PENDING_RECIPE_ID, -1L)
+                    val existingId = incoming.getLongExtra(EXTRA_RECIPE_ID, -1L)
+                    when {
+                        pendingId != -1L -> navController.navigate("review/$pendingId")
+                        existingId != -1L -> {
+                            val saved = recipeRepository.getRecipe(existingId)?.status == RecipeEntity.STATUS_SAVED
+                            navController.navigate(if (saved) "viewer/$existingId" else "review/$existingId")
+                        }
                     }
                 }
 
@@ -86,7 +93,8 @@ class MainActivity : ComponentActivity() {
                             onNavigateToWriteRecipe = { navController.navigate("edit/0") },
                             onNavigateToSettings = { navController.navigate("settings") },
                             onNavigateToViewer = { id -> navController.navigate("viewer/$id") },
-                            onNavigateToEdit = { id -> navController.navigate("edit/$id") }
+                            onNavigateToEdit = { id -> navController.navigate("edit/$id") },
+                            onNavigateToReview = { id -> navController.navigate("review/$id") }
                         )
                     }
 
@@ -96,7 +104,7 @@ class MainActivity : ComponentActivity() {
                             onNavigateBack = { navController.popBackStack() },
                             onRecipeCaptured = { id ->
                                 navController.popBackStack()
-                                navController.navigate("edit/$id")
+                                navController.navigate("review/$id")
                             }
                         )
                     }
@@ -109,14 +117,20 @@ class MainActivity : ComponentActivity() {
                         RecipeViewerScreen(
                             viewModel = viewModel,
                             onNavigateBack = { navController.popBackStack() },
-                            onNavigateToCookingMode = { id -> navController.navigate("cook/$id") },
+                            onNavigateToCookingMode = { id, servings -> navController.navigate("cook/$id?servings=$servings") },
                             onNavigateToEdit = { id -> navController.navigate("edit/$id") }
                         )
                     }
 
                     composable(
-                        route = "cook/{recipeId}",
-                        arguments = listOf(navArgument("recipeId") { type = NavType.LongType })
+                        route = "cook/{recipeId}?servings={servings}",
+                        arguments = listOf(
+                            navArgument("recipeId") { type = NavType.LongType },
+                            navArgument("servings") {
+                                type = NavType.IntType
+                                defaultValue = -1
+                            }
+                        )
                     ) {
                         val viewModel = hiltViewModel<CookingModeViewModel>()
                         CookingModeScreen(
@@ -135,7 +149,11 @@ class MainActivity : ComponentActivity() {
                             onNavigateBack = { navController.popBackStack() },
                             onSaveSuccess = { id ->
                                 navController.popBackStack()
-                                navController.navigate("viewer/$id")
+                                // Editing from the viewer returns to it rather than stacking a second copy.
+                                val previous = navController.currentBackStackEntry
+                                val backOnViewer = previous?.destination?.route == "viewer/{recipeId}" &&
+                                    previous.arguments?.getLong("recipeId") == id
+                                if (!backOnViewer) navController.navigate("viewer/$id")
                             }
                         )
                     }
@@ -173,8 +191,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val launchIntentState = mutableStateOf<Intent?>(null)
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        launchIntentState.value = intent
+    }
+
+    companion object {
+        const val EXTRA_PENDING_RECIPE_ID = "pending_recipe_id"
+        const val EXTRA_RECIPE_ID = "recipe_id"
     }
 }

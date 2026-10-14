@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.first
 import org.eu.angsumanray.recipecatcher.core.insta.InstagramPostFetcher
 import org.eu.angsumanray.recipecatcher.core.llm.ApiKeyInvalidException
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractionInput
-import org.eu.angsumanray.recipecatcher.core.llm.LlmUsage
 import org.eu.angsumanray.recipecatcher.core.llm.ModelNotFoundException
 import org.eu.angsumanray.recipecatcher.core.llm.NoRecipeFoundException
 import org.eu.angsumanray.recipecatcher.core.llm.RecipeExtractor
@@ -27,12 +26,12 @@ import org.eu.angsumanray.recipecatcher.core.llm.TransientApiException
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
-import org.eu.angsumanray.recipecatcher.data.db.entity.LlmUsageEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.StepEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
+import org.eu.angsumanray.recipecatcher.data.repo.toExtractionUsageEntity
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import java.util.concurrent.TimeUnit
 
@@ -149,7 +148,7 @@ class CaptureWorker @AssistedInject constructor(
         val extracted = extractionResult.getOrElse { ex ->
             return when (ex) {
                 is NoRecipeFoundException -> {
-                    ex.usage?.let { recipeRepository.logUsage(it.toEntity(activeModel)) }
+                    ex.usage?.let { recipeRepository.logUsage(it.toExtractionUsageEntity(activeModel)) }
                     recipeRepository.updateRecipeStatus(
                         recipeId,
                         RecipeEntity.STATUS_NO_RECIPE_FOUND,
@@ -248,7 +247,7 @@ class CaptureWorker @AssistedInject constructor(
             ingredients = ingredientEntities,
             steps = stepEntities,
             tagIds = matchedTagIds,
-            usage = extracted.usage.toEntity(model)
+            usage = extracted.usage.toExtractionUsageEntity(model)
         )
 
         return Result.success()
@@ -259,13 +258,4 @@ class CaptureWorker @AssistedInject constructor(
         recipeRepository.updateRecipeStatus(recipeId, failedStatus, message)
         return Result.failure()
     }
-
-    private fun LlmUsage.toEntity(fallbackModel: String) = LlmUsageEntity(
-        purpose = LlmUsageEntity.PURPOSE_EXTRACTION,
-        model = model ?: fallbackModel,
-        inputTokens = inputTokens,
-        outputTokens = outputTokens,
-        cacheReadTokens = cacheReadTokens,
-        webSearches = webSearches
-    )
 }

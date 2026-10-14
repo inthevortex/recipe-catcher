@@ -172,8 +172,8 @@ fun EditRecipeScreen(
 
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         OutlinedTextField(
-                            value = if (state.servings > 0) state.servings.toString() else "",
-                            onValueChange = { viewModel.updateServings(it.toIntOrNull() ?: 1) },
+                            value = state.servingsText,
+                            onValueChange = { viewModel.updateServings(it) },
                             label = { Text("Servings") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.weight(1f)
@@ -391,6 +391,7 @@ fun EditRecipeScreen(
                 }
 
                 state.ingredients.forEachIndexed { index, ing ->
+                    val quantityText = state.quantityTexts.getOrElse(index) { "" }
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -415,7 +416,7 @@ fun EditRecipeScreen(
                             OutlinedTextField(
                                 value = ing.name,
                                 onValueChange = {
-                                    viewModel.updateIngredient(index, it, ing.quantity, ing.unit, ing.note, ing.groupName)
+                                    viewModel.updateIngredient(index, it, quantityText, ing.unit, ing.note, ing.groupName)
                                 },
                                 label = { Text("Name *") },
                                 modifier = Modifier.fillMaxWidth()
@@ -423,18 +424,19 @@ fun EditRecipeScreen(
 
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedTextField(
-                                    value = ing.quantity?.toString() ?: "",
+                                    value = quantityText,
                                     onValueChange = {
-                                        viewModel.updateIngredient(index, ing.name, it.toDoubleOrNull(), ing.unit, ing.note, ing.groupName)
+                                        viewModel.updateIngredient(index, ing.name, it, ing.unit, ing.note, ing.groupName)
                                     },
                                     label = { Text("Qty") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                    placeholder = { Text("2–3") },
+                                    singleLine = true,
                                     modifier = Modifier.weight(1f)
                                 )
                                 OutlinedTextField(
                                     value = ing.unit.orEmpty(),
                                     onValueChange = {
-                                        viewModel.updateIngredient(index, ing.name, ing.quantity, it, ing.note, ing.groupName)
+                                        viewModel.updateIngredient(index, ing.name, quantityText, it, ing.note, ing.groupName)
                                     },
                                     label = { Text("Unit") },
                                     modifier = Modifier.weight(1f)
@@ -442,7 +444,7 @@ fun EditRecipeScreen(
                                 OutlinedTextField(
                                     value = ing.groupName.orEmpty(),
                                     onValueChange = {
-                                        viewModel.updateIngredient(index, ing.name, ing.quantity, ing.unit, ing.note, it)
+                                        viewModel.updateIngredient(index, ing.name, quantityText, ing.unit, ing.note, it)
                                     },
                                     label = { Text("Group") },
                                     modifier = Modifier.weight(1.5f)
@@ -452,7 +454,7 @@ fun EditRecipeScreen(
                             OutlinedTextField(
                                 value = ing.note.orEmpty(),
                                 onValueChange = {
-                                    viewModel.updateIngredient(index, ing.name, ing.quantity, ing.unit, it, ing.groupName)
+                                    viewModel.updateIngredient(index, ing.name, quantityText, ing.unit, it, ing.groupName)
                                 },
                                 label = { Text("Note (e.g. finely chopped)") },
                                 modifier = Modifier.fillMaxWidth()

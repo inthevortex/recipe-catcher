@@ -59,6 +59,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,7 +73,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import org.eu.angsumanray.recipecatcher.core.domain.FractionFormatter
-import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
 import java.io.File
 import java.time.LocalDate
 
@@ -94,8 +94,8 @@ fun CookingModeScreen(
         }
     }
 
-    var showIngredientsSheet by remember { mutableStateOf(false) }
-    var showMarkCookedDialog by remember { mutableStateOf(false) }
+    var showIngredientsSheet by rememberSaveable { mutableStateOf(false) }
+    var showMarkCookedDialog by rememberSaveable { mutableStateOf(false) }
 
     val steps = state.steps
     val currentStepIndex = state.currentStepIndex
@@ -171,7 +171,7 @@ fun CookingModeScreen(
             }
         }
     ) { innerPadding ->
-        if (state.isLoading || currentStep == null) {
+        if (state.isLoading) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -179,6 +179,29 @@ fun CookingModeScreen(
                 contentAlignment = Alignment.Center
             ) {
                 CircularProgressIndicator()
+            }
+            return@Scaffold
+        }
+
+        if (currentStep == null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically)
+            ) {
+                Text(
+                    text = "This recipe has no steps.",
+                    style = MaterialTheme.typography.headlineSmall.copy(fontSize = 24.sp),
+                    textAlign = TextAlign.Center
+                )
+                Button(onClick = { showMarkCookedDialog = true }) {
+                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Mark as Cooked")
+                }
             }
             return@Scaffold
         }
@@ -354,7 +377,7 @@ fun CookingModeScreen(
                     .padding(horizontal = 20.dp, vertical = 8.dp)
             ) {
                 Text(
-                    text = "Ingredients (${state.ingredients.size})",
+                    text = "Ingredients (${state.ingredients.size}) · ${state.servings} servings",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
@@ -364,33 +387,47 @@ fun CookingModeScreen(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(state.ingredients, key = { "cook_ing_${it.id}" }) { ingredient ->
-                        val isChecked = state.checkedIngredientIds.contains(ingredient.id)
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { viewModel.toggleIngredientCheck(ingredient.id) }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = isChecked,
-                                onCheckedChange = { viewModel.toggleIngredientCheck(ingredient.id) }
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            val qText = formatIngredientQuantity(ingredient)
-                            Text(
-                                text = buildString {
-                                    if (qText.isNotBlank()) append("$qText ")
-                                    append(ingredient.name)
-                                    if (!ingredient.note.isNullOrBlank()) append(" (${ingredient.note})")
-                                },
-                                style = MaterialTheme.typography.bodyLarge.copy(
-                                    fontSize = 18.sp,
-                                    textDecoration = if (isChecked) TextDecoration.LineThrough else TextDecoration.None
-                                ),
-                                color = if (isChecked) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f) else MaterialTheme.colorScheme.onSurface
-                            )
+                    state.ingredients.forEachIndexed { index, ingredient ->
+                        val group = ingredient.groupName
+                        if (!group.isNullOrBlank() && group != state.ingredients.getOrNull(index - 1)?.groupName) {
+                            item(key = "cook_group_$index") {
+                                Text(
+                                    text = group,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                            }
+                        }
+                        item(key = "cook_ing_${ingredient.id}") {
+                            val isChecked = state.checkedIngredientIds.contains(ingredient.id)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { viewModel.toggleIngredientCheck(ingredient.id) }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = isChecked,
+                                    onCheckedChange = { viewModel.toggleIngredientCheck(ingredient.id) }
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                val qText = FractionFormatter.format(ingredient.quantity, ingredient.quantityMax, ingredient.unit)
+                                Text(
+                                    text = buildString {
+                                        if (qText.isNotBlank()) append("$qText ")
+                                        append(ingredient.name)
+                                        if (!ingredient.note.isNullOrBlank()) append(" (${ingredient.note})")
+                                    },
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontSize = 18.sp,
+                                        textDecoration = if (isChecked) TextDecoration.LineThrough else TextDecoration.None
+                                    ),
+                                    color = if (isChecked) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f) else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         }
                     }
                     item {
@@ -404,6 +441,7 @@ fun CookingModeScreen(
     // Mark as Cooked Dialog
     if (showMarkCookedDialog) {
         CookingMarkCookedDialog(
+            isSaving = state.isSaving,
             onDismiss = { showMarkCookedDialog = false },
             onConfirm = { date, note, photoUri ->
                 viewModel.markAsCooked(date, note, photoUri) {
@@ -418,14 +456,15 @@ fun CookingModeScreen(
 
 @Composable
 private fun CookingMarkCookedDialog(
+    isSaving: Boolean,
     onDismiss: () -> Unit,
     onConfirm: (LocalDate, String?, Uri?) -> Unit,
     onCreateTempCameraUri: () -> Pair<Uri, File>
 ) {
-    var note by remember { mutableStateOf("") }
-    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
-    var photoUri by remember { mutableStateOf<Uri?>(null) }
-    var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
+    var note by rememberSaveable { mutableStateOf("") }
+    var selectedDate by rememberSaveable { mutableStateOf(LocalDate.now()) }
+    var photoUri by rememberSaveable { mutableStateOf<Uri?>(null) }
+    var tempCameraUri by rememberSaveable { mutableStateOf<Uri?>(null) }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -503,7 +542,8 @@ private fun CookingMarkCookedDialog(
             Button(
                 onClick = {
                     onConfirm(selectedDate, note.trim().ifEmpty { null }, photoUri)
-                }
+                },
+                enabled = !isSaving
             ) {
                 Text("Save to Cook Log")
             }
@@ -514,17 +554,4 @@ private fun CookingMarkCookedDialog(
             }
         }
     )
-}
-
-private fun formatIngredientQuantity(ingredient: IngredientEntity): String {
-    val q = ingredient.quantity ?: return ""
-    val qMax = ingredient.quantityMax
-
-    return if (qMax != null && qMax > 0) {
-        val minFormatted = FractionFormatter.formatSingle(q, null).valueText
-        val maxFormatted = FractionFormatter.formatSingle(qMax, ingredient.unit).displayText
-        "$minFormatted–$maxFormatted"
-    } else {
-        FractionFormatter.formatSingle(q, ingredient.unit).displayText
-    }
 }
