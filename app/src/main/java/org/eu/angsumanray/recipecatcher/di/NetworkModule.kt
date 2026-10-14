@@ -1,0 +1,90 @@
+package org.eu.angsumanray.recipecatcher.di
+
+import dagger.Binds
+import dagger.Module
+import dagger.Provides
+import dagger.hilt.InstallIn
+import dagger.hilt.components.SingletonComponent
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.Json
+import okhttp3.OkHttpClient
+import org.eu.angsumanray.recipecatcher.core.insta.EmbedPageFetchStrategy
+import org.eu.angsumanray.recipecatcher.core.insta.InstagramPostFetcher
+import org.eu.angsumanray.recipecatcher.core.insta.OEmbedFetchStrategy
+import org.eu.angsumanray.recipecatcher.core.insta.PostPageMetaFetchStrategy
+import org.eu.angsumanray.recipecatcher.core.llm.ClaudeExtractor
+import org.eu.angsumanray.recipecatcher.core.llm.RecipeExtractor
+import org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher
+import org.eu.angsumanray.recipecatcher.data.network.KtorHttpFetcher
+import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
+import java.util.concurrent.TimeUnit
+import javax.inject.Singleton
+
+@Module
+@InstallIn(SingletonComponent::class)
+abstract class NetworkBindingModule {
+
+    @Binds
+    @Singleton
+    abstract fun bindHttpFetcher(impl: KtorHttpFetcher): HttpFetcher
+}
+
+@Module
+@InstallIn(SingletonComponent::class)
+object NetworkModule {
+
+    @Provides
+    @Singleton
+    fun provideOkHttpClient(): OkHttpClient {
+        return OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideKtorClient(okHttpClient: OkHttpClient): HttpClient {
+        return HttpClient(OkHttp) {
+            engine {
+                preconfigured = okHttpClient
+            }
+            install(ContentNegotiation) {
+                json(Json {
+                    ignoreUnknownKeys = true
+                    isLenient = true
+                    encodeDefaults = true
+                })
+            }
+        }
+    }
+
+    @Provides
+    @Singleton
+    fun provideInstagramPostFetcher(httpFetcher: HttpFetcher): InstagramPostFetcher {
+        val strategies = listOf(
+            OEmbedFetchStrategy(httpFetcher),
+            EmbedPageFetchStrategy(httpFetcher),
+            PostPageMetaFetchStrategy(httpFetcher)
+        )
+        return InstagramPostFetcher(strategies)
+    }
+
+    @Provides
+    @Singleton
+    fun provideRecipeExtractor(
+        httpClient: HttpClient,
+        settingsStore: SettingsStore
+    ): RecipeExtractor {
+        return ClaudeExtractor(
+            httpClient = httpClient,
+            apiKeyProvider = { settingsStore.getApiKey() },
+            modelIdProvider = { settingsStore.modelIdFlow.first() }
+        )
+    }
+}

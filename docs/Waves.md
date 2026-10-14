@@ -49,15 +49,15 @@ Repository, modules, CI, signing and release pipeline, plus the pure-Kotlin doma
 
 Share a post, fetch it in the background, extract it with Claude, review and save.
 
-- [ ] `HttpFetcher` port with the Ktor client (OkHttp engine on Android).
-- [ ] Instagram strategies: oEmbed, `/embed/captioned/`, meta tags, each tested against saved HTML fixtures.
-- [ ] `ClaudeExtractor`: Messages API with an all-required, non-nullable JSON schema, effort low, no temperature, `cache_control` on the system prompt, and error mapping for 401, 404, 429, 529 and 5xx.
-- [ ] Room schema v1 with all fourteen tables plus `recipe_fts` (Tech spec section 2), including those whose screens arrive in later waves; dates stored as ISO text through a TypeConverter; starter lists seeded.
-- [ ] `SettingsStore` and `SecretStore` (AndroidKeyStore AES-GCM); Settings with API key and Test, model ID, theme, and the AI spend panel.
-- [ ] `CaptureWorker` state machine, dedupe and thumbnail download.
-- [ ] `ShareReceiverActivity` and the Paste link screen; the capture screen watches the row and opens Review when it reaches `needs_review`.
-- [ ] Review and tag screen; Save. The app opens on a simple list of saved and pending recipes, which Wave 2 grows into the full Library.
-- [ ] Tests: parser fixtures, Ktor MockEngine for the Claude API, worker state transitions.
+- [x] `HttpFetcher` port with the Ktor client (OkHttp engine on Android).
+- [x] Instagram strategies: oEmbed, `/embed/captioned/`, meta tags, each tested against saved HTML fixtures.
+- [x] `ClaudeExtractor`: Messages API with an all-required, non-nullable JSON schema, effort low, no temperature, `cache_control` on the system prompt, and error mapping for 401, 404, 429, 529 and 5xx.
+- [x] Room schema v1 with all fourteen tables plus `recipe_fts` (Tech spec section 2), including those whose screens arrive in later waves; dates stored as ISO text through a TypeConverter; starter lists seeded.
+- [x] `SettingsStore` and `SecretStore` (AndroidKeyStore AES-GCM); Settings with API key and Test, model ID, theme, and the AI spend panel.
+- [x] `CaptureWorker` state machine, dedupe and thumbnail download.
+- [x] `ShareReceiverActivity` and the Paste link screen; the capture screen watches the row and opens Review when it reaches `needs_review`.
+- [x] Review and tag screen; Save. The app opens on a simple list of saved and pending recipes, which Wave 2 grows into the full Library.
+- [x] Tests: parser fixtures, Ktor MockEngine for the Claude API, worker state transitions.
 
 **Done when:** sharing a real Instagram post ends in a saved recipe, and the AI spend panel shows what it cost.
 
