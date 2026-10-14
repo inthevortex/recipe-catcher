@@ -146,10 +146,26 @@ These belong to you: the AI never writes them, and re-extraction never overwrite
 - Jetpack Glance **`TodayWidget`** shows today's planned meals on the home screen.
 - Interactive action callbacks let you act on meals without opening the app.
 
+### AI chat and web recipe search ✅
+
+- **Claude chat** over your own library, with persisted message history and quick prompt chips such as **What can I cook tonight?** and **Use up my ingredients**.
+- **Include web** toggle: when on, Claude also searches the web for recipes beyond your library.
+- **Citation cards** link straight to a recipe in your Library or to a web source, with a one-tap **Save** that captures the web result into Recipe Catcher.
+- If web search fails, the answer still arrives with a short note instead of an error.
+
+### Find with AI ✅
+
+On the Edit Recipe screen, **Find with AI** asks Claude to discover a recipe from a short query and autofills title, description, ingredients, steps, timings, cuisine and tags. A confirmation dialog appears before it overwrites anything you have already entered.
+
+### AI plan suggestions ✅
+
+**Fill empty slots with AI** on the Plan screen proposes varied meals for unscheduled slots from today onward, with awareness of leftovers already in the plan. A dialog opens with one pick per slot preselected, so you can adjust before adding them.
+
 ### Privacy and security
 
 - The Anthropic API key is encrypted with an **AES-GCM key held in AndroidKeyStore**, with only the ciphertext stored in DataStore (`EncryptedSharedPreferences` is deprecated).
 - No proprietary backend, no analytics SDKs, no telemetry. Network traffic is limited to fetching the page you shared and calling the Claude API with your own key.
+- **Chat settings** in Settings hold the Anthropic API key, a default for **Include web**, and the maximum web searches per message.
 - An **AI spend panel** in Settings shows running cost this month and all time, computed from every call's `usage` block logged to the `llm_usage` table.
 
 ### Backup and restore ✅
@@ -169,7 +185,7 @@ The safety net that makes the app your primary copy:
 Recipe Catcher follows Clean Architecture across decoupled Gradle modules. Everything that does not need Android lives in a plain Kotlin module, so it is fast to test and portable to a future desktop or web client.
 
 ```mermaid
-flowchart TB
+flowchart TD
   subgraph APP[":app — Android phone"]
     UI["Compose UI + ViewModels<br/>(Hilt)"]
     REPO["Repositories"]
@@ -184,8 +200,8 @@ flowchart TB
     DOMAIN["domain/<br/>QuantityScaler · FractionFormatter · IsoDuration"]
     CAPTURE["capture/<br/>UrlNormalizer · SourceClassifier"]
     PARSERS["insta/ · web/ · youtube/<br/>string in → model out"]
-    LLM["llm/<br/>RecipeExtractor · ClaudeExtractor"]
-    PORTS["ports/<br/>HttpFetcher"]
+    LLM["llm/<br/>RecipeExtractor · ChatPlanner · PlanSuggester"]
+    PORTS["ports/<br/>HttpFetcher · WebSearchProvider"]
   end
 
   WEAR[":wear — Wear OS (planned)"]
@@ -213,10 +229,10 @@ A `kotlin("jvm")` module with **zero `android.*` / `androidx.*` imports or depen
 | `insta/` | `PostFetchStrategy` implementations: oEmbed, embed page, post-page meta |
 | `web/` | `WebRecipeFetcher`, `JsonLdParser`, `ReadableTextExtractor` |
 | `youtube/` | `YouTubeFetcher` (player-response and meta-tag parsing, linked-recipe discovery) |
-| `llm/` | `RecipeExtractor` interface, `ClaudeExtractor`, prompts and JSON schema |
-| `ports/` | Outbound interfaces (`HttpFetcher`) that `:app` implements |
+| `llm/` | `RecipeExtractor` interface, `ClaudeExtractor`, `ChatPlanner`, `PlanSuggester`, prompts and JSON schema |
+| `ports/` | Outbound interfaces (`HttpFetcher`, `WebSearchProvider`) that `:app` implements |
 
-Planner (`PortionLedger`, `GroceryBuilder`, `ReminderPlanner`), chat (`ChatPlanner`), importer and backup-format packages join `:core` as their features land.
+Planner (`PortionLedger`, `GroceryBuilder`, `ReminderPlanner`), importer and backup-format packages join `:core` as their features land.
 
 **Rules**
 
@@ -451,13 +467,13 @@ Every wave ends with a tagged, signed release that installs over the previous on
 | **2** | Library, cooking, personal touches | FTS search, filters and sorts, viewer with scaling, cooking mode with timers, cook log with photos, favourites, notes, Write recipe, list manager, Re-extract, image cleanup | ✅ Done |
 | **3** | Web, YouTube, backup | `WebRecipeFetcher`, `YouTubeFetcher`, clipboard detection, WebView retry for blocked sites, `BackupManager`, `RestoreManager`, pre-migration backup | ✅ Done |
 | **4** | Planner, lists, widget | Bottom tabs with Today as home, week planner with cook / prep / leftover entries, grocery list and inventory, reminders, Glance `TodayWidget` | ✅ Done |
-| **5** | Chat, Find with AI, Suggest | Recipe chat over your library with optional web search, Find with AI on the edit form, `PlanSuggester` | 🗓️ Planned |
+| **5** | Chat, Find with AI, Suggest | Recipe chat over your library with optional web search and citations, Find with AI on the edit form, `PlanSuggester` for empty plan slots | ✅ Done |
 | **6** | Bulk import, Wear OS | Instagram saved-posts importer, opt-in top-comment fetch, `:wear` app with tile and complication | 🗓️ Planned |
 | **7** | Media (later) | Recipes from images via Haiku 5.5 image input; voice and transcript extraction | 💭 Later |
 
 ```mermaid
 flowchart LR
-  W0[0 · Foundation]:::done --> W1[1 · Instagram]:::done --> W2[2 · Library & cooking]:::done --> W3[3 · Web, YouTube, backup]:::done --> W4[4 · Planner & widget]:::done --> W5[5 · Chat & AI] --> W6[6 · Import & Wear OS] -.-> W7[7 · Media]
+  W0["0 · Foundation"]:::done --> W1["1 · Instagram"]:::done --> W2["2 · Library & cooking"]:::done --> W3["3 · Web, YouTube, backup"]:::done --> W4["4 · Planner & widget"]:::done --> W5["5 · Chat & AI"]:::done --> W6["6 · Import & Wear OS"] -.-> W7["7 · Media"]
   classDef done fill:#2e7d32,color:#fff,stroke:#1b5e20
   classDef wip fill:#f9a825,color:#000,stroke:#f57f17
 ```
