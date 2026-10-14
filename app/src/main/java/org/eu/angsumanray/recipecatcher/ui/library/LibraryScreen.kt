@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
@@ -87,7 +88,8 @@ fun LibraryScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToViewer: (Long) -> Unit,
     onNavigateToEdit: (Long) -> Unit,
-    onNavigateToReview: (Long) -> Unit
+    onNavigateToReview: (Long) -> Unit,
+    onNavigateToChat: () -> Unit = {}
 ) {
     val filter by viewModel.filter.collectAsState()
     val savedRecipes by viewModel.savedRecipes.collectAsState()
@@ -180,6 +182,9 @@ fun LibraryScreen(
             TopAppBar(
                 title = { Text("Recipe Catcher", fontWeight = FontWeight.Bold) },
                 actions = {
+                    IconButton(onClick = onNavigateToChat) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Recipe Chat")
+                    }
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }

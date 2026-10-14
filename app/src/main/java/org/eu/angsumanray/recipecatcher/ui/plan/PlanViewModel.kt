@@ -14,6 +14,14 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.PlanSlotEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.repo.PlannerRepository
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
+import org.eu.angsumanray.recipecatcher.core.llm.EmptyPlanSlot
+import org.eu.angsumanray.recipecatcher.core.llm.ExistingPlanAssignment
+import org.eu.angsumanray.recipecatcher.core.llm.PlanSuggester
+import org.eu.angsumanray.recipecatcher.core.llm.PlanSuggesterInput
+import org.eu.angsumanray.recipecatcher.core.llm.ProposedSlotAssignment
+import org.eu.angsumanray.recipecatcher.core.llm.RecipeIndexEntry
+import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
+import org.eu.angsumanray.recipecatcher.data.db.entity.LlmUsageEntity
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
@@ -29,7 +37,10 @@ data class PlanUiState(
     val allRecipes: List<RecipeEntity> = emptyList(),
     val availableLeftovers: List<AvailableLeftover> = emptyList(),
     val pendingDelete: PendingDelete? = null,
-    val snackbarMessage: String? = null
+    val snackbarMessage: String? = null,
+    val isSuggesting: Boolean = false,
+    val planSuggestions: List<ProposedSlotAssignment> = emptyList(),
+    val showSuggestionsDialog: Boolean = false
 )
 
 /** A delete waiting on the user's answer about the leftover entries that draw on it. */
@@ -43,7 +54,9 @@ sealed class PendingDelete {
 @HiltViewModel
 class PlanViewModel @Inject constructor(
     private val plannerRepository: PlannerRepository,
-    private val settingsStore: SettingsStore
+    private val settingsStore: SettingsStore,
+    private val planSuggester: PlanSuggester,
+    private val database: RecipeDatabase
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PlanUiState())
@@ -243,5 +256,165 @@ class PlanViewModel @Inject constructor(
 
     fun clearSnackbar() {
         _uiState.value = _uiState.value.copy(snackbarMessage = null)
+    }
+
+    fun requestPlanSuggestions() {
+        val state = _uiState.value
+        val slots = state.weekSlots
+        val entries = state.weekEntries
+
+        val occupiedSlotIds = entries.map { it.slotId }.toSet()
+        val emptySlotEntities = slots.filter { it.id !in occupiedSlotIds }
+        if (emptySlotEntities.isEmpty()) {
+            _uiState.value = state.copy(snackbarMessage = "No empty slots to fill this week!")
+            return
+        }
+
+        if (state.allRecipes.isEmpty()) {
+            _uiState.value = state.copy(snackbarMessage = "No saved recipes in library to suggest from.")
+            return
+        }
+
+        _uiState.value = state.copy(isSuggesting = true)
+
+        viewModelScope.launch {
+            try {
+                val emptySlots = emptySlotEntities.map { slot ->
+                    EmptyPlanSlot(
+                        slotId = slot.id,
+                        day = slot.date.toString(),
+                        slotName = slot.name
+                    )
+                }
+
+                val recipesMap = state.allRecipes.associateBy { it.id }
+                val slotsMap = slots.associateBy { it.id }
+                val existingAssignments = entries.mapNotNull { entry ->
+                    val slot = slotsMap[entry.slotId] ?: return@mapNotNull null
+                    ExistingPlanAssignment(
+                        slotId = entry.slotId,
+                        recipeId = entry.recipeId,
+                        recipeTitle = entry.text ?: entry.recipeId?.let { recipesMap[it]?.title } ?: "Planned Meal",
+                        day = slot.date.toString(),
+                        slotName = slot.name
+                    )
+                }
+
+                val inventory = database.listsDao().getAllInventoryItems()
+                val inStock = inventory.filter { it.status == "in_stock" }.map { it.name }
+                val lowStock = inventory.filter { it.status == "low" }.map { it.name }
+                val leftovers = state.availableLeftovers.map {
+                    val title = it.recipeId?.let { rId -> recipesMap[rId]?.title } ?: "Leftover"
+                    "$title (${it.remainingPortions} portions left)"
+                }
+
+                val recipeIndexEntries = state.allRecipes.map { recipe ->
+                    val ingredients = database.ingredientDao().getByRecipeId(recipe.id)
+                    val tags = database.recipeTagDao().getTagsForRecipe(recipe.id)
+                    val lastCookedDate = database.cookLogDao().getLastCookedDate(recipe.id)
+                    val mainIngredients = ingredients.map { it.name }.filter { it.isNotBlank() }
+
+                    RecipeIndexEntry(
+                        id = recipe.id,
+                        title = recipe.title.orEmpty(),
+                        tags = tags.map { it.name },
+                        mainIngredients = mainIngredients,
+                        totalMinutes = recipe.totalMin,
+                        complexity = recipe.complexity,
+                        spiceLevel = recipe.spiceLevel,
+                        dietType = recipe.dietType,
+                        contains = emptyList(),
+                        kcalPerServing = recipe.kcalPerServing,
+                        makeAhead = recipe.makeAhead,
+                        freezerFriendly = recipe.freezerFriendly,
+                        equipment = emptyList(),
+                        favourite = recipe.isFavourite,
+                        lastCookedDate = lastCookedDate
+                    )
+                }
+
+                val input = PlanSuggesterInput(
+                    emptySlots = emptySlots,
+                    existingAssignments = existingAssignments,
+                    libraryRecipes = recipeIndexEntries,
+                    inStockIngredients = inStock,
+                    lowStockIngredients = lowStock,
+                    availableLeftovers = leftovers
+                )
+
+                val result = planSuggester.suggestMeals(input)
+                result.fold(
+                    onSuccess = { planResult ->
+                        if (planResult.usage.inputTokens > 0) {
+                            val activeModel = settingsStore.modelIdFlow.first()
+                            database.llmUsageDao().insert(
+                                LlmUsageEntity(
+                                    purpose = LlmUsageEntity.PURPOSE_PLANNING,
+                                    model = planResult.usage.model ?: activeModel,
+                                    inputTokens = planResult.usage.inputTokens,
+                                    outputTokens = planResult.usage.outputTokens,
+                                    cacheReadTokens = planResult.usage.cacheReadTokens,
+                                    webSearches = 0
+                                )
+                            )
+                        }
+
+                        if (planResult.suggestions.isEmpty()) {
+                            _uiState.value = _uiState.value.copy(
+                                isSuggesting = false,
+                                snackbarMessage = "No suggestions could be generated."
+                            )
+                        } else {
+                            _uiState.value = _uiState.value.copy(
+                                isSuggesting = false,
+                                planSuggestions = planResult.suggestions,
+                                showSuggestionsDialog = true
+                            )
+                        }
+                    },
+                    onFailure = { err ->
+                        _uiState.value = _uiState.value.copy(
+                            isSuggesting = false,
+                            snackbarMessage = "Plan suggestion error: ${err.message}"
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isSuggesting = false,
+                    snackbarMessage = e.message ?: "Failed to generate suggestions"
+                )
+            }
+        }
+    }
+
+    fun applyPlanSuggestions(selected: List<ProposedSlotAssignment>) {
+        if (selected.isEmpty()) {
+            dismissSuggestionsDialog()
+            return
+        }
+
+        viewModelScope.launch {
+            for (item in selected) {
+                plannerRepository.addCookEntry(
+                    slotId = item.slotId,
+                    recipeId = item.recipeId,
+                    portions = item.portions
+                )
+            }
+            _uiState.value = _uiState.value.copy(
+                showSuggestionsDialog = false,
+                planSuggestions = emptyList(),
+                snackbarMessage = "Added ${selected.size} suggested meals to plan!"
+            )
+            loadData()
+        }
+    }
+
+    fun dismissSuggestionsDialog() {
+        _uiState.value = _uiState.value.copy(
+            showSuggestionsDialog = false,
+            planSuggestions = emptyList()
+        )
     }
 }

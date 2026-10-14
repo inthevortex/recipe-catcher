@@ -112,11 +112,11 @@ Week planning, Today, the grocery list and inventory, and the home-screen widget
 
 The three features that call the LLM on demand, sharing one web-search client.
 
-- [ ] Web call: `web_search` tool with `max_uses`, fenced-JSON parsing, `pause_turn` handling, URLs kept only from search results.
-- [ ] `ChatPlanner` library call with the recipe index, FTS pre-filter above 300 recipes, and ID validation.
-- [ ] Chat screen: history, quick prompts, Include web toggle, library and web cards, Save through the importer.
-- [ ] Find with AI on the edit form.
-- [ ] `PlanSuggester` with Suggest and Fill empty slots in the planner.
+- [x] Web call: `web_search` tool with `max_uses`, fenced-JSON parsing, `pause_turn` handling, URLs kept only from search results.
+- [x] `ChatPlanner` library call with the recipe index, FTS pre-filter above 300 recipes, and ID validation.
+- [x] Chat screen: history, quick prompts, Include web toggle, library and web cards, Save through the importer.
+- [x] Find with AI on the edit form.
+- [x] `PlanSuggester` with Suggest and Fill empty slots in the planner.
 
 **Done when:** "I have eggs, onions and 20 minutes" returns sensible library picks, a web pick saves through the importer, and Suggest fills a slot.
 

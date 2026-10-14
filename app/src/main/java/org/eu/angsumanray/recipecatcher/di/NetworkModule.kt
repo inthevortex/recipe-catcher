@@ -113,4 +113,38 @@ object NetworkModule {
             modelIdProvider = { settingsStore.modelIdFlow.first() }
         )
     }
+
+    @Provides
+    @Singleton
+    fun provideWebSearchProvider(httpFetcher: HttpFetcher): org.eu.angsumanray.recipecatcher.core.ports.WebSearchProvider {
+        return org.eu.angsumanray.recipecatcher.core.web.DuckDuckGoSearchProvider(httpFetcher) { Log.i("DuckDuckGoSearch", it) }
+    }
+
+    @Provides
+    @Singleton
+    fun provideChatPlanner(
+        @AnthropicHttpClient httpClient: HttpClient,
+        settingsStore: SettingsStore,
+        webSearchProvider: org.eu.angsumanray.recipecatcher.core.ports.WebSearchProvider
+    ): org.eu.angsumanray.recipecatcher.core.llm.ChatPlanner {
+        return org.eu.angsumanray.recipecatcher.core.llm.ChatPlanner(
+            httpClient = httpClient,
+            apiKeyProvider = { settingsStore.getApiKey() },
+            modelIdProvider = { settingsStore.chatModelIdFlow.first() },
+            webSearchProvider = webSearchProvider
+        )
+    }
+
+    @Provides
+    @Singleton
+    fun providePlanSuggester(
+        @AnthropicHttpClient httpClient: HttpClient,
+        settingsStore: SettingsStore
+    ): org.eu.angsumanray.recipecatcher.core.llm.PlanSuggester {
+        return org.eu.angsumanray.recipecatcher.core.llm.PlanSuggester(
+            httpClient = httpClient,
+            apiKeyProvider = { settingsStore.getApiKey() },
+            modelIdProvider = { settingsStore.modelIdFlow.first() }
+        )
+    }
 }

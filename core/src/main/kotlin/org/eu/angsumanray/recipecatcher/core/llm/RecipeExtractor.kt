@@ -1,5 +1,6 @@
 package org.eu.angsumanray.recipecatcher.core.llm
 
+import kotlinx.serialization.Serializable
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
 
 data class ExtractionInput(
@@ -40,6 +41,7 @@ data class NewListSuggestion(
     val name: String
 )
 
+@Serializable
 data class LlmUsage(
     val inputTokens: Int,
     val outputTokens: Int,

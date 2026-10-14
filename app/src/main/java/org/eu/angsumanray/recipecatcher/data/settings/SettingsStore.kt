@@ -60,6 +60,9 @@ class SettingsStore @Inject constructor(
         private val KEY_PREP_ALERT_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("prep_alert_enabled")
         private val KEY_PREP_ALERT_TIME = stringPreferencesKey("prep_alert_time")
         private val KEY_COOKING_ALERTS_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("cooking_alerts")
+        private val KEY_CHAT_MODEL_ID = stringPreferencesKey("chat_model_id")
+        private val KEY_INCLUDE_WEB_DEFAULT = androidx.datastore.preferences.core.booleanPreferencesKey("include_web_default")
+        private val KEY_MAX_WEB_SEARCHES = androidx.datastore.preferences.core.intPreferencesKey("max_web_searches")
     }
 
     val weekStartsOnFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
@@ -165,6 +168,36 @@ class SettingsStore @Inject constructor(
 
     val modelIdFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
         prefs[KEY_MODEL_ID] ?: DEFAULT_MODEL_ID
+    }
+
+    val chatModelIdFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_CHAT_MODEL_ID] ?: prefs[KEY_MODEL_ID] ?: DEFAULT_MODEL_ID
+    }
+
+    val includeWebDefaultFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_INCLUDE_WEB_DEFAULT] ?: false
+    }
+
+    val maxWebSearchesFlow: Flow<Int> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_MAX_WEB_SEARCHES] ?: 3
+    }
+
+    suspend fun setChatModelId(modelId: String) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_CHAT_MODEL_ID] = modelId.trim().ifEmpty { DEFAULT_MODEL_ID }
+        }
+    }
+
+    suspend fun setIncludeWebDefault(include: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_INCLUDE_WEB_DEFAULT] = include
+        }
+    }
+
+    suspend fun setMaxWebSearches(max: Int) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_MAX_WEB_SEARCHES] = max.coerceIn(1, 10)
+        }
     }
 
     val themeFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->

@@ -388,33 +388,6 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
     }
 }
 
-@Serializable
-private data class AnthropicMessageResponse(
-    val id: String? = null,
-    val type: String? = null,
-    val role: String? = null,
-    val content: List<AnthropicContentBlock> = emptyList(),
-    val model: String? = null,
-    @SerialName("stop_reason")
-    val stopReason: String? = null,
-    val usage: AnthropicUsage? = null
-)
-
-@Serializable
-private data class AnthropicContentBlock(
-    val type: String,
-    val text: String? = null
-)
-
-@Serializable
-private data class AnthropicUsage(
-    @SerialName("input_tokens")
-    val inputTokens: Int = 0,
-    @SerialName("output_tokens")
-    val outputTokens: Int = 0,
-    @SerialName("cache_read_input_tokens")
-    val cacheReadInputTokens: Int? = null
-)
 
 @Serializable
 internal data class RawExtractedRecipe(

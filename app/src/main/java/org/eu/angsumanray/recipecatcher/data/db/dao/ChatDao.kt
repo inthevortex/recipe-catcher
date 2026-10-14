@@ -29,4 +29,16 @@ interface ChatDao {
 
     @Query("SELECT * FROM chat_message WHERE session_id = :sessionId ORDER BY created_at DESC LIMIT :limit")
     suspend fun getLastMessagesForSession(sessionId: Long, limit: Int = 10): List<ChatMessageEntity>
+
+    @Query("SELECT * FROM chat_session ORDER BY id ASC LIMIT 1")
+    suspend fun getFirstSession(): ChatSessionEntity?
+
+    @Query("DELETE FROM chat_message WHERE session_id = :sessionId")
+    suspend fun clearMessagesForSession(sessionId: Long)
+
+    @Query("DELETE FROM chat_message")
+    suspend fun clearAllMessages()
+
+    @Query("SELECT * FROM chat_message WHERE session_id = :sessionId ORDER BY created_at ASC")
+    suspend fun getMessagesForSession(sessionId: Long): List<ChatMessageEntity>
 }

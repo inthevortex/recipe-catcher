@@ -39,6 +39,8 @@ import org.eu.angsumanray.recipecatcher.capture.ImageCleanupWorker
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
+import org.eu.angsumanray.recipecatcher.ui.chat.ChatScreen
+import org.eu.angsumanray.recipecatcher.ui.chat.ChatViewModel
 import org.eu.angsumanray.recipecatcher.ui.cook.CookingModeScreen
 import org.eu.angsumanray.recipecatcher.ui.cook.CookingModeViewModel
 import org.eu.angsumanray.recipecatcher.ui.edit.EditRecipeScreen
@@ -188,7 +190,8 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToPlan = { navController.navigate("plan") },
                                 onNavigateToViewer = { id -> navController.navigate("viewer/$id") },
                                 onNavigateToCookingMode = { id, servings -> navController.navigate("cook/$id?servings=$servings") },
-                                onNavigateToSettings = { navController.navigate("settings") }
+                                onNavigateToSettings = { navController.navigate("settings") },
+                                onNavigateToChat = { navController.navigate("chat") }
                             )
                         }
 
@@ -209,7 +212,8 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToSettings = { navController.navigate("settings") },
                                 onNavigateToViewer = { id -> navController.navigate("viewer/$id") },
                                 onNavigateToEdit = { id -> navController.navigate("edit/$id") },
-                                onNavigateToReview = { id -> navController.navigate("review/$id") }
+                                onNavigateToReview = { id -> navController.navigate("review/$id") },
+                                onNavigateToChat = { navController.navigate("chat") }
                             )
                         }
 
@@ -306,6 +310,16 @@ class MainActivity : ComponentActivity() {
                         ListManagerScreen(
                             viewModel = viewModel,
                             onNavigateBack = { navController.popBackStack() }
+                        )
+                    }
+
+                    composable("chat") {
+                        val viewModel = hiltViewModel<ChatViewModel>()
+                        ChatScreen(
+                            viewModel = viewModel,
+                            onNavigateBack = { navController.popBackStack() },
+                            onNavigateToViewer = { id -> navController.navigate("viewer/$id") },
+                            onNavigateToReview = { id -> navController.navigate("review/$id") }
                         )
                     }
                 }

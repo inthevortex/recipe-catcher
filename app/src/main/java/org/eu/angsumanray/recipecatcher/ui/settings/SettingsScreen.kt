@@ -63,6 +63,9 @@ fun SettingsScreen(
 ) {
     val apiKey by viewModel.apiKey.collectAsState()
     val modelId by viewModel.modelId.collectAsState()
+    val chatModelId by viewModel.chatModelId.collectAsState()
+    val includeWebDefault by viewModel.includeWebDefault.collectAsState()
+    val maxWebSearches by viewModel.maxWebSearches.collectAsState()
     val theme by viewModel.theme.collectAsState()
     val testStatus by viewModel.testKeyStatus.collectAsState()
     val spendStats by viewModel.spendStats.collectAsState()
@@ -373,6 +376,61 @@ fun SettingsScreen(
                         Switch(
                             checked = cookingAlertsEnabled,
                             onCheckedChange = { viewModel.setCookingAlertsEnabled(it) }
+                        )
+                    }
+                }
+            }
+
+            // Chat & Web Search Settings
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Chat & Web Search",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    OutlinedTextField(
+                        value = chatModelId,
+                        onValueChange = { viewModel.setChatModelId(it) },
+                        label = { Text("Chat Model ID") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Include web by default", style = MaterialTheme.typography.bodyMedium)
+                            Text("Enables web recipe searches in chat by default", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = includeWebDefault,
+                            onCheckedChange = { viewModel.setIncludeWebDefault(it) }
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Max web searches per message", style = MaterialTheme.typography.bodyMedium)
+                            Text("Caps search tool calls per turn (1–10)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        OutlinedTextField(
+                            value = "$maxWebSearches",
+                            onValueChange = {
+                                val num = it.filter { ch -> ch.isDigit() }.toIntOrNull() ?: 1
+                                viewModel.setMaxWebSearches(num)
+                            },
+                            modifier = Modifier.width(80.dp),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                         )
                     }
                 }

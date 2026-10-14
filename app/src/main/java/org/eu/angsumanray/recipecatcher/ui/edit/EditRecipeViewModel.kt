@@ -22,6 +22,9 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.data.repo.TagRepository
 import org.eu.angsumanray.recipecatcher.data.repo.toExtractionUsageEntity
+import org.eu.angsumanray.recipecatcher.core.llm.ChatPlanner
+import org.eu.angsumanray.recipecatcher.core.llm.WebRecipeSuggestion
+import org.eu.angsumanray.recipecatcher.core.web.WebRecipeFetcher
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import java.util.UUID
 import javax.inject.Inject
@@ -59,7 +62,11 @@ data class EditRecipeUiState(
     val selectedTagIds: Set<Long> = emptySet(),
     val isExtractingText: Boolean = false,
     val extractError: String? = null,
-    val isSaved: Boolean = false
+    val isSaved: Boolean = false,
+    val isSearchingAi: Boolean = false,
+    val aiCandidates: List<WebRecipeSuggestion> = emptyList(),
+    val aiSearchError: String? = null,
+    val isFetchingCandidate: Boolean = false
 )
 
 @HiltViewModel
@@ -67,6 +74,8 @@ class EditRecipeViewModel @Inject constructor(
     private val recipeRepository: RecipeRepository,
     private val tagRepository: TagRepository,
     private val recipeExtractor: RecipeExtractor,
+    private val chatPlanner: ChatPlanner,
+    private val webRecipeFetcher: WebRecipeFetcher,
     private val settingsStore: SettingsStore,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
@@ -357,6 +366,247 @@ class EditRecipeViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    fun searchFindWithAi(dishName: String, hints: String = "") {
+        if (dishName.isBlank()) return
+        _uiState.value = _uiState.value.copy(
+            isSearchingAi = true,
+            aiSearchError = null,
+            aiCandidates = emptyList()
+        )
+
+        viewModelScope.launch {
+            val result = chatPlanner.findWebCandidates(dishName.trim(), hints.trim())
+            if (result.isSuccess) {
+                val candidates = result.getOrThrow()
+                _uiState.value = _uiState.value.copy(
+                    isSearchingAi = false,
+                    aiCandidates = candidates,
+                    aiSearchError = if (candidates.isEmpty()) "No matching recipes found online. Try different keywords or hints." else null
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    isSearchingAi = false,
+                    aiSearchError = result.exceptionOrNull()?.message ?: "Search failed"
+                )
+            }
+        }
+    }
+
+    fun applyAiCandidate(candidate: WebRecipeSuggestion, onFinished: () -> Unit) {
+        _uiState.value = _uiState.value.copy(
+            isFetchingCandidate = true,
+            aiSearchError = null
+        )
+
+        viewModelScope.launch {
+            try {
+                val webData = webRecipeFetcher.fetch(candidate.url)
+                if (webData == null || webData.sourceText.isBlank()) {
+                    _uiState.value = _uiState.value.copy(
+                        isFetchingCandidate = false,
+                        aiSearchError = "Could not fetch recipe page from ${candidate.site}. Please try another candidate."
+                    )
+                    return@launch
+                }
+
+                val allTags = tagRepository.getTagsByKind(TagEntity.KIND_TAG).map { it.name }
+                val allDiet = tagRepository.getTagsByKind(TagEntity.KIND_DIET).map { it.name }
+                val allEquipment = tagRepository.getTagsByKind(TagEntity.KIND_EQUIPMENT).map { it.name }
+                val allConsumables = tagRepository.getTagsByKind(TagEntity.KIND_CONSUMABLE).map { it.name }
+
+                val input = ExtractionInput(
+                    sourceType = SourceType.WEB,
+                    sourceText = webData.sourceText,
+                    author = webData.author,
+                    allowedTags = allTags,
+                    allowedDiet = allDiet,
+                    allowedEquipment = allEquipment,
+                    allowedConsumables = allConsumables,
+                    allowNewTags = settingsStore.allowNewAiTagsFlow.first()
+                )
+
+                val extractionResult = recipeExtractor.extract(input)
+                extractionResult.fold(
+                    onSuccess = { extracted ->
+                        val activeModel = settingsStore.modelIdFlow.first()
+                        recipeRepository.logUsage(extracted.usage.toExtractionUsageEntity(activeModel))
+
+                        val matchedTagIds = mutableSetOf<Long>()
+                        _uiState.value.allTags.filter { extracted.tags.contains(it.name) }.forEach { matchedTagIds.add(it.id) }
+                        _uiState.value.allDiet.filter { extracted.contains.contains(it.name) }.forEach { matchedTagIds.add(it.id) }
+                        _uiState.value.allEquipment.filter { extracted.equipment.contains(it.name) }.forEach { matchedTagIds.add(it.id) }
+                        _uiState.value.allConsumables.filter { extracted.consumables.contains(it.name) }.forEach { matchedTagIds.add(it.id) }
+
+                        var ingPos = 0
+                        val ingredientEntities = extracted.ingredientGroups.flatMap { group ->
+                            group.items.map { item ->
+                                IngredientEntity(
+                                    recipeId = recipeId,
+                                    position = ingPos++,
+                                    groupName = group.name?.ifBlank { null },
+                                    quantity = item.quantity?.takeIf { it > 0 },
+                                    quantityMax = item.quantityMax?.takeIf { it > 0 },
+                                    unit = item.unit?.ifBlank { null },
+                                    name = item.name,
+                                    baseName = item.baseName,
+                                    category = item.category,
+                                    note = item.note?.ifBlank { null },
+                                    rawText = item.rawText
+                                )
+                            }
+                        }
+
+                        val stepEntities = extracted.steps.mapIndexed { index, step ->
+                            StepEntity(
+                                recipeId = recipeId,
+                                position = index,
+                                text = step.text,
+                                timerSeconds = step.timerSeconds?.takeIf { it > 0 }
+                            )
+                        }
+
+                        _uiState.value = _uiState.value.copy(
+                            isFetchingCandidate = false,
+                            aiCandidates = emptyList(),
+                            title = extracted.title?.ifBlank { candidate.title } ?: candidate.title,
+                            description = extracted.description?.ifBlank { _uiState.value.description } ?: _uiState.value.description,
+                            servingsText = extracted.servings?.takeIf { it > 0 }?.toString() ?: _uiState.value.servingsText,
+                            prepMin = extracted.prepMinutes?.takeIf { it > 0 } ?: _uiState.value.prepMin,
+                            cookMin = extracted.cookMinutes?.takeIf { it > 0 } ?: _uiState.value.cookMin,
+                            totalMin = extracted.totalMinutes?.takeIf { it > 0 } ?: _uiState.value.totalMin,
+                            cuisine = extracted.cuisine?.ifBlank { _uiState.value.cuisine } ?: _uiState.value.cuisine,
+                            complexity = extracted.complexity?.ifBlank { _uiState.value.complexity } ?: _uiState.value.complexity,
+                            complexityReason = extracted.complexityReason?.ifBlank { _uiState.value.complexityReason } ?: _uiState.value.complexityReason,
+                            spiceLevel = extracted.spiceLevel?.ifBlank { _uiState.value.spiceLevel } ?: _uiState.value.spiceLevel,
+                            dietType = extracted.dietType?.ifBlank { _uiState.value.dietType } ?: _uiState.value.dietType,
+                            kcalPerServing = extracted.kcalPerServing?.takeIf { it > 0 } ?: _uiState.value.kcalPerServing,
+                            makeAhead = extracted.makeAhead || _uiState.value.makeAhead,
+                            freezerFriendly = extracted.freezerFriendly || _uiState.value.freezerFriendly,
+                            captionRaw = candidate.url,
+                            ingredients = if (ingredientEntities.isNotEmpty()) ingredientEntities else _uiState.value.ingredients,
+                            quantityTexts = if (ingredientEntities.isNotEmpty()) {
+                                ingredientEntities.map { formatQuantityText(it.quantity, it.quantityMax) }
+                            } else _uiState.value.quantityTexts,
+                            steps = if (stepEntities.isNotEmpty()) stepEntities else _uiState.value.steps,
+                            selectedTagIds = matchedTagIds
+                        )
+                        onFinished()
+                    },
+                    onFailure = { err ->
+                        _uiState.value = _uiState.value.copy(
+                            isFetchingCandidate = false,
+                            aiSearchError = err.message ?: "Failed to extract recipe from candidate page"
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isFetchingCandidate = false,
+                    aiSearchError = e.message ?: "Error processing recipe candidate"
+                )
+            }
+        }
+    }
+
+    fun fillMissingMetadataWithAi(onFinished: () -> Unit) {
+        val state = _uiState.value
+        val titleText = state.title.trim()
+        if (titleText.isEmpty()) {
+            _uiState.value = _uiState.value.copy(extractError = "Enter a recipe title first")
+            return
+        }
+
+        _uiState.value = _uiState.value.copy(isExtractingText = true, extractError = null)
+
+        viewModelScope.launch {
+            try {
+                val ingredientsSummary = state.ingredients.filter { it.name.isNotBlank() }
+                    .joinToString("\n") { "- ${it.name} ${it.rawText}".trim() }
+                val stepsSummary = state.steps.filter { it.text.isNotBlank() }
+                    .joinToString("\n") { it.text }
+
+                val sourceText = buildString {
+                    appendLine("Title: $titleText")
+                    if (state.description.isNotBlank()) appendLine("Description: ${state.description}")
+                    if (ingredientsSummary.isNotBlank()) {
+                        appendLine("Ingredients:")
+                        appendLine(ingredientsSummary)
+                    }
+                    if (stepsSummary.isNotBlank()) {
+                        appendLine("Steps:")
+                        appendLine(stepsSummary)
+                    }
+                }
+
+                val allTags = tagRepository.getTagsByKind(TagEntity.KIND_TAG).map { it.name }
+                val allDiet = tagRepository.getTagsByKind(TagEntity.KIND_DIET).map { it.name }
+                val allEquipment = tagRepository.getTagsByKind(TagEntity.KIND_EQUIPMENT).map { it.name }
+                val allConsumables = tagRepository.getTagsByKind(TagEntity.KIND_CONSUMABLE).map { it.name }
+
+                val input = ExtractionInput(
+                    sourceType = SourceType.MANUAL,
+                    sourceText = sourceText,
+                    allowedTags = allTags,
+                    allowedDiet = allDiet,
+                    allowedEquipment = allEquipment,
+                    allowedConsumables = allConsumables,
+                    allowNewTags = false
+                )
+
+                val result = recipeExtractor.extract(input)
+                result.fold(
+                    onSuccess = { extracted ->
+                        val activeModel = settingsStore.modelIdFlow.first()
+                        recipeRepository.logUsage(extracted.usage.toExtractionUsageEntity(activeModel))
+
+                        val matchedTagIds = state.selectedTagIds.toMutableSet()
+                        state.allTags.filter { extracted.tags.contains(it.name) }.forEach { matchedTagIds.add(it.id) }
+                        state.allDiet.filter { extracted.contains.contains(it.name) }.forEach { matchedTagIds.add(it.id) }
+                        state.allEquipment.filter { extracted.equipment.contains(it.name) }.forEach { matchedTagIds.add(it.id) }
+                        state.allConsumables.filter { extracted.consumables.contains(it.name) }.forEach { matchedTagIds.add(it.id) }
+
+                        _uiState.value = _uiState.value.copy(
+                            isExtractingText = false,
+                            cuisine = state.cuisine.ifBlank { extracted.cuisine ?: "" },
+                            prepMin = if (state.prepMin > 0) state.prepMin else (extracted.prepMinutes ?: 0),
+                            cookMin = if (state.cookMin > 0) state.cookMin else (extracted.cookMinutes ?: 0),
+                            totalMin = if (state.totalMin > 0) state.totalMin else (extracted.totalMinutes ?: 0),
+                            complexity = state.complexity.ifBlank { extracted.complexity ?: "" },
+                            complexityReason = state.complexityReason.ifBlank { extracted.complexityReason ?: "" },
+                            spiceLevel = state.spiceLevel.ifBlank { extracted.spiceLevel ?: "" },
+                            dietType = state.dietType.ifBlank { extracted.dietType ?: "" },
+                            kcalPerServing = if (state.kcalPerServing > 0) state.kcalPerServing else (extracted.kcalPerServing ?: 0),
+                            makeAhead = state.makeAhead || extracted.makeAhead,
+                            freezerFriendly = state.freezerFriendly || extracted.freezerFriendly,
+                            selectedTagIds = matchedTagIds
+                        )
+                        onFinished()
+                    },
+                    onFailure = { err ->
+                        _uiState.value = _uiState.value.copy(
+                            isExtractingText = false,
+                            extractError = err.message ?: "Failed to fill metadata with AI"
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isExtractingText = false,
+                    extractError = e.message ?: "Error processing metadata"
+                )
+            }
+        }
+    }
+
+    fun clearAiCandidates() {
+        _uiState.value = _uiState.value.copy(
+            aiCandidates = emptyList(),
+            aiSearchError = null,
+            isSearchingAi = false,
+            isFetchingCandidate = false
+        )
     }
 
     fun saveRecipe(onSuccess: (Long) -> Unit) {

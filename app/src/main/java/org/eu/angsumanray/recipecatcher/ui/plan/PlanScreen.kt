@@ -2,6 +2,8 @@ package org.eu.angsumanray.recipecatcher.ui.plan
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,12 +29,16 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.mutableStateListOf
+import org.eu.angsumanray.recipecatcher.core.llm.ProposedSlotAssignment
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -100,6 +106,18 @@ fun PlanScreen(
             TopAppBar(
                 title = { Text("Meal Planner", fontWeight = FontWeight.Bold) },
                 actions = {
+                    if (state.isSuggesting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier
+                                .padding(end = 12.dp)
+                                .size(24.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        IconButton(onClick = { viewModel.requestPlanSuggestions() }) {
+                            Icon(Icons.Default.Star, contentDescription = "Suggest meals with AI")
+                        }
+                    }
                     IconButton(onClick = { viewModel.copyLastWeekLayout() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Copy last week layout")
                     }
@@ -334,6 +352,16 @@ fun PlanScreen(
                 viewModel.moveEntry(entry.id, newSlotId)
                 entryToMove = null
             }
+        )
+    }
+
+    if (state.showSuggestionsDialog) {
+        PlanSuggestionsDialog(
+            suggestions = state.planSuggestions,
+            allSlots = state.weekSlots,
+            allRecipes = state.allRecipes,
+            onApply = { selected -> viewModel.applyPlanSuggestions(selected) },
+            onDismiss = { viewModel.dismissSuggestionsDialog() }
         )
     }
 }
@@ -836,3 +864,114 @@ private fun leftoverLabel(
 ): String =
     "${recipeTitle ?: "Deleted recipe"}, ${leftover.remainingPortions} of ${leftover.initialPortions} portions left " +
         "(${leftover.slotName}, ${leftover.slotDate})"
+
+@Composable
+fun PlanSuggestionsDialog(
+    suggestions: List<ProposedSlotAssignment>,
+    allSlots: List<PlanSlotEntity>,
+    allRecipes: List<RecipeEntity>,
+    onApply: (List<ProposedSlotAssignment>) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val selected = remember { mutableStateListOf<ProposedSlotAssignment>().apply { addAll(suggestions) } }
+    val slotsMap = remember(allSlots) { allSlots.associateBy { it.id } }
+    val recipesMap = remember(allRecipes) { allRecipes.associateBy { it.id } }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("AI Meal Suggestions", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = "Proposed recipe assignments for empty slots this week:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                for (suggestion in suggestions) {
+                    val slot = slotsMap[suggestion.slotId]
+                    val recipe = recipesMap[suggestion.recipeId]
+                    val isChecked = selected.contains(suggestion)
+
+                    val dayName = slot?.date?.dayOfWeek?.name?.lowercase()
+                        ?.replaceFirstChar { it.uppercase() } ?: "Day"
+                    val slotTitle = "${slot?.date ?: ""} $dayName — ${slot?.name ?: "Slot"}"
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isChecked)
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                            else
+                                MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = isChecked,
+                                onCheckedChange = { checked ->
+                                    if (checked) {
+                                        if (!selected.contains(suggestion)) selected.add(suggestion)
+                                    } else {
+                                        selected.remove(suggestion)
+                                    }
+                                }
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = slotTitle,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = recipe?.title ?: "Recipe #${suggestion.recipeId}",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                if (suggestion.reason.isNotBlank()) {
+                                    Text(
+                                        text = suggestion.reason,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Text(
+                                    text = "${suggestion.portions} portions",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onApply(selected.toList()) },
+                enabled = selected.isNotEmpty()
+            ) {
+                Text("Apply (${selected.size})")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}

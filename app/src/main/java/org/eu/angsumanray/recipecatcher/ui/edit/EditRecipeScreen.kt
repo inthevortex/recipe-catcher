@@ -22,8 +22,12 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
+import org.eu.angsumanray.recipecatcher.core.llm.WebRecipeSuggestion
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -67,6 +71,7 @@ fun EditRecipeScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     var showPasteDialog by remember { mutableStateOf(false) }
+    var showFindWithAiDialog by remember { mutableStateOf(false) }
     var pasteInput by remember { mutableStateOf("") }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
 
@@ -86,6 +91,9 @@ fun EditRecipeScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showFindWithAiDialog = true }) {
+                        Icon(Icons.Default.Search, contentDescription = "Find with AI")
+                    }
                     IconButton(onClick = { showPasteDialog = true }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Fill from pasted text")
                     }
@@ -578,6 +586,30 @@ fun EditRecipeScreen(
         )
     }
 
+    // Dialog: Find with AI
+    if (showFindWithAiDialog) {
+        FindWithAiDialog(
+            state = state,
+            onDismiss = {
+                showFindWithAiDialog = false
+                viewModel.clearAiCandidates()
+            },
+            onSearch = { dish, hints ->
+                viewModel.searchFindWithAi(dish, hints)
+            },
+            onSelectCandidate = { candidate ->
+                viewModel.applyAiCandidate(candidate) {
+                    showFindWithAiDialog = false
+                }
+            },
+            onFillMissingMetadata = {
+                viewModel.fillMissingMetadataWithAi {
+                    showFindWithAiDialog = false
+                }
+            }
+        )
+    }
+
     // Dialog: Delete confirmation
     if (showDeleteConfirmDialog) {
         AlertDialog(
@@ -601,4 +633,165 @@ fun EditRecipeScreen(
             }
         )
     }
+}
+
+@Composable
+fun FindWithAiDialog(
+    state: EditRecipeUiState,
+    onDismiss: () -> Unit,
+    onSearch: (dishName: String, hints: String) -> Unit,
+    onSelectCandidate: (WebRecipeSuggestion) -> Unit,
+    onFillMissingMetadata: () -> Unit
+) {
+    var dishNameInput by remember { mutableStateOf(state.title) }
+    var hintsInput by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Find with AI", fontWeight = FontWeight.Bold)
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = "Search online recipes by dish name, or auto-fill metadata for this recipe.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = dishNameInput,
+                    onValueChange = { dishNameInput = it },
+                    label = { Text("Dish name") },
+                    placeholder = { Text("e.g. Palak Paneer, Tacos") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = hintsInput,
+                    onValueChange = { hintsInput = it },
+                    label = { Text("Hints (optional)") },
+                    placeholder = { Text("e.g. Bengali style, no onion") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilledTonalButton(
+                        onClick = { onSearch(dishNameInput, hintsInput) },
+                        enabled = dishNameInput.isNotBlank() && !state.isSearchingAi && !state.isFetchingCandidate
+                    ) {
+                        Text("Search Web")
+                    }
+
+                    if (state.title.isNotBlank()) {
+                        TextButton(
+                            onClick = onFillMissingMetadata,
+                            enabled = !state.isExtractingText && !state.isSearchingAi
+                        ) {
+                            Text("Fill Details")
+                        }
+                    }
+                }
+
+                if (state.isSearchingAi || state.isFetchingCandidate) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                        Text(
+                            if (state.isFetchingCandidate) "Fetching & extracting recipe..." else "Searching for recipes...",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+
+                state.aiSearchError?.let { err ->
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = err,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
+                if (state.aiCandidates.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "Found Candidates:",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    for (candidate in state.aiCandidates) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(
+                                    text = candidate.title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = candidate.site.ifBlank { "Web Recipe" },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                if (candidate.reason.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = candidate.reason,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(
+                                    onClick = { onSelectCandidate(candidate) },
+                                    enabled = !state.isFetchingCandidate,
+                                    modifier = Modifier.align(Alignment.End),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                ) {
+                                    Text("Use This Recipe", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !state.isFetchingCandidate
+            ) {
+                Text("Close")
+            }
+        }
+    )
 }
