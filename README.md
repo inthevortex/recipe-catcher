@@ -122,6 +122,30 @@ These belong to you: the AI never writes them, and re-extraction never overwrite
 - 🏷️ **List manager** in Settings for tags, diet, equipment and consumables.
 - 🧹 A weekly job removes orphaned image files left behind by cancelled or failed captures.
 
+### Meal planner and Today screen ✅
+
+- **Four bottom tabs** with **Today** as the default start screen.
+- **Week plan** with daily slots for **cook**, **prep** and **leftover** entries.
+- **`PortionLedger`** tracks portions cooked and eaten so leftovers are accounted for.
+- **Add to plan** straight from the recipe viewer.
+
+### Grocery and inventory lists ✅
+
+- **`GroceryBuilder`** aggregates the week's plan into a shopping list and automatically subtracts what is already in your pantry inventory.
+- Categorised checklist for shopping.
+- Quick inventory status toggles to mark items as in stock or out.
+
+### Reminders ✅
+
+- `AlarmManager` alerts for **night-before prep** and **start-cooking** reminders.
+- A **Done** action on the notification marks the reminder complete.
+- `BootReceiver` reschedules pending alarms after a device restart.
+
+### Home screen widget ✅
+
+- Jetpack Glance **`TodayWidget`** shows today's planned meals on the home screen.
+- Interactive action callbacks let you act on meals without opening the app.
+
 ### Privacy and security
 
 - The Anthropic API key is encrypted with an **AES-GCM key held in AndroidKeyStore**, with only the ciphertext stored in DataStore (`EncryptedSharedPreferences` is deprecated).
@@ -426,14 +450,14 @@ Every wave ends with a tagged, signed release that installs over the previous on
 | **1** | Instagram capture | Ktor fetcher, three Instagram strategies, `ClaudeExtractor`, Room schema v1, secure settings, `CaptureWorker`, share sheet and Paste link, Review & Save, AI spend panel | ✅ Done |
 | **2** | Library, cooking, personal touches | FTS search, filters and sorts, viewer with scaling, cooking mode with timers, cook log with photos, favourites, notes, Write recipe, list manager, Re-extract, image cleanup | ✅ Done |
 | **3** | Web, YouTube, backup | `WebRecipeFetcher`, `YouTubeFetcher`, clipboard detection, WebView retry for blocked sites, `BackupManager`, `RestoreManager`, pre-migration backup | ✅ Done |
-| **4** | Planner, lists, widget | Bottom tabs with Today as home, week planner with cook / prep / leftover entries, grocery list and inventory, reminders, Glance `TodayWidget` | 🗓️ Planned |
+| **4** | Planner, lists, widget | Bottom tabs with Today as home, week planner with cook / prep / leftover entries, grocery list and inventory, reminders, Glance `TodayWidget` | ✅ Done |
 | **5** | Chat, Find with AI, Suggest | Recipe chat over your library with optional web search, Find with AI on the edit form, `PlanSuggester` | 🗓️ Planned |
 | **6** | Bulk import, Wear OS | Instagram saved-posts importer, opt-in top-comment fetch, `:wear` app with tile and complication | 🗓️ Planned |
 | **7** | Media (later) | Recipes from images via Haiku 5.5 image input; voice and transcript extraction | 💭 Later |
 
 ```mermaid
 flowchart LR
-  W0[0 · Foundation]:::done --> W1[1 · Instagram]:::done --> W2[2 · Library & cooking]:::done --> W3[3 · Web, YouTube, backup]:::done --> W4[4 · Planner & widget] --> W5[5 · Chat & AI] --> W6[6 · Import & Wear OS] -.-> W7[7 · Media]
+  W0[0 · Foundation]:::done --> W1[1 · Instagram]:::done --> W2[2 · Library & cooking]:::done --> W3[3 · Web, YouTube, backup]:::done --> W4[4 · Planner & widget]:::done --> W5[5 · Chat & AI] --> W6[6 · Import & Wear OS] -.-> W7[7 · Media]
   classDef done fill:#2e7d32,color:#fff,stroke:#1b5e20
   classDef wip fill:#f9a825,color:#000,stroke:#f57f17
 ```
