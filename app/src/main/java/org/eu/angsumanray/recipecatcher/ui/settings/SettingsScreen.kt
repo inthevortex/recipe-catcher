@@ -85,6 +85,14 @@ fun SettingsScreen(
         }
     }
 
+    val pickBackupFolderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.onBackupFolderPicked(uri)
+        }
+    }
+
     // SAF Open Document launcher for Restore
     val openRestoreLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -345,7 +353,7 @@ fun SettingsScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Remember backup folder", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                "Persist folder URI for fast one-tap backups",
+                                "Pick a folder once; later backups save there in one tap",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -382,7 +390,10 @@ fun SettingsScreen(
                     ) {
                         Button(
                             onClick = {
-                                createBackupLauncher.launch(BackupManager.generateSuggestedFileName())
+                                viewModel.backupNow(
+                                    pickFile = { createBackupLauncher.launch(BackupManager.generateSuggestedFileName()) },
+                                    pickFolder = { pickBackupFolderLauncher.launch(null) }
+                                )
                             },
                             modifier = Modifier.weight(1f)
                         ) {

@@ -10,7 +10,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -32,21 +31,26 @@ class ForegroundPageFetcher @Inject constructor(
     private val database: RecipeDatabase
 ) {
 
+    companion object {
+        private const val TIMEOUT_MILLIS = 20_000L
+        private const val SETTLE_MILLIS = 2_000L
+    }
+
     /**
-     * Attempts to fetch a blocked web page using an off-screen WebView on the main thread,
-     * allowing JavaScript and Cloudflare challenges to settle.
+     * Loads a blocked page in an off-screen WebView on the main thread, so JavaScript and
+     * Cloudflare challenges can run, then hands the page to the capture worker for extraction.
      */
-    suspend fun retryInWebView(recipeId: Long): Result<WebRecipeData> = withContext(Dispatchers.Main) {
+    suspend fun retryInWebView(recipeId: Long): Result<WebRecipeData> {
         val recipe = database.recipeDao().getById(recipeId)
-            ?: return@withContext Result.failure(IllegalArgumentException("Recipe $recipeId not found"))
+            ?: return Result.failure(IllegalArgumentException("Recipe $recipeId not found"))
 
         val url = recipe.sourceUrl ?: recipe.sourceKey
-        val html = withTimeoutOrNull(20_000L) {
-            fetchHtmlViaWebView(url)
-        } ?: return@withContext Result.failure(IllegalStateException("WebView fetch timed out"))
+        val html = withContext(Dispatchers.Main) {
+            withTimeoutOrNull(TIMEOUT_MILLIS) { fetchHtmlViaWebView(url) }
+        } ?: return Result.failure(IllegalStateException("The page did not finish loading"))
 
-        val webData = webRecipeFetcher.parseHtml(html, url)
-            ?: return@withContext Result.failure(IllegalStateException("Could not parse recipe from page"))
+        val webData = withContext(Dispatchers.Default) { webRecipeFetcher.parseHtml(html, url) }
+            ?: return Result.failure(IllegalStateException("Could not parse recipe from page"))
 
         val imagePath = webData.imageUrl?.let {
             imageStorageManager.downloadAndSave(recipeId, it)
@@ -64,9 +68,13 @@ class ForegroundPageFetcher @Inject constructor(
         database.recipeDao().update(updated)
 
         CaptureWorker.enqueue(context, recipeId)
-        Result.success(webData)
+        return Result.success(webData)
     }
 
+    /**
+     * Resumes with the page HTML once a load settles on something other than a challenge
+     * interstitial. A challenge that resolves navigates again, which triggers another check.
+     */
     @SuppressLint("SetJavaScriptEnabled")
     private suspend fun fetchHtmlViaWebView(url: String): String = suspendCancellableCoroutine { cont ->
         val webView = WebView(context)
@@ -80,47 +88,60 @@ class ForegroundPageFetcher @Inject constructor(
         val handler = Handler(Looper.getMainLooper())
         var finished = false
 
-        fun completeWithHtml() {
+        fun finish(html: String) {
             if (finished) return
             finished = true
+            handler.removeCallbacksAndMessages(null)
+            webView.destroy()
+            if (cont.isActive) cont.resume(html)
+        }
+
+        fun checkPage() {
+            if (finished) return
             webView.evaluateJavascript("(function() { return document.documentElement.outerHTML; })();") { raw ->
-                val html = if (!raw.isNullOrBlank() && raw != "null") {
-                    try {
-                        Json.decodeFromString<String>(raw)
-                    } catch (_: Exception) {
-                        raw.removeSurrounding("\"")
-                            .replace("\\\"", "\"")
-                            .replace("\\n", "\n")
-                            .replace("\\t", "\t")
-                    }
-                } else {
-                    ""
+                val html = decodeJsString(raw)
+                if (html.isNotBlank() && !WebRecipeFetcher.isChallengePage(html)) {
+                    finish(html)
+                } else if (!finished) {
+                    handler.postDelayed({ checkPage() }, SETTLE_MILLIS)
                 }
-                webView.destroy()
-                if (cont.isActive) cont.resume(html)
             }
         }
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                 super.onPageFinished(view, finishedUrl)
-                // Wait 2 seconds after page finished to allow JS challenge to resolve
-                handler.postDelayed({ completeWithHtml() }, 2000L)
+                handler.removeCallbacksAndMessages(null)
+                handler.postDelayed({ checkPage() }, SETTLE_MILLIS)
             }
 
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
                 super.onReceivedError(view, request, error)
                 if (request?.isForMainFrame == true) {
-                    handler.postDelayed({ completeWithHtml() }, 1000L)
+                    finish("")
                 }
             }
         }
 
         cont.invokeOnCancellation {
-            handler.removeCallbacksAndMessages(null)
-            webView.destroy()
+            handler.post {
+                handler.removeCallbacksAndMessages(null)
+                if (!finished) {
+                    finished = true
+                    webView.destroy()
+                }
+            }
         }
 
         webView.loadUrl(url)
+    }
+
+    private fun decodeJsString(raw: String?): String {
+        if (raw.isNullOrBlank() || raw == "null") return ""
+        return try {
+            Json.decodeFromString<String>(raw)
+        } catch (_: Exception) {
+            ""
+        }
     }
 }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
+import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -33,6 +34,10 @@ class RestoreManager @Inject constructor(
 ) {
 
     private val json = Json { ignoreUnknownKeys = true }
+
+    private companion object {
+        const val TAG = "RestoreManager"
+    }
 
     /**
      * Inspects and validates a backup ZIP from [sourceUri] without modifying live data.
@@ -73,8 +78,10 @@ class RestoreManager @Inject constructor(
             if (manifest.formatVersion > 1) {
                 throw IllegalStateException("Unsupported backup format version: ${manifest.formatVersion}")
             }
-            if (manifest.dbSchemaVersion > 1) {
-                throw IllegalStateException("Database schema version ${manifest.dbSchemaVersion} is newer than supported version 1")
+            if (manifest.dbSchemaVersion > RecipeDatabase.DATABASE_VERSION) {
+                throw IllegalStateException(
+                    "Database schema version ${manifest.dbSchemaVersion} is newer than supported version ${RecipeDatabase.DATABASE_VERSION}"
+                )
             }
 
             // 3. Check database file and SHA-256
@@ -88,30 +95,21 @@ class RestoreManager @Inject constructor(
                 throw IllegalStateException("Database integrity failure: SHA-256 hash mismatch")
             }
 
-            // 4. Run PRAGMA integrity_check read-only on the temp database
-            val readOnlyDb = SQLiteDatabase.openDatabase(
-                tempDb.absolutePath,
-                null,
-                SQLiteDatabase.OPEN_READONLY
-            )
-            val integrityOk = readOnlyDb.use { db ->
-                val cursor = db.rawQuery("PRAGMA integrity_check", null)
-                val status = cursor.use {
-                    if (it.moveToFirst()) it.getString(0) else "failed"
-                }
-                status.equals("ok", ignoreCase = true)
-            }
-            if (!integrityOk) {
-                throw IllegalStateException("Database PRAGMA integrity_check failed")
-            }
-
+            // 4. Run PRAGMA integrity_check read-only on the temp database and count its recipes
             val restoredRecipeCount = SQLiteDatabase.openDatabase(
                 tempDb.absolutePath,
                 null,
                 SQLiteDatabase.OPEN_READONLY
             ).use { db ->
-                val cursor = db.rawQuery("SELECT COUNT(*) FROM recipe", null)
-                cursor.use { if (it.moveToFirst()) it.getInt(0) else 0 }
+                val status = db.rawQuery("PRAGMA integrity_check", null).use {
+                    if (it.moveToFirst()) it.getString(0) else "failed"
+                }
+                if (!status.equals("ok", ignoreCase = true)) {
+                    throw IllegalStateException("Database PRAGMA integrity_check failed")
+                }
+                db.rawQuery("SELECT COUNT(*) FROM recipe", null).use {
+                    if (it.moveToFirst()) it.getInt(0) else 0
+                }
             }
 
             // 5. Query current live recipe count
@@ -151,8 +149,10 @@ class RestoreManager @Inject constructor(
         val imagesDir = File(context.filesDir, "images")
         val liveDb = context.getDatabasePath(RecipeDatabase.DATABASE_NAME)
 
-        // 1. Write automatic safety backup before touching live data
-        backupManager.createSafetyBackup()
+        // 1. Write automatic safety backup before touching live data; a failure here aborts the restore
+        if (liveDb.exists() || database.isOpen) {
+            backupManager.createSafetyBackup()
+        }
         if (imagesDir.exists()) {
             imagesDir.copyRecursively(safetyImagesBackup, overwrite = true)
         }
@@ -162,11 +162,7 @@ class RestoreManager @Inject constructor(
             database.close()
 
             // 3. Swap database file and delete stale WAL / SHM
-            val walFile = File(liveDb.parentFile, "${liveDb.name}-wal")
-            val shmFile = File(liveDb.parentFile, "${liveDb.name}-shm")
-            if (walFile.exists()) walFile.delete()
-            if (shmFile.exists()) shmFile.delete()
-
+            deleteWalFiles(liveDb)
             inspection.tempDbFile.copyTo(liveDb, overwrite = true)
 
             // 4. Swap images directory
@@ -177,6 +173,7 @@ class RestoreManager @Inject constructor(
             if (extractedImagesDir.exists()) {
                 extractedImagesDir.copyRecursively(imagesDir, overwrite = true)
             }
+            deleteUnreferencedImages(liveDb, imagesDir)
 
             // Clean up restore temp dir
             inspection.tempDir.deleteRecursively()
@@ -188,6 +185,7 @@ class RestoreManager @Inject constructor(
         } catch (e: Exception) {
             // Rollback from safety backup
             if (backupManager.safetyDbFile.exists()) {
+                deleteWalFiles(liveDb)
                 backupManager.safetyDbFile.copyTo(liveDb, overwrite = true)
             }
             if (safetyImagesBackup.exists()) {
@@ -207,7 +205,36 @@ class RestoreManager @Inject constructor(
         exitProcess(0)
     }
 
+    private fun deleteWalFiles(dbFile: File) {
+        File(dbFile.parentFile, "${dbFile.name}-wal").delete()
+        File(dbFile.parentFile, "${dbFile.name}-shm").delete()
+    }
+
+    /**
+     * Removes image files the restored database does not point to. Cleanup is best effort: a
+     * failure leaves extra files behind, which the weekly cleanup job removes later.
+     */
+    private fun deleteUnreferencedImages(dbFile: File, imagesDir: File) {
+        runCatching {
+            val referenced = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+                db.rawQuery(
+                    "SELECT image_path FROM recipe WHERE image_path IS NOT NULL " +
+                        "UNION SELECT cover_photo_path FROM recipe WHERE cover_photo_path IS NOT NULL " +
+                        "UNION SELECT photo_path FROM cook_log WHERE photo_path IS NOT NULL",
+                    null
+                ).use { cursor ->
+                    buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) }
+                }
+            }
+            imagesDir.walkTopDown().filter { it.isFile }.forEach { file ->
+                val relPath = "images/" + file.relativeTo(imagesDir).path.replace('\\', '/')
+                if (relPath !in referenced) file.delete()
+            }
+        }.onFailure { Log.w(TAG, "Post-restore image cleanup failed", it) }
+    }
+
     private fun unzipSafe(inputStream: InputStream, destinationDir: File) {
+        val destinationPath = destinationDir.canonicalPath + File.separator
         ZipInputStream(inputStream).use { zipIn ->
             var entry = zipIn.nextEntry
             while (entry != null) {
@@ -219,6 +246,9 @@ class RestoreManager @Inject constructor(
                 }
 
                 val outFile = File(destinationDir, name)
+                if (!outFile.canonicalPath.startsWith(destinationPath)) {
+                    throw SecurityException("Zip-slip security exception: rejected entry $name")
+                }
                 if (entry.isDirectory) {
                     outFile.mkdirs()
                 } else {

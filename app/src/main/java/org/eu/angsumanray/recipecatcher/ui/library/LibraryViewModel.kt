@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.WorkManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -15,7 +16,10 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.eu.angsumanray.recipecatcher.capture.CaptureWorker
+import org.eu.angsumanray.recipecatcher.core.model.SourceType
+import org.eu.angsumanray.recipecatcher.core.web.WebRecipeFetcher
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeFilter
@@ -39,6 +43,7 @@ class LibraryViewModel @Inject constructor(
     private val tagRepository: TagRepository,
     private val settingsStore: org.eu.angsumanray.recipecatcher.data.settings.SettingsStore,
     private val foregroundPageFetcher: org.eu.angsumanray.recipecatcher.capture.ForegroundPageFetcher,
+    private val webRecipeFetcher: WebRecipeFetcher,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -156,8 +161,8 @@ class LibraryViewModel @Inject constructor(
 
     fun retryCapture(recipe: RecipeEntity) {
         viewModelScope.launch {
-            if (recipe.sourceType == org.eu.angsumanray.recipecatcher.core.model.SourceType.WEB.value &&
-                recipe.errorMessage?.contains("Blocked", ignoreCase = true) == true
+            if (recipe.sourceType == SourceType.WEB.value &&
+                recipe.errorMessage == CaptureWorker.BLOCKED_MESSAGE
             ) {
                 val result = foregroundPageFetcher.retryInWebView(recipe.id)
                 if (result.isSuccess) return@launch
@@ -175,8 +180,16 @@ class LibraryViewModel @Inject constructor(
     fun pastePageText(recipeId: Long, text: String) {
         viewModelScope.launch {
             val recipe = recipeRepository.getRecipe(recipeId) ?: return@launch
+            // Pasted page source goes through the same JSON-LD / readable-text pass as a fetch.
+            val sourceText = if (recipe.sourceType == SourceType.WEB.value && HTML_MARKERS.containsMatchIn(text)) {
+                withContext(Dispatchers.Default) {
+                    webRecipeFetcher.parseHtml(text, recipe.sourceUrl ?: recipe.sourceKey)
+                }?.sourceText ?: text
+            } else {
+                text
+            }
             val updated = recipe.copy(
-                captionRaw = text,
+                captionRaw = sourceText,
                 status = RecipeEntity.STATUS_PENDING_EXTRACT,
                 errorMessage = null,
                 updatedAt = System.currentTimeMillis()
@@ -192,5 +205,9 @@ class LibraryViewModel @Inject constructor(
             WorkManager.getInstance(context).cancelUniqueWork("capture_recipe_$recipeId")
             recipeRepository.deleteRecipe(recipeId)
         }
+    }
+
+    private companion object {
+        val HTML_MARKERS = Regex("<(html|head|body|script|div|article)[\\s>]", RegexOption.IGNORE_CASE)
     }
 }

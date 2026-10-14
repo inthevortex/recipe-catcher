@@ -94,4 +94,31 @@ class YouTubeFetcherTest {
         assertEquals("abcdef12345", org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer.extractYouTubeVideoId("https://www.youtube.com/shorts/abcdef12345"))
         assertEquals("abcdef12345", org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer.extractYouTubeVideoId("https://m.youtube.com/watch?v=abcdef12345&feature=share"))
     }
+
+    @Test
+    fun `player response is found after an earlier null assignment`() {
+        val html = """
+            <html><head><script>var ytInitialPlayerResponse = null; var other = {"a": 1};</script>
+            <script>var ytInitialPlayerResponse = {"videoDetails": {"title": "Dal Tadka",
+              "author": "Home Cook", "shortDescription": "1 cup toor dal\nTemper with ghee {and} cumin"}};</script>
+            </head><body></body></html>
+        """.trimIndent()
+
+        val data = YouTubeFetcher(mockHttpFetcher(emptyMap())).parseHtml(html, "vid12345")
+
+        checkNotNull(data)
+        assertTrue(data.isPlayerResponse)
+        assertEquals("Dal Tadka", data.title)
+        assertEquals("Home Cook", data.author)
+        assertEquals("1 cup toor dal\nTemper with ghee {and} cumin", data.description)
+    }
+
+    @Test
+    fun `candidate links are de-duplicated before the two-link cap`() {
+        val description = "Recipe: https://blog.example.com/dal\nAgain: https://blog.example.com/dal\nMore: https://food.example.org/x"
+
+        val links = YouTubeFetcher.findCandidateRecipeLinks(description)
+
+        assertEquals(listOf("https://blog.example.com/dal", "https://food.example.org/x"), links)
+    }
 }

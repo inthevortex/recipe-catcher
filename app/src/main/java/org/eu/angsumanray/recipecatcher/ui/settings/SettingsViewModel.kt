@@ -17,11 +17,14 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.backup.BackupInspection
 import org.eu.angsumanray.recipecatcher.backup.BackupManager
+import org.eu.angsumanray.recipecatcher.backup.BackupManifest
 import org.eu.angsumanray.recipecatcher.backup.RestoreManager
 import org.eu.angsumanray.recipecatcher.core.llm.ClaudeExtractor
 import org.eu.angsumanray.recipecatcher.data.db.dao.LlmUsageDao
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import org.eu.angsumanray.recipecatcher.di.AnthropicHttpClient
+import java.time.OffsetDateTime
+import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
 sealed interface TestKeyStatus {
@@ -144,7 +147,64 @@ class SettingsViewModel @Inject constructor(
     fun setRememberBackupFolder(remember: Boolean) {
         viewModelScope.launch {
             settingsStore.setRememberBackupFolder(remember)
+            if (!remember) {
+                settingsStore.backupFolderUriFlow.first()?.let { backupManager.releaseFolderAccess(Uri.parse(it)) }
+                settingsStore.setBackupFolderUri(null)
+            }
         }
+    }
+
+    /**
+     * Backs up straight into the remembered folder when there is one, otherwise asks for a folder
+     * (remembering on) or for a file (remembering off).
+     */
+    fun backupNow(pickFile: () -> Unit, pickFolder: () -> Unit) {
+        viewModelScope.launch {
+            if (!settingsStore.rememberBackupFolderFlow.first()) {
+                pickFile()
+                return@launch
+            }
+            val folder = settingsStore.backupFolderUriFlow.first()?.let(Uri::parse)
+            if (folder != null && backupManager.hasFolderAccess(folder)) {
+                backupToFolder(folder)
+            } else {
+                pickFolder()
+            }
+        }
+    }
+
+    fun onBackupFolderPicked(treeUri: Uri) {
+        viewModelScope.launch {
+            try {
+                backupManager.takeFolderAccess(treeUri)
+                settingsStore.setBackupFolderUri(treeUri.toString())
+            } catch (e: SecurityException) {
+                _backupOpStatus.value = BackupOpStatus.Error("Backup failed: no access to that folder")
+                return@launch
+            }
+            backupToFolder(treeUri)
+        }
+    }
+
+    private suspend fun backupToFolder(treeUri: Uri) {
+        _backupOpStatus.value = BackupOpStatus.InProgress("Creating backup...")
+        try {
+            val (documentUri, manifest) = backupManager.backupToFolder(treeUri)
+            _backupOpStatus.value = BackupOpStatus.Success(backupSuccessMessage(documentUri, manifest))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (e is SecurityException) settingsStore.setBackupFolderUri(null)
+            _backupOpStatus.value = BackupOpStatus.Error("Backup failed: ${e.message}")
+        }
+    }
+
+    private fun backupSuccessMessage(documentUri: Uri, manifest: BackupManifest): String {
+        val name = backupManager.displayName(documentUri) ?: "Backup"
+        val time = runCatching {
+            OffsetDateTime.parse(manifest.createdAt).format(DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm"))
+        }.getOrDefault(manifest.createdAt)
+        return "Saved $name at $time: ${manifest.recipeCount} recipes and ${manifest.imageCount} images."
     }
 
     fun setBackupReminderThreshold(threshold: Int) {
@@ -168,9 +228,9 @@ class SettingsViewModel @Inject constructor(
             _backupOpStatus.value = BackupOpStatus.InProgress("Creating backup...")
             try {
                 val manifest = backupManager.backupToUri(uri)
-                _backupOpStatus.value = BackupOpStatus.Success(
-                    "Backed up ${manifest.recipeCount} recipes and ${manifest.imageCount} images successfully!"
-                )
+                _backupOpStatus.value = BackupOpStatus.Success(backupSuccessMessage(uri, manifest))
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _backupOpStatus.value = BackupOpStatus.Error("Backup failed: ${e.message}")
             }
@@ -218,6 +278,7 @@ class SettingsViewModel @Inject constructor(
 
         _testKeyStatus.value = TestKeyStatus.Testing
         viewModelScope.launch {
+            // The Models API checks the key and the model ID without spending tokens.
             val model = modelId.value.trim().ifEmpty { SettingsStore.DEFAULT_MODEL_ID }
             _testKeyStatus.value = try {
                 val response = httpClient.get("$MODELS_URL/$model") {

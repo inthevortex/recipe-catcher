@@ -197,4 +197,92 @@ class WebRecipeFetcherTest {
         val extracted = ReadableTextExtractor.extract(doc)
         assertEquals(ReadableTextExtractor.MAX_CHARACTERS, extracted.length)
     }
+
+    @Test
+    fun `normal page behind Cloudflare that loads challenge-platform scripts is not treated as blocked`() = runBlocking {
+        val url = "https://cf-hosted.com/recipe"
+        val html = """
+            <html><head><title>Lemon Rice</title>
+            <script type="application/ld+json">{"@type": "Recipe", "name": "Lemon Rice",
+              "recipeIngredient": ["1 cup rice"], "recipeInstructions": "Cook rice."}</script>
+            <script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script></head>
+            <body><p>Just a moment... while the rice cools.</p></body></html>
+        """.trimIndent()
+        val fetcher = WebRecipeFetcher(mockHttpFetcher(mapOf(url to HttpResponseData(200, html))))
+
+        val data = fetcher.fetch(url)
+
+        checkNotNull(data)
+        assertTrue(data.isJsonLd)
+        assertEquals("Lemon Rice", data.title)
+    }
+
+    @Test
+    fun `direct mapping re-parsed from the normalized JSON keeps times and leaves guesses empty`() {
+        val html = readFixture("recipe_jsonld_simple.html")
+        val data = checkNotNull(WebRecipeFetcher(mockHttpFetcher(emptyMap())).parseHtml(html, "https://example.com/r"))
+        val original = checkNotNull(data.directMapping)
+
+        val reparsed = JsonLdParser.parseRecipeObject(
+            kotlinx.serialization.json.Json.parseToJsonElement(data.sourceText) as kotlinx.serialization.json.JsonObject
+        ).directMapping
+
+        assertNotNull(original.totalMinutes)
+        assertEquals(original.prepMinutes, reparsed.prepMinutes)
+        assertEquals(original.cookMinutes, reparsed.cookMinutes)
+        assertEquals(original.totalMinutes, reparsed.totalMinutes)
+        assertEquals(original.servings, reparsed.servings)
+        assertNull(reparsed.complexity)
+        assertNull(reparsed.spiceLevel)
+        assertNull(reparsed.dietType)
+        assertTrue(reparsed.tags.isEmpty())
+    }
+
+    @Test
+    fun `markup inside JSON-LD steps and ingredients is stripped`() {
+        val html = """
+            <html><head><script type="application/ld+json">{"@type": "Recipe", "name": "Toast",
+              "recipeIngredient": ["<b>2</b> slices bread", "butter &amp; jam"],
+              "recipeInstructions": [
+                {"@type": "HowToStep", "text": "<p>Toast the <a href='#'>bread</a>.</p>"},
+                "Butter it.<br>Spread jam.",
+                {"@type": "HowToStep", "text": "&lt;p&gt;Serve warm.&lt;/p&gt;"}
+              ]}</script></head><body></body></html>
+        """.trimIndent()
+
+        val data = checkNotNull(WebRecipeFetcher(mockHttpFetcher(emptyMap())).parseHtml(html, "https://example.com/t"))
+        val direct = checkNotNull(data.directMapping)
+
+        assertEquals(listOf("2 slices bread", "butter & jam"), direct.ingredientGroups.first().items.map { it.rawText })
+        assertEquals(listOf("Toast the bread.", "Butter it.", "Spread jam.", "Serve warm."), direct.steps.map { it.text })
+    }
+
+    @Test
+    fun `readable text keeps the innermost content container and does not repeat nested blocks`() {
+        val html = """
+            <html><body>
+              <div id="wrap"><article>
+                <h1>Masala Chai</h1>
+                <ul><li><p>2 cups water</p></li><li>1 cup milk</li></ul>
+                <p>Boil water with ginger, add tea and milk.</p>
+              </article></div>
+              <div class="newsletter"><span>Sign up now</span></div>
+              <form><p>Leave a comment</p></form>
+            </body></html>
+        """.trimIndent()
+
+        val text = ReadableTextExtractor.extract(org.jsoup.Jsoup.parse(html))
+
+        assertEquals(
+            "Masala Chai\n\n2 cups water\n\n1 cup milk\n\nBoil water with ginger, add tea and milk.",
+            text
+        )
+    }
+
+    @Test
+    fun `challenge page detection matches interstitial titles and markers only`() {
+        assertTrue(WebRecipeFetcher.isChallengePage("<html><head><title>Just a moment...</title></head></html>"))
+        assertTrue(WebRecipeFetcher.isChallengePage("<script>window._cf_chl_opt={}</script>"))
+        assertFalse(WebRecipeFetcher.isChallengePage("<html><head><title>Pasta</title></head><body>Just a moment... then stir.</body></html>"))
+    }
 }

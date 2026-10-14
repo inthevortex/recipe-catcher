@@ -17,6 +17,7 @@ import org.eu.angsumanray.recipecatcher.core.llm.ExtractedIngredientGroup
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractedRecipe
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractedStep
 import org.eu.angsumanray.recipecatcher.core.llm.LlmUsage
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.parser.Parser
 import java.util.regex.Pattern
@@ -128,9 +129,13 @@ object JsonLdParser {
 
         val servings = extractYield(recipeObj["recipeYield"])
 
+        // The *Minutes keys are what normalizedJsonString holds, so re-parsing it keeps the times.
         val prepMinutes = IsoDuration.parseToMinutes(extractString(recipeObj["prepTime"]))
+            ?: extractMinutes(recipeObj["prepTimeMinutes"])
         val cookMinutes = IsoDuration.parseToMinutes(extractString(recipeObj["cookTime"]))
+            ?: extractMinutes(recipeObj["cookTimeMinutes"])
         var totalMinutes = IsoDuration.parseToMinutes(extractString(recipeObj["totalTime"]))
+            ?: extractMinutes(recipeObj["totalTimeMinutes"])
         if (totalMinutes == null && prepMinutes != null && cookMinutes != null) {
             totalMinutes = prepMinutes + cookMinutes
         }
@@ -174,10 +179,10 @@ object JsonLdParser {
             cookMinutes = cookMinutes,
             totalMinutes = totalMinutes,
             cuisine = cuisine,
-            complexity = "medium",
-            complexityReason = "Imported directly from web recipe data",
-            spiceLevel = "mild",
-            dietType = "unknown",
+            complexity = null,
+            complexityReason = null,
+            spiceLevel = null,
+            dietType = null,
             kcalPerServing = null,
             makeAhead = false,
             freezerFriendly = false,
@@ -271,21 +276,22 @@ object JsonLdParser {
         val results = mutableListOf<String>()
         when (ingElement) {
             is JsonPrimitive -> {
-                val line = unescape(ingElement.content.trim())
+                val line = cleanText(ingElement.content)
                 if (line.isNotBlank()) results.add(line)
             }
             is JsonArray -> {
                 for (item in ingElement) {
                     when (item) {
                         is JsonPrimitive -> {
-                            val line = unescape(item.content.trim())
+                            val line = cleanText(item.content)
                             if (line.isNotBlank()) results.add(line)
                         }
                         is JsonObject -> {
                             val text = extractString(item["text"])
                                 ?: extractString(item["name"])
-                            if (!text.isNullOrBlank()) {
-                                results.add(unescape(text.trim()))
+                            val line = text?.let { cleanText(it) }
+                            if (!line.isNullOrBlank()) {
+                                results.add(line)
                             }
                         }
                         else -> Unit
@@ -304,16 +310,11 @@ object JsonLdParser {
         fun processElement(el: JsonElement) {
             when (el) {
                 is JsonPrimitive -> {
-                    val text = unescape(el.content.trim())
-                    if (text.isNotBlank()) {
-                        // If it has multiple newlines with step numbering or separate lines, split them
-                        val lines = text.split(Regex("\r?\n+")).map { it.trim() }.filter { it.isNotBlank() }
-                        if (lines.size > 1) {
-                            steps.addAll(lines)
-                        } else {
-                            steps.add(text)
-                        }
-                    }
+                    // A single string often holds every step, one per line.
+                    cleanText(el.content, keepLineBreaks = true)
+                        .split('\n')
+                        .map { it.trim() }
+                        .filterTo(steps) { it.isNotBlank() }
                 }
                 is JsonArray -> {
                     for (item in el) {
@@ -328,8 +329,9 @@ object JsonLdParser {
                         val text = extractString(el["text"])
                             ?: extractString(el["name"])
                             ?: extractString(el["description"])
-                        if (!text.isNullOrBlank()) {
-                            steps.add(unescape(text.trim()))
+                        val cleaned = text?.let { cleanText(it) }
+                        if (!cleaned.isNullOrBlank()) {
+                            steps.add(cleaned)
                         } else if (el["itemListElement"] != null) {
                             processElement(el["itemListElement"]!!)
                         }
@@ -351,5 +353,31 @@ object JsonLdParser {
         }
     }
 
+    private fun extractMinutes(element: JsonElement?): Int? =
+        (element as? JsonPrimitive)?.content?.trim()?.toIntOrNull()?.takeIf { it >= 0 }
+
     private fun unescape(raw: String): String = Parser.unescapeEntities(raw, false)
+
+    private val MARKUP = Regex("</?[a-zA-Z][^>]*>")
+    private val BLOCK_BREAK = Regex("(?i)<br\\s*/?>|</(p|li|div|h[1-6])>")
+    private val LINE_BREAKS = Regex("\r?\n")
+    private val WHITESPACE_RUN = Regex("\\s+")
+
+    /**
+     * Unescapes entities and drops the markup some sites put inside JSON-LD strings (`<p>`, `<br>`,
+     * links). With [keepLineBreaks], `<br>` and closing block tags become line breaks.
+     */
+    private fun cleanText(raw: String, keepLineBreaks: Boolean = false): String {
+        // Unescaped first, so markup sent as &lt;p&gt; is stripped too.
+        var text = unescape(raw.trim())
+        if (MARKUP.containsMatchIn(text)) {
+            if (keepLineBreaks) text = text.replace(BLOCK_BREAK, "\n")
+            text = text.split(LINE_BREAKS).joinToString("\n") { Jsoup.parse(it).text() }
+        }
+        return if (keepLineBreaks) {
+            text.split(LINE_BREAKS).joinToString("\n") { it.replace(WHITESPACE_RUN, " ").trim() }.trim()
+        } else {
+            text.replace(WHITESPACE_RUN, " ").trim()
+        }
+    }
 }

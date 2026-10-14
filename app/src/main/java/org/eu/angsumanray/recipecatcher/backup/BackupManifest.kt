@@ -5,9 +5,9 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class BackupManifest(
-    val format: String = "recipe-catcher-backup",
-    @SerialName("format_version") val formatVersion: Int = 1,
-    @SerialName("db_schema_version") val dbSchemaVersion: Int = 1,
+    val format: String,
+    @SerialName("format_version") val formatVersion: Int,
+    @SerialName("db_schema_version") val dbSchemaVersion: Int,
     @SerialName("app_version") val appVersion: String = "1.0.0",
     @SerialName("created_at") val createdAt: String,
     @SerialName("recipe_count") val recipeCount: Int,

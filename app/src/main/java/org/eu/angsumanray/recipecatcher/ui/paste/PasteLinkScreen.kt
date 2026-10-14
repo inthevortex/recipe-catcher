@@ -29,9 +29,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.capture.CaptureWorker
+import org.eu.angsumanray.recipecatcher.core.capture.SourceClassifier
 import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
 import org.eu.angsumanray.recipecatcher.data.repo.CaptureStart
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
@@ -49,15 +51,18 @@ fun PasteLinkScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isCapturing by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
+    // Android returns no clip until the window has input focus, which comes after first composition.
+    val isWindowFocused = LocalWindowInfo.current.isWindowFocused
+    var clipboardChecked by remember { mutableStateOf(false) }
+    LaunchedEffect(isWindowFocused) {
+        if (!isWindowFocused || clipboardChecked) return@LaunchedEffect
+        clipboardChecked = true
+        if (urlText.isNotBlank()) return@LaunchedEffect
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         val clip = clipboard?.primaryClip
         if (clip != null && clip.itemCount > 0) {
-            val text = clip.getItemAt(0).text?.toString().orEmpty()
-            val extracted = UrlNormalizer.extractUrl(text)
-            if (extracted != null) {
-                urlText = extracted
-            }
+            val text = clip.getItemAt(0).coerceToText(context)?.toString().orEmpty()
+            SourceClassifier.classifySharedText(text)?.let { urlText = it.canonicalUrl }
         }
     }
 

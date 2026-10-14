@@ -1,7 +1,11 @@
 package org.eu.angsumanray.recipecatcher.backup
 
 import android.content.Context
+import android.content.Intent
+import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -29,7 +33,10 @@ class BackupManager @Inject constructor(
     private val settingsStore: SettingsStore
 ) {
 
-    private val json = Json { prettyPrint = true }
+    private val json = Json {
+        prettyPrint = true
+        encodeDefaults = true
+    }
 
     val safetyBackupDir: File
         get() = File(context.filesDir, "safety_backup").apply { if (!exists()) mkdirs() }
@@ -41,12 +48,62 @@ class BackupManager @Inject constructor(
      * Executes backup writing into the given SAF [destinationUri].
      */
     suspend fun backupToUri(destinationUri: Uri): BackupManifest = withContext(Dispatchers.IO) {
-        val outputStream = context.contentResolver.openOutputStream(destinationUri)
-            ?: throw IllegalStateException("Could not open destination Uri for writing: $destinationUri")
-        outputStream.use { out ->
-            backupToStream(out)
+        try {
+            val outputStream = context.contentResolver.openOutputStream(destinationUri, "wt")
+                ?: throw IllegalStateException("Could not open destination Uri for writing: $destinationUri")
+            outputStream.use { out ->
+                backupToStream(out)
+            }
+        } catch (e: Exception) {
+            // A half-written zip looks like a backup but can't be restored.
+            runCatching { DocumentsContract.deleteDocument(context.contentResolver, destinationUri) }
+            throw e
         }
     }
+
+    /**
+     * Creates a new backup file in the remembered folder [treeUri] and writes the backup into it.
+     * Returns the new document's Uri with the manifest.
+     */
+    suspend fun backupToFolder(treeUri: Uri): Pair<Uri, BackupManifest> = withContext(Dispatchers.IO) {
+        val folderUri = DocumentsContract.buildDocumentUriUsingTree(
+            treeUri,
+            DocumentsContract.getTreeDocumentId(treeUri)
+        )
+        val documentUri = DocumentsContract.createDocument(
+            context.contentResolver,
+            folderUri,
+            "application/zip",
+            generateSuggestedFileName()
+        ) ?: throw IllegalStateException("Could not create a backup file in the chosen folder")
+        documentUri to backupToUri(documentUri)
+    }
+
+    fun takeFolderAccess(treeUri: Uri) {
+        context.contentResolver.takePersistableUriPermission(
+            treeUri,
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        )
+    }
+
+    fun releaseFolderAccess(treeUri: Uri) {
+        runCatching {
+            context.contentResolver.releasePersistableUriPermission(
+                treeUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        }
+    }
+
+    /** Whether the app still holds write access to [treeUri]. */
+    fun hasFolderAccess(treeUri: Uri): Boolean =
+        context.contentResolver.persistedUriPermissions.any { it.uri == treeUri && it.isWritePermission }
+
+    fun displayName(uri: Uri): String? = runCatching {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull()
 
     /**
      * Backs up database and images into the provided [outputStream] in ZIP format.
@@ -63,9 +120,11 @@ class BackupManager @Inject constructor(
             // 2. Hash DB file with SHA-256
             val dbSha256 = computeSha256(tempDb)
 
-            // 3. Count recipes in database
-            val recipeCount = database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM recipe").use { cursor ->
-                if (cursor.moveToFirst()) cursor.getInt(0) else 0
+            // 3. Count recipes in the snapshot, not the live database, which may have changed since
+            val recipeCount = SQLiteDatabase.openDatabase(tempDb.absolutePath, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+                db.rawQuery("SELECT COUNT(*) FROM recipe", null).use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getInt(0) else 0
+                }
             }
 
             // 4. Gather images from filesDir/images/
@@ -89,7 +148,7 @@ class BackupManager @Inject constructor(
             val manifest = BackupManifest(
                 format = "recipe-catcher-backup",
                 formatVersion = 1,
-                dbSchemaVersion = 1,
+                dbSchemaVersion = RecipeDatabase.DATABASE_VERSION,
                 appVersion = appVersion,
                 createdAt = nowIso,
                 recipeCount = recipeCount,
@@ -148,13 +207,15 @@ class BackupManager @Inject constructor(
 
         try {
             database.openHelper.writableDatabase.execSQL("VACUUM INTO '${target.absolutePath}'")
-        } catch (_: Exception) {
-            // Fallback: if database is closed or vacuum fails, copy live database file directly
+        } catch (e: Exception) {
+            // A closed database has been checkpointed, so its main file alone is a full copy.
+            if (database.isOpen) throw e
             val liveDb = context.getDatabasePath(RecipeDatabase.DATABASE_NAME)
             if (liveDb.exists()) {
                 liveDb.copyTo(target, overwrite = true)
             }
         }
+        check(target.exists() && target.length() > 0) { "Could not write the safety backup" }
         target
     }
 

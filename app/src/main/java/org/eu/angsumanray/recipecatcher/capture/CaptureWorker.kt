@@ -58,6 +58,7 @@ class CaptureWorker @AssistedInject constructor(
 
     companion object {
         const val KEY_RECIPE_ID = "key_recipe_id"
+        const val BLOCKED_MESSAGE = "Blocked by site. Tap Retry to load in browser or paste page text."
         private const val TAG = "CaptureWorker"
         private const val MAX_ATTEMPTS = 3
 
@@ -133,7 +134,7 @@ class CaptureWorker @AssistedInject constructor(
                         recipeRepository.updateRecipeStatus(
                             recipeId,
                             RecipeEntity.STATUS_FAILED_FETCH,
-                            "Blocked by site. Tap Retry to load in browser or paste page text."
+                            BLOCKED_MESSAGE
                         )
                         return Result.failure()
                     } catch (e: Exception) {
@@ -322,7 +323,11 @@ class CaptureWorker @AssistedInject constructor(
                     allowedConsumables = tagsByKind[TagEntity.KIND_CONSUMABLE].orEmpty().map { it.name }
                 )
 
-                val result = recipeExtractor.extract(linkedInput).getOrNull()
+                val extraction = recipeExtractor.extract(linkedInput)
+                (extraction.exceptionOrNull() as? NoRecipeFoundException)?.usage?.let {
+                    recipeRepository.logUsage(it.toExtractionUsageEntity(activeModel))
+                }
+                val result = extraction.getOrNull()
                 val targetRecipe = if (result != null && result.isRecipe) {
                     result
                 } else {
@@ -330,9 +335,13 @@ class CaptureWorker @AssistedInject constructor(
                 }
 
                 if (targetRecipe != null && targetRecipe.isRecipe) {
-                    applyAndSaveExtraction(recipe, targetRecipe, activeModel, tagsByKind)
+                    // The linked page is what the recipe came from, so re-extract reads it too;
+                    // source_url stays the video.
+                    applyAndSaveExtraction(recipe.copy(captionRaw = webData.sourceText), targetRecipe, activeModel, tagsByKind)
                     return true
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Linked page fallback failed for link $link", e)
             }

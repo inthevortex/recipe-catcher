@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.runBlocking
 import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
 import org.eu.angsumanray.recipecatcher.data.db.StarterLists
+import org.eu.angsumanray.recipecatcher.data.db.entity.CookLogEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeTagEntity
@@ -15,6 +16,8 @@ import org.eu.angsumanray.recipecatcher.data.settings.SecretStore
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.fail
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -25,6 +28,9 @@ import org.robolectric.annotation.Config
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.time.LocalDate
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -159,8 +165,18 @@ class BackupRestoreRoundTripTest {
                 val bytes = "COOKED_PHOTO_$recipeId".toByteArray(Charsets.UTF_8)
                 cookedFile.writeBytes(bytes)
                 createdImageBytes["cooked/cooked_$recipeId.jpg"] = bytes
+                database.cookLogDao().insert(
+                    CookLogEntity(
+                        recipeId = recipeId,
+                        cookedOn = LocalDate.of(2026, 9, i),
+                        photoPath = "images/cooked/cooked_$recipeId.jpg"
+                    )
+                )
             }
         }
+
+        // A file no row points to is backed up but removed again by the restore
+        File(imagesDir, "orphan.jpg").writeBytes("ORPHAN".toByteArray())
 
         assertEquals(50, recipeDao.count())
 
@@ -171,7 +187,7 @@ class BackupRestoreRoundTripTest {
         assertEquals("recipe-catcher-backup", manifest.format)
         assertEquals(1, manifest.formatVersion)
         assertEquals(50, manifest.recipeCount)
-        assertEquals(40, manifest.imageCount) // 30 cover images + 10 cooked images
+        assertEquals(41, manifest.imageCount) // 30 cover images + 10 cooked images + 1 orphan
         assertTrue("Manifest has non-blank SHA256", manifest.dbSha256.isNotBlank())
 
         val backupBytes = zipByteStream.toByteArray()
@@ -230,6 +246,9 @@ class BackupRestoreRoundTripTest {
                 assertEquals(starterTagId, tags[0].id)
             }
 
+            assertEquals(10, reopenedDb.cookLogDao().getReferencedPhotoPaths().size)
+            assertFalse("Orphaned image was removed", File(imagesDir, "orphan.jpg").exists())
+
             // 7. Deep verify restored image files
             for ((relPath, originalBytes) in createdImageBytes) {
                 val restoredFile = File(imagesDir, relPath)
@@ -243,5 +262,107 @@ class BackupRestoreRoundTripTest {
         } finally {
             reopenedDb.close()
         }
+    }
+
+    private fun seedOneRecipe(): Long = runBlocking {
+        val now = System.currentTimeMillis()
+        database.recipeDao().insertIfAbsent(
+            RecipeEntity(
+                sourceType = "web",
+                sourceKey = "https://example.com/one",
+                title = "Only Recipe",
+                status = RecipeEntity.STATUS_SAVED,
+                createdAt = now,
+                updatedAt = now
+            )
+        )
+    }
+
+    private fun backupBytes(): ByteArray = runBlocking {
+        ByteArrayOutputStream().also { backupManager.backupToStream(it) }.toByteArray()
+    }
+
+    /** Copies [source] entry by entry, letting [transform] replace or drop an entry's bytes. */
+    private fun rewriteZip(source: ByteArray, extra: Map<String, ByteArray> = emptyMap(), transform: (String, ByteArray) -> ByteArray? = { _, b -> b }): ByteArray {
+        val out = ByteArrayOutputStream()
+        ZipOutputStream(out).use { zipOut ->
+            java.util.zip.ZipInputStream(ByteArrayInputStream(source)).use { zipIn ->
+                var entry = zipIn.nextEntry
+                while (entry != null) {
+                    val bytes = transform(entry.name, zipIn.readBytes())
+                    if (bytes != null) {
+                        zipOut.putNextEntry(ZipEntry(entry.name))
+                        zipOut.write(bytes)
+                        zipOut.closeEntry()
+                    }
+                    entry = zipIn.nextEntry
+                }
+            }
+            for ((name, bytes) in extra) {
+                zipOut.putNextEntry(ZipEntry(name))
+                zipOut.write(bytes)
+                zipOut.closeEntry()
+            }
+        }
+        return out.toByteArray()
+    }
+
+    private fun assertInspectionFails(zip: ByteArray, messagePart: String) = runBlocking {
+        try {
+            restoreManager.inspectBackupStream(ByteArrayInputStream(zip))
+            fail("Expected inspection to fail with '$messagePart'")
+        } catch (e: Exception) {
+            assertTrue("Message '${e.message}' mentions '$messagePart'", e.message.orEmpty().contains(messagePart))
+        }
+        val leftovers = context.cacheDir.listFiles { f -> f.name.startsWith("restore_temp_") }.orEmpty()
+        assertTrue("Temp restore directories are cleaned up", leftovers.isEmpty())
+    }
+
+    @Test
+    fun `restore rejects zip-slip entries`() {
+        seedOneRecipe()
+        assertInspectionFails(rewriteZip(backupBytes(), extra = mapOf("images/../../evil.txt" to "x".toByteArray())), "Zip-slip")
+    }
+
+    @Test
+    fun `restore rejects a database whose hash does not match the manifest`() {
+        seedOneRecipe()
+        val tampered = rewriteZip(backupBytes()) { name, bytes ->
+            if (name == "db/recipes.db") bytes.copyOf().also { it[it.size - 1] = (it[it.size - 1] + 1).toByte() } else bytes
+        }
+        assertInspectionFails(tampered, "SHA-256")
+    }
+
+    @Test
+    fun `restore rejects a backup from a newer schema or format`() {
+        seedOneRecipe()
+        val newerSchema = rewriteZip(backupBytes()) { name, bytes ->
+            if (name == "manifest.json") String(bytes).replace("\"db_schema_version\": 1", "\"db_schema_version\": 99").toByteArray() else bytes
+        }
+        assertInspectionFails(newerSchema, "newer than supported")
+
+        val newerFormat = rewriteZip(backupBytes()) { name, bytes ->
+            if (name == "manifest.json") String(bytes).replace("\"format_version\": 1", "\"format_version\": 2").toByteArray() else bytes
+        }
+        assertInspectionFails(newerFormat, "format version")
+    }
+
+    @Test
+    fun `restore rejects a zip without a manifest`() {
+        seedOneRecipe()
+        assertInspectionFails(rewriteZip(backupBytes()) { name, bytes -> if (name == "manifest.json") null else bytes }, "manifest")
+    }
+
+    @Test
+    fun `restore over a live library writes the safety backup first`() = runBlocking {
+        seedOneRecipe()
+        val inspection = restoreManager.inspectBackupStream(ByteArrayInputStream(backupBytes()))
+        File(imagesDir, "live.jpg").writeBytes("LIVE".toByteArray())
+
+        restoreManager.performRestore(inspection, restartProcess = false)
+
+        assertTrue(backupManager.safetyDbFile.exists())
+        assertTrue(backupManager.safetyDbFile.length() > 0)
+        assertTrue(File(backupManager.safetyBackupDir, "images_pre_restore/live.jpg").exists())
     }
 }

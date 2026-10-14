@@ -51,9 +51,11 @@ class YouTubeFetcher(
                 } ?: return@filter false
 
                 SOCIAL_DOMAINS.none { host == it || host.endsWith(".$it") }
-            }.take(maxLinks)
+            }.distinct().take(maxLinks)
         }
     }
+
+    private val PLAYER_RESPONSE_ASSIGNMENT = Regex("""ytInitialPlayerResponse["']?\]?\s*=\s*\{""")
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -69,7 +71,9 @@ class YouTubeFetcher(
         val headers = mapOf(
             "User-Agent" to DESKTOP_USER_AGENT,
             "Accept-Language" to "en",
-            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            // Skips the EU cookie-consent interstitial, which has no player response.
+            "Cookie" to "SOCS=CAI"
         )
 
         val response = try {
@@ -149,11 +153,9 @@ class YouTubeFetcher(
     }
 
     private fun extractInitialPlayerResponseJson(html: String): String? {
-        val idx = html.indexOf("ytInitialPlayerResponse")
-        if (idx == -1) return null
-
-        val openBrace = html.indexOf('{', idx)
-        if (openBrace == -1) return null
+        // Anchored on the assignment: the page can mention the name earlier (e.g. "= null").
+        val match = PLAYER_RESPONSE_ASSIGNMENT.find(html) ?: return null
+        val openBrace = match.range.last
 
         var depth = 0
         var inString = false

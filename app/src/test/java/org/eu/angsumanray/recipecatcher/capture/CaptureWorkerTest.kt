@@ -382,9 +382,29 @@ class CaptureWorkerTest {
         val updated = recipeRepository.getRecipe(recipeId)
         assertEquals(RecipeEntity.STATUS_NEEDS_REVIEW, updated?.status)
         assertEquals("Direct Pasta", updated?.title)
+        assertEquals(10, updated?.prepMin)
+        assertEquals(15, updated?.cookMin)
+        assertEquals(25, updated?.totalMin)
+        assertEquals(4, updated?.servings)
         val ingredients = recipeRepository.getIngredients(recipeId)
         assertEquals(2, ingredients.size)
         assertEquals("200g pasta", ingredients[0].rawText)
+    }
+
+    @Test
+    fun `blocked web fetch marks failed_fetch without retrying`() = runBlocking {
+        val recipeId = recipeRepository.insertPendingRecipe("web", "https://blocked.example/r", "https://blocked.example/r")
+        val webFetcher = org.eu.angsumanray.recipecatcher.core.web.WebRecipeFetcher(object : org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher {
+            override suspend fun get(url: String, headers: Map<String, String>) =
+                org.eu.angsumanray.recipecatcher.core.ports.HttpResponseData(403, "Forbidden")
+        })
+
+        val result = createWorker(recipeId = recipeId, webFetcher = webFetcher).doWork()
+
+        assertEquals(ListenableWorker.Result.failure(), result)
+        val row = recipeRepository.getRecipe(recipeId)
+        assertEquals(RecipeEntity.STATUS_FAILED_FETCH, row?.status)
+        assertTrue(row?.errorMessage.orEmpty().startsWith("Blocked"))
     }
 
     @Test
@@ -548,6 +568,8 @@ class CaptureWorkerTest {
         assertEquals(RecipeEntity.STATUS_NEEDS_REVIEW, updated?.status)
         assertEquals("Linked Chicken Curry", updated?.title)
         assertEquals("yt_link_1", updated?.sourceKey) // Preserved YouTube sourceKey!
+        assertEquals("https://www.youtube.com/watch?v=yt_link_1", updated?.sourceUrl)
+        assertTrue(updated?.captionRaw.orEmpty().contains("Linked Chicken Curry"))
     }
 
     @Test

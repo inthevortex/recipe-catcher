@@ -15,13 +15,27 @@ class WebRecipeFetcher(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
         const val MAX_BODY_BYTES = 5 * 1024 * 1024 // 5 MB
 
-        private val CLOUDFLARE_MARKERS = listOf(
+        // Markers only a challenge page carries. Normal pages behind Cloudflare also load
+        // /cdn-cgi/challenge-platform/scripts/, so that path alone is not a challenge.
+        private val CHALLENGE_BODY_MARKERS = listOf(
             "cf-browser-verification",
-            "challenge-platform",
-            "attention required! | cloudflare",
-            "just a moment...",
+            "cf_chl_opt",
+            "/cdn-cgi/challenge-platform/h/",
             "checking your browser before accessing"
         )
+        private val CHALLENGE_TITLES = listOf(
+            "just a moment...",
+            "attention required! | cloudflare"
+        )
+        private val TITLE_REGEX = Regex("<title[^>]*>([^<]*)</title>", RegexOption.IGNORE_CASE)
+
+        /** True when [html] is a Cloudflare interstitial rather than the requested page. */
+        fun isChallengePage(html: String): Boolean {
+            val title = TITLE_REGEX.find(html)?.groupValues?.get(1)?.trim()?.lowercase()
+            if (title != null && CHALLENGE_TITLES.any { title == it }) return true
+            val lower = html.lowercase()
+            return CHALLENGE_BODY_MARKERS.any { lower.contains(it) }
+        }
     }
 
     suspend fun fetch(url: String): WebRecipeData? {
@@ -50,8 +64,7 @@ class WebRecipeFetcher(
         }
 
         val body = response.body
-        val lowerBody = body.lowercase()
-        if (CLOUDFLARE_MARKERS.any { lowerBody.contains(it) }) {
+        if (isChallengePage(body)) {
             throw WebFetchBlockedException(url, response.statusCode, "Cloudflare challenge detected")
         }
 
