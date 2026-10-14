@@ -96,3 +96,14 @@ When testing Android UI or device behavior:
   ./gradlew test
   ```
   Both must execute cleanly with zero test failures.
+
+---
+
+## 7. Multi-Agent Wave Lifecycle & Upstream Push
+
+Every wave follows a strict sequential lifecycle:
+1. **Implementation**: `antigravity` (`agy`) implements features and unit tests.
+2. **Code Review & Hardening**: `claude` (Opus) audits against specifications, fixes defects, and runs test suites.
+3. **UI Testing**: `claude` (Sonnet) executes headless emulator acceptance testing (`Medium_Phone_API_37.0`). Screenshots are never committed to git.
+4. **README Update**: `claude` (Sonnet) updates `README.md` to document the latest wave capabilities, architecture, and guides (initial README generated once by Opus).
+5. **Upstream Push**: Once the wave is fully committed, verified, and clean, push the branch to upstream (`git push origin <branch>`).
