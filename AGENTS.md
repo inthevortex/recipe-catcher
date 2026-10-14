@@ -79,6 +79,8 @@ When testing Android UI or device behavior:
   git config user.email "angsumanray@outlook.com"
   ```
   Do NOT use any corporate or global default emails.
+- **Commit Messages**: Keep commit messages concise and informative — neither overly brief/cryptic nor excessively verbose. A clear one-line subject and an optional concise bullet list of key changes is ideal.
+- **No Co-Author Trailers**: Do NOT add `Co-authored-by` trailers or mention AI models/agents in commit messages.
 - Keep commits focused per Wave or feature increment.
 
 ---
