@@ -107,3 +107,6 @@ Every wave follows a strict sequential lifecycle:
 3. **UI Testing**: `claude` (Sonnet) executes headless emulator acceptance testing (`Medium_Phone_API_37.0`). Screenshots are never committed to git.
 4. **README Update**: `claude` (Sonnet) updates `README.md` to document the latest wave capabilities, architecture, and guides (initial README generated once by Opus).
 5. **Upstream Push**: Once the wave is fully committed, verified, and clean, push the branch to upstream (`git push origin <branch>`).
+
+> [!NOTE]
+> Autonomous orchestration proceeds sequentially through Wave 6. Upon completion and push of Wave 6, the agent will pause to allow physical device testing, issue triaging, and roadmap planning for Wave 7 and beyond.
