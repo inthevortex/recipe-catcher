@@ -66,7 +66,8 @@ This codebase is indexed in `codebase-memory-mcp` under project `home-inthevorte
 
 When testing Android UI or device behavior:
 - Consult the `android-testing` skill at `/home/inthevortex/.agents/skills/android-testing/`.
-- Use `scripts/droid.sh` to drive headless emulator or physical devices over adb.
+- Use `scripts/droid.sh` to drive headless emulator (`Medium_Phone_API_37.0`) over adb.
+- **Do Not Commit Screenshots**: Test screenshots are for validation and verification reports only. Never commit screenshot images (`docs/screenshots/` or `*.png`) to git.
 - **Device Safety**: If testing on a physical device, never touch the user's real data. Follow checksum baselining (`droid.sh hash`) and cleanup rules.
 
 ---
@@ -80,8 +81,9 @@ When testing Android UI or device behavior:
   ```
   Do NOT use any corporate or global default emails.
 - **Commit Messages**: Keep commit messages concise and informative — neither overly brief/cryptic nor excessively verbose. A clear one-line subject and an optional concise bullet list of key changes is ideal.
+- **No Wave or Task Numbers**: Commit messages MUST NOT contain wave numbers or task numbers (e.g. avoid `feat(wave2): ...` or `Wave 3`). Always describe the actual feature, capability, or fix being introduced (e.g. `feat: add web and YouTube recipe fetchers`, `fix: preserve camera photo orientation`).
 - **No Co-Author Trailers**: Do NOT add `Co-authored-by` trailers or mention AI models/agents in commit messages.
-- Keep commits focused per Wave or feature increment.
+- Keep commits focused per feature increment.
 
 ---
 

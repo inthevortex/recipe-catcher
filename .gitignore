@@ -10,3 +10,5 @@
 *.jks
 local.properties
 .kotlin
+docs/screenshots/
+screenshots/
