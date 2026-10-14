@@ -74,6 +74,11 @@ fun SettingsScreen(
     val backupOpStatus by viewModel.backupOpStatus.collectAsState()
     val pendingRestore by viewModel.pendingRestoreInspection.collectAsState()
 
+    val weekStartsOn by viewModel.weekStartsOn.collectAsState()
+    val prepAlertEnabled by viewModel.prepAlertEnabled.collectAsState()
+    val prepAlertTime by viewModel.prepAlertTime.collectAsState()
+    val cookingAlertsEnabled by viewModel.cookingAlertsEnabled.collectAsState()
+
     var showPassword by remember { mutableStateOf(false) }
 
     // SAF Create Document launcher for Backup
@@ -302,6 +307,74 @@ fun SettingsScreen(
                         onClick = { viewModel.setTheme(SettingsStore.THEME_SYSTEM) },
                         label = { Text("System") }
                     )
+                }
+            }
+
+            // Planner & Reminders
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Planner & Reminders",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text("Week starts on:", style = MaterialTheme.typography.bodyMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = weekStartsOn.equals("Monday", ignoreCase = true),
+                            onClick = { viewModel.setWeekStartsOn("Monday") },
+                            label = { Text("Monday") }
+                        )
+                        FilterChip(
+                            selected = weekStartsOn.equals("Sunday", ignoreCase = true),
+                            onClick = { viewModel.setWeekStartsOn("Sunday") },
+                            label = { Text("Sunday") }
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Night-before prep alerts", style = MaterialTheme.typography.bodyMedium)
+                            Text("Alert at $prepAlertTime for prep marked night before", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = prepAlertEnabled,
+                            onCheckedChange = { viewModel.setPrepAlertEnabled(it) }
+                        )
+                    }
+
+                    if (prepAlertEnabled) {
+                        OutlinedTextField(
+                            value = prepAlertTime,
+                            onValueChange = { viewModel.setPrepAlertTime(it) },
+                            label = { Text("Prep Alert Time (HH:mm)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Start-cooking alerts", style = MaterialTheme.typography.bodyMedium)
+                            Text("Alerts before meal time minus recipe cooking time", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = cookingAlertsEnabled,
+                            onCheckedChange = { viewModel.setCookingAlertsEnabled(it) }
+                        )
+                    }
                 }
             }
 

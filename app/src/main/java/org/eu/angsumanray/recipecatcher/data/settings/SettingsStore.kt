@@ -39,6 +39,8 @@ class SettingsStore @Inject constructor(
         const val DEFAULT_OUTPUT_PRICE_PER_M = 0.50
         const val DEFAULT_CACHE_READ_PRICE_PER_M = 0.01
         const val DEFAULT_WEB_SEARCH_PRICE = 0.01
+        const val DEFAULT_WEEK_STARTS_ON = "Monday"
+        const val DEFAULT_PREP_ALERT_TIME = "21:00"
 
         private val KEY_MODEL_ID = stringPreferencesKey("model_id")
         private val KEY_THEME = stringPreferencesKey("app_theme")
@@ -53,6 +55,51 @@ class SettingsStore @Inject constructor(
         private val KEY_BACKUP_REMINDER_THRESHOLD = androidx.datastore.preferences.core.intPreferencesKey("backup_reminder_threshold")
         private val KEY_REMEMBER_BACKUP_FOLDER = androidx.datastore.preferences.core.booleanPreferencesKey("remember_backup_folder")
         private val KEY_BACKUP_FOLDER_URI = stringPreferencesKey("backup_folder_uri")
+
+        private val KEY_WEEK_STARTS_ON = stringPreferencesKey("week_starts_on")
+        private val KEY_PREP_ALERT_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("prep_alert_enabled")
+        private val KEY_PREP_ALERT_TIME = stringPreferencesKey("prep_alert_time")
+        private val KEY_COOKING_ALERTS_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("cooking_alerts_enabled")
+    }
+
+    val weekStartsOnFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_WEEK_STARTS_ON] ?: DEFAULT_WEEK_STARTS_ON
+    }
+
+    val prepAlertEnabledFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_PREP_ALERT_ENABLED] ?: true
+    }
+
+    val prepAlertTimeFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_PREP_ALERT_TIME] ?: DEFAULT_PREP_ALERT_TIME
+    }
+
+    val cookingAlertsEnabledFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_COOKING_ALERTS_ENABLED] ?: true
+    }
+
+    suspend fun setWeekStartsOn(day: String) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_WEEK_STARTS_ON] = day
+        }
+    }
+
+    suspend fun setPrepAlertEnabled(enabled: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_PREP_ALERT_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setPrepAlertTime(time: String) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_PREP_ALERT_TIME] = time
+        }
+    }
+
+    suspend fun setCookingAlertsEnabled(enabled: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_COOKING_ALERTS_ENABLED] = enabled
+        }
     }
 
     val lastBackupAtFlow: Flow<String?> = context.settingsDataStore.data.map { prefs ->

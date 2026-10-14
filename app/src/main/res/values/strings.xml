@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Recipe Catcher</string>
+    <string name="widget_today_description">Shows meals and prep planned for today</string>
+</resources>

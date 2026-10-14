@@ -6,14 +6,27 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dagger.hilt.android.AndroidEntryPoint
@@ -27,7 +40,11 @@ import org.eu.angsumanray.recipecatcher.ui.edit.EditRecipeScreen
 import org.eu.angsumanray.recipecatcher.ui.edit.EditRecipeViewModel
 import org.eu.angsumanray.recipecatcher.ui.library.LibraryScreen
 import org.eu.angsumanray.recipecatcher.ui.library.LibraryViewModel
+import org.eu.angsumanray.recipecatcher.ui.lists.ListsScreen
+import org.eu.angsumanray.recipecatcher.ui.lists.ListsViewModel
 import org.eu.angsumanray.recipecatcher.ui.paste.PasteLinkScreen
+import org.eu.angsumanray.recipecatcher.ui.plan.PlanScreen
+import org.eu.angsumanray.recipecatcher.ui.plan.PlanViewModel
 import org.eu.angsumanray.recipecatcher.ui.review.ReviewScreen
 import org.eu.angsumanray.recipecatcher.ui.review.ReviewViewModel
 import org.eu.angsumanray.recipecatcher.ui.settings.ListManagerScreen
@@ -35,6 +52,8 @@ import org.eu.angsumanray.recipecatcher.ui.settings.ListManagerViewModel
 import org.eu.angsumanray.recipecatcher.ui.settings.SettingsScreen
 import org.eu.angsumanray.recipecatcher.ui.settings.SettingsViewModel
 import org.eu.angsumanray.recipecatcher.ui.theme.RecipeCatcherTheme
+import org.eu.angsumanray.recipecatcher.ui.today.TodayScreen
+import org.eu.angsumanray.recipecatcher.ui.today.TodayViewModel
 import org.eu.angsumanray.recipecatcher.ui.viewer.RecipeViewerScreen
 import org.eu.angsumanray.recipecatcher.ui.viewer.RecipeViewerViewModel
 import javax.inject.Inject
@@ -81,22 +100,110 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                NavHost(
-                    navController = navController,
-                    startDestination = "library"
-                ) {
-                    composable("library") {
-                        val viewModel = hiltViewModel<LibraryViewModel>()
-                        LibraryScreen(
-                            viewModel = viewModel,
-                            onNavigateToPasteLink = { navController.navigate("paste_link") },
-                            onNavigateToWriteRecipe = { navController.navigate("edit/0") },
-                            onNavigateToSettings = { navController.navigate("settings") },
-                            onNavigateToViewer = { id -> navController.navigate("viewer/$id") },
-                            onNavigateToEdit = { id -> navController.navigate("edit/$id") },
-                            onNavigateToReview = { id -> navController.navigate("review/$id") }
-                        )
+                val navBackStackEntry by navController.currentBackStackEntryAsState()
+                val currentRoute = navBackStackEntry?.destination?.route
+                val primaryRoutes = setOf("today", "plan", "library", "lists")
+                val showBottomBar = currentRoute in primaryRoutes
+
+                Scaffold(
+                    bottomBar = {
+                        if (showBottomBar) {
+                            NavigationBar {
+                                NavigationBarItem(
+                                    icon = { Icon(Icons.Default.Home, contentDescription = "Today") },
+                                    label = { Text("Today") },
+                                    selected = currentRoute == "today",
+                                    onClick = {
+                                        navController.navigate("today") {
+                                            popUpTo("today") { saveState = true }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    }
+                                )
+                                NavigationBarItem(
+                                    icon = { Icon(Icons.Default.DateRange, contentDescription = "Plan") },
+                                    label = { Text("Plan") },
+                                    selected = currentRoute == "plan",
+                                    onClick = {
+                                        navController.navigate("plan") {
+                                            popUpTo("today") { saveState = true }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    }
+                                )
+                                NavigationBarItem(
+                                    icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Library") },
+                                    label = { Text("Library") },
+                                    selected = currentRoute == "library",
+                                    onClick = {
+                                        navController.navigate("library") {
+                                            popUpTo("today") { saveState = true }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    }
+                                )
+                                NavigationBarItem(
+                                    icon = { Icon(Icons.Default.ShoppingCart, contentDescription = "Lists") },
+                                    label = { Text("Lists") },
+                                    selected = currentRoute == "lists",
+                                    onClick = {
+                                        navController.navigate("lists") {
+                                            popUpTo("today") { saveState = true }
+                                            launchSingleTop = true
+                                            restoreState = true
+                                        }
+                                    }
+                                )
+                            }
+                        }
                     }
+                ) { innerPadding ->
+                    NavHost(
+                        navController = navController,
+                        startDestination = "today",
+                        modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())
+                    ) {
+                        composable("today") {
+                            val viewModel = hiltViewModel<TodayViewModel>()
+                            TodayScreen(
+                                viewModel = viewModel,
+                                onNavigateToPlan = { navController.navigate("plan") },
+                                onNavigateToViewer = { id -> navController.navigate("viewer/$id") },
+                                onNavigateToCookingMode = { id, servings -> navController.navigate("cook/$id?servings=$servings") },
+                                onNavigateToSettings = { navController.navigate("settings") }
+                            )
+                        }
+
+                        composable("plan") {
+                            val viewModel = hiltViewModel<PlanViewModel>()
+                            PlanScreen(
+                                viewModel = viewModel,
+                                onNavigateToViewer = { id -> navController.navigate("viewer/$id") }
+                            )
+                        }
+
+                        composable("library") {
+                            val viewModel = hiltViewModel<LibraryViewModel>()
+                            LibraryScreen(
+                                viewModel = viewModel,
+                                onNavigateToPasteLink = { navController.navigate("paste_link") },
+                                onNavigateToWriteRecipe = { navController.navigate("edit/0") },
+                                onNavigateToSettings = { navController.navigate("settings") },
+                                onNavigateToViewer = { id -> navController.navigate("viewer/$id") },
+                                onNavigateToEdit = { id -> navController.navigate("edit/$id") },
+                                onNavigateToReview = { id -> navController.navigate("review/$id") }
+                            )
+                        }
+
+                        composable("lists") {
+                            val viewModel = hiltViewModel<ListsViewModel>()
+                            ListsScreen(
+                                viewModel = viewModel
+                            )
+                        }
 
                     composable("paste_link") {
                         PasteLinkScreen(
@@ -190,6 +297,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
 
     private val launchIntentState = mutableStateOf<Intent?>(null)
 

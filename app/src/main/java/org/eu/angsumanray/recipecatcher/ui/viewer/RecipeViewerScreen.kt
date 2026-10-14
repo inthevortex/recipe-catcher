@@ -103,6 +103,15 @@ fun RecipeViewerScreen(
     var noteInput by remember { mutableStateOf("") }
     var showMarkCookedDialog by rememberSaveable { mutableStateOf(false) }
     var selectedPhotoForCover by remember { mutableStateOf<String?>(null) }
+    var showAddToPlanSheet by remember { mutableStateOf(false) }
+
+    val entryPoint = remember(context) {
+        dagger.hilt.android.EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            RecipeViewerEntryPoint::class.java
+        )
+    }
+    val plannerRepository = entryPoint.plannerRepository()
 
     LaunchedEffect(state.reExtractError) {
         state.reExtractError?.let {
@@ -123,6 +132,12 @@ fun RecipeViewerScreen(
                 },
                 actions = {
                     if (recipe != null) {
+                        IconButton(onClick = { showAddToPlanSheet = true }) {
+                            Icon(
+                                imageVector = Icons.Default.DateRange,
+                                contentDescription = "Add to plan"
+                            )
+                        }
                         IconButton(onClick = { viewModel.toggleFavourite() }) {
                             Icon(
                                 imageVector = Icons.Default.Star,
@@ -137,6 +152,13 @@ fun RecipeViewerScreen(
                             expanded = showMenu,
                             onDismissRequest = { showMenu = false }
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Add to plan") },
+                                onClick = {
+                                    showMenu = false
+                                    showAddToPlanSheet = true
+                                }
+                            )
                             if (!recipe.sourceUrl.isNullOrBlank()) {
                                 DropdownMenuItem(
                                     text = { Text("Open source") },
@@ -788,6 +810,26 @@ fun RecipeViewerScreen(
             onCreateTempCameraUri = { viewModel.createTempCameraUri() }
         )
     }
+
+    // Sheet: Add to Plan
+    if (showAddToPlanSheet && recipe != null) {
+        AddToPlanSheet(
+            recipeId = recipe.id,
+            defaultServings = state.currentServings,
+            plannerRepository = plannerRepository,
+            onDismiss = { showAddToPlanSheet = false },
+            onAddedSuccess = {
+                showAddToPlanSheet = false
+                scope.launch { snackbarHostState.showSnackbar("Added to meal plan!") }
+            }
+        )
+    }
+}
+
+@dagger.hilt.EntryPoint
+@dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+interface RecipeViewerEntryPoint {
+    fun plannerRepository(): org.eu.angsumanray.recipecatcher.data.repo.PlannerRepository
 }
 
 @Composable

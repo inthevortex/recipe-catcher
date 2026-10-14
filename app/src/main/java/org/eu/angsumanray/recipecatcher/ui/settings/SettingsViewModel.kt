@@ -81,6 +81,42 @@ class SettingsViewModel @Inject constructor(
     val backupFolderUri: StateFlow<String?> = settingsStore.backupFolderUriFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    val weekStartsOn: StateFlow<String> = settingsStore.weekStartsOnFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsStore.DEFAULT_WEEK_STARTS_ON)
+
+    val prepAlertEnabled: StateFlow<Boolean> = settingsStore.prepAlertEnabledFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    val prepAlertTime: StateFlow<String> = settingsStore.prepAlertTimeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsStore.DEFAULT_PREP_ALERT_TIME)
+
+    val cookingAlertsEnabled: StateFlow<Boolean> = settingsStore.cookingAlertsEnabledFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    fun setWeekStartsOn(day: String) {
+        viewModelScope.launch {
+            settingsStore.setWeekStartsOn(day)
+        }
+    }
+
+    fun setPrepAlertEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsStore.setPrepAlertEnabled(enabled)
+        }
+    }
+
+    fun setPrepAlertTime(time: String) {
+        viewModelScope.launch {
+            settingsStore.setPrepAlertTime(time)
+        }
+    }
+
+    fun setCookingAlertsEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsStore.setCookingAlertsEnabled(enabled)
+        }
+    }
+
     private val _testKeyStatus = MutableStateFlow<TestKeyStatus>(TestKeyStatus.Idle)
     val testKeyStatus: StateFlow<TestKeyStatus> = _testKeyStatus.asStateFlow()
 

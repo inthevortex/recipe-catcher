@@ -97,14 +97,14 @@ The other two link sources, and the safety net that makes the app safe to rely o
 
 Week planning, Today, the grocery list and inventory, and the home-screen widget, with no LLM calls.
 
-- [ ] Bottom tabs (Today, Plan, Library, Lists) with Today as the start screen, replacing the Library-first launch of Waves 1–3.
-- [ ] `PortionLedger`, `GroceryBuilder` and `ReminderPlanner` in `:core/planner`, with tests.
-- [ ] Planner tables already exist from schema v1; confirm `recipe_id` and `from_entry_id` on `plan_entry` both use `ON DELETE SET NULL`.
-- [ ] Week plan: custom slots per day, cook / prep / leftover entries, move, copy last week's layout, Add to plan from the viewer.
-- [ ] Today screen; ticking a cook entry writes the cooked log.
-- [ ] Lists: grocery list (build from plan, categories, ticks update the inventory) and inventory (in stock, low, out).
-- [ ] Reminders with `AlarmManager.setWindow`, rescheduled on boot and time changes, with a Done action; settings for week start and alerts.
-- [ ] `TodayWidget` with Jetpack Glance.
+- [x] Bottom tabs (Today, Plan, Library, Lists) with Today as the start screen, replacing the Library-first launch of Waves 1–3.
+- [x] `PortionLedger`, `GroceryBuilder` and `ReminderPlanner` in `:core/planner`, with tests.
+- [x] Planner tables already exist from schema v1; confirm `recipe_id` and `from_entry_id` on `plan_entry` both use `ON DELETE SET NULL`.
+- [x] Week plan: custom slots per day, cook / prep / leftover entries, move, copy last week's layout, Add to plan from the viewer.
+- [x] Today screen; ticking a cook entry writes the cooked log.
+- [x] Lists: grocery list (build from plan, categories, ticks update the inventory) and inventory (in stock, low, out).
+- [x] Reminders with `AlarmManager.setWindow`, rescheduled on boot and time changes, with a Done action; settings for week start and alerts.
+- [x] `TodayWidget` with Jetpack Glance.
 
 **Done when:** a real week with leftovers shows correctly on Today and the widget, alerts fire, and the grocery list skips in-stock items.
 
