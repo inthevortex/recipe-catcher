@@ -60,4 +60,22 @@ interface RecipeDao {
 
     @Query("UPDATE recipe SET image_path = :imagePath, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateImagePath(id: Long, imagePath: String, updatedAt: Long = System.currentTimeMillis())
+
+    @androidx.room.RawQuery(observedEntities = [RecipeEntity::class, org.eu.angsumanray.recipecatcher.data.db.entity.RecipeTagEntity::class, org.eu.angsumanray.recipecatcher.data.db.entity.CookLogEntity::class, org.eu.angsumanray.recipecatcher.data.db.entity.RecipeFtsEntity::class])
+    fun queryRecipes(query: androidx.sqlite.db.SupportSQLiteQuery): Flow<List<RecipeEntity>>
+
+    @androidx.room.RawQuery
+    suspend fun queryRecipesList(query: androidx.sqlite.db.SupportSQLiteQuery): List<RecipeEntity>
+
+    @Query("UPDATE recipe SET is_favourite = :isFavourite, updated_at = :updatedAt WHERE id = :id")
+    suspend fun updateFavourite(id: Long, isFavourite: Boolean, updatedAt: Long = System.currentTimeMillis())
+
+    @Query("UPDATE recipe SET personal_note = :personalNote, updated_at = :updatedAt WHERE id = :id")
+    suspend fun updatePersonalNote(id: Long, personalNote: String?, updatedAt: Long = System.currentTimeMillis())
+
+    @Query("UPDATE recipe SET cover_photo_path = :coverPhotoPath, updated_at = :updatedAt WHERE id = :id")
+    suspend fun updateCoverPhotoPath(id: Long, coverPhotoPath: String?, updatedAt: Long = System.currentTimeMillis())
+
+    @Query("SELECT image_path FROM recipe WHERE image_path IS NOT NULL UNION SELECT cover_photo_path FROM recipe WHERE cover_photo_path IS NOT NULL")
+    suspend fun getReferencedImagePaths(): List<String>
 }

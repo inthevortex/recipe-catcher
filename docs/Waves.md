@@ -65,16 +65,16 @@ Share a post, fetch it in the background, extract it with Claude, review and sav
 
 Everything you need to find, read and cook offline, plus your own layer on top.
 
-- [ ] FTS search with prefix matching; filter engine for tags, diet type, "without" flags, favourites, never cooked, complexity, equipment, spice, make-ahead and freezer; sorts.
-- [ ] Library grid with the Pending section and retry.
-- [ ] Recipe viewer: Coil 3 images, servings stepper with range scaling, ingredient checklist, equipment and consumables, notes.
-- [ ] Cooking mode: keep-screen-on, step timers, ingredients sheet, Mark as cooked.
-- [ ] Cooked log with an optional photo (camera through a FileProvider, or the photo picker) and cover choice.
-- [ ] Favourites and personal notes.
-- [ ] Write recipe: empty form plus Fill from pasted text. (Find with AI comes in Wave 5.)
-- [ ] List manager in Settings for tags, diet, equipment and consumables.
-- [ ] Re-extract from stored source text.
-- [ ] Orphaned-image cleanup job.
+- [x] FTS search with prefix matching; filter engine for tags, diet type, "without" flags, favourites, never cooked, complexity, equipment, spice, make-ahead and freezer; sorts.
+- [x] Library grid with the Pending section and retry.
+- [x] Recipe viewer: Coil 3 images, servings stepper with range scaling, ingredient checklist, equipment and consumables, notes.
+- [x] Cooking mode: keep-screen-on, step timers, ingredients sheet, Mark as cooked.
+- [x] Cooked log with an optional photo (camera through a FileProvider, or the photo picker) and cover choice.
+- [x] Favourites and personal notes.
+- [x] Write recipe: empty form plus Fill from pasted text. (Find with AI comes in Wave 5.)
+- [x] List manager in Settings for tags, diet, equipment and consumables.
+- [x] Re-extract from stored source text.
+- [x] Orphaned-image cleanup job.
 
 **Done when:** 8 of the 10 Instagram acceptance posts are usable without edits, and a recipe can be cooked start to finish in cooking mode.
 

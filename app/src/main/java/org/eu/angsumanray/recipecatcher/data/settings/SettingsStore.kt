@@ -46,6 +46,7 @@ class SettingsStore @Inject constructor(
         private val KEY_PRICE_OUTPUT_M = doublePreferencesKey("price_output_m")
         private val KEY_PRICE_CACHE_M = doublePreferencesKey("price_cache_m")
         private val KEY_PRICE_WEB = doublePreferencesKey("price_web_search")
+        private val KEY_ALLOW_NEW_TAGS = androidx.datastore.preferences.core.booleanPreferencesKey("allow_new_ai_tags")
     }
 
     val modelIdFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
@@ -54,6 +55,16 @@ class SettingsStore @Inject constructor(
 
     val themeFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
         prefs[KEY_THEME] ?: THEME_DARK
+    }
+
+    val allowNewAiTagsFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_ALLOW_NEW_TAGS] ?: false
+    }
+
+    suspend fun setAllowNewAiTags(allow: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_ALLOW_NEW_TAGS] = allow
+        }
     }
 
     val priceTableFlow: Flow<PriceTable> = context.settingsDataStore.data.map { prefs ->

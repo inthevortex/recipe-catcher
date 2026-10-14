@@ -12,6 +12,7 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeFtsEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeTagEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.StepEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
+import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -23,8 +24,12 @@ sealed interface CaptureStart {
 
 @Singleton
 class RecipeRepository @Inject constructor(
-    private val database: RecipeDatabase
+    private val database: RecipeDatabase,
+    private val imageStorageManager: ImageStorageManager?
 ) {
+    // Secondary constructor for tests without ImageStorageManager
+    constructor(database: RecipeDatabase) : this(database, null)
+
     private val recipeDao = database.recipeDao()
     private val ingredientDao = database.ingredientDao()
     private val stepDao = database.stepDao()
@@ -32,6 +37,7 @@ class RecipeRepository @Inject constructor(
     private val tagDao = database.tagDao()
     private val recipeFtsDao = database.recipeFtsDao()
     private val llmUsageDao = database.llmUsageDao()
+    private val cookLogDao = database.cookLogDao()
 
     fun observeSavedRecipes(): Flow<List<RecipeEntity>> = recipeDao.observeAllSaved()
 
@@ -48,10 +54,58 @@ class RecipeRepository @Inject constructor(
     fun observeTags(recipeId: Long): Flow<List<TagEntity>> =
         recipeTagDao.observeTagsForRecipe(recipeId)
 
+    suspend fun getIngredients(recipeId: Long): List<IngredientEntity> =
+        ingredientDao.getByRecipeId(recipeId)
+
+    suspend fun getSteps(recipeId: Long): List<StepEntity> =
+        stepDao.getByRecipeId(recipeId)
+
+    suspend fun getTags(recipeId: Long): List<TagEntity> =
+        recipeTagDao.getTagsForRecipe(recipeId)
+
+    fun observeFilteredRecipes(filter: RecipeFilter): Flow<List<RecipeEntity>> {
+        val query = RecipeFilterQueryBuilder.buildQuery(filter)
+        return recipeDao.queryRecipes(query)
+    }
+
+    suspend fun queryFilteredRecipes(filter: RecipeFilter): List<RecipeEntity> {
+        val query = RecipeFilterQueryBuilder.buildQuery(filter)
+        return recipeDao.queryRecipesList(query)
+    }
+
     suspend fun getRecipe(id: Long): RecipeEntity? = recipeDao.getById(id)
 
     suspend fun getRecipeBySourceKey(sourceKey: String): RecipeEntity? =
         recipeDao.getBySourceKey(sourceKey)
+
+    suspend fun toggleFavourite(id: Long, isFavourite: Boolean) {
+        recipeDao.updateFavourite(id, isFavourite)
+    }
+
+    suspend fun updatePersonalNote(id: Long, personalNote: String?) {
+        recipeDao.updatePersonalNote(id, personalNote)
+        val recipe = recipeDao.getById(id)
+        if (recipe != null) {
+            val ingredients = ingredientDao.getByRecipeId(id)
+            val steps = stepDao.getByRecipeId(id)
+            val ingredientsText = ingredients.joinToString(" ") { "${it.name} ${it.rawText}" }
+            val stepsText = steps.joinToString(" ") { it.text }
+            val fts = RecipeFtsEntity(
+                rowid = id,
+                title = recipe.title.orEmpty(),
+                ingredients = ingredientsText,
+                steps = stepsText,
+                caption = recipe.captionRaw.orEmpty(),
+                author = recipe.authorHandle.orEmpty(),
+                notes = personalNote.orEmpty()
+            )
+            recipeFtsDao.insert(fts)
+        }
+    }
+
+    suspend fun updateCoverPhotoPath(id: Long, coverPhotoPath: String?) {
+        recipeDao.updateCoverPhotoPath(id, coverPhotoPath)
+    }
 
     /**
      * Dedupes [sharedText]'s link against the library and, when it is new, writes the
@@ -177,8 +231,40 @@ class RecipeRepository @Inject constructor(
     }
 
     suspend fun deleteRecipe(recipeId: Long) = database.withTransaction {
+        val recipe = recipeDao.getById(recipeId)
+        val cookLogs = cookLogDao.getAllByRecipe(recipeId)
+
+        // Delete associated image files
+        imageStorageManager?.let { mgr ->
+            recipe?.imagePath?.let { mgr.deleteImage(it) }
+            recipe?.coverPhotoPath?.let { mgr.deleteImage(it) }
+            cookLogs.forEach { log ->
+                log.photoPath?.let { mgr.deleteImage(it) }
+            }
+        }
+
         recipeDao.deleteById(recipeId)
         recipeFtsDao.deleteByRowid(recipeId)
+    }
+
+    suspend fun cleanOrphanedImages(): Int {
+        val mgr = imageStorageManager ?: return 0
+        val diskFiles = mgr.scanAllImageFiles()
+        if (diskFiles.isEmpty()) return 0
+
+        val recipeImages = recipeDao.getReferencedImagePaths().toSet()
+        val cookPhotos = cookLogDao.getReferencedPhotoPaths().toSet()
+        val referenced = recipeImages + cookPhotos
+
+        var deletedCount = 0
+        for (file in diskFiles) {
+            if (file !in referenced) {
+                if (mgr.deleteImage(file)) {
+                    deletedCount++
+                }
+            }
+        }
+        return deletedCount
     }
 
     suspend fun search(query: String): List<RecipeEntity> {

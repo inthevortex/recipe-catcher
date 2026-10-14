@@ -53,7 +53,8 @@ import java.util.Locale
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
-    onNavigateBack: () -> Unit
+    onNavigateBack: () -> Unit,
+    onNavigateToListManager: () -> Unit = {}
 ) {
     val apiKey by viewModel.apiKey.collectAsState()
     val modelId by viewModel.modelId.collectAsState()
@@ -192,6 +193,32 @@ fun SettingsScreen(
                             onClick = { viewModel.setTheme(themeKey) },
                             label = { Text(label) }
                         )
+                    }
+                }
+            }
+
+            // List Manager Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Vocabularies & Lists",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Manage tags, diet allergens/contains, equipment, and consumables. Rename, delete, or merge existing items.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Button(
+                        onClick = onNavigateToListManager,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Manage Lists")
                     }
                 }
             }

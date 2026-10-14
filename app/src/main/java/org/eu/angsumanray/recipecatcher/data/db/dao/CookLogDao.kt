@@ -28,4 +28,16 @@ interface CookLogDao {
 
     @Query("SELECT MAX(cooked_on) FROM cook_log WHERE recipe_id = :recipeId")
     suspend fun getLastCookedDate(recipeId: Long): String?
+
+    @Query("SELECT photo_path FROM cook_log WHERE photo_path IS NOT NULL")
+    suspend fun getReferencedPhotoPaths(): List<String>
+
+    @Query("SELECT * FROM cook_log WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): CookLogEntity?
+
+    @Query("DELETE FROM cook_log WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("SELECT * FROM cook_log WHERE recipe_id = :recipeId")
+    suspend fun getAllByRecipe(recipeId: Long): List<CookLogEntity>
 }
