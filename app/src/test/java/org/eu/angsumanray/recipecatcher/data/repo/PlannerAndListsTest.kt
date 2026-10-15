@@ -411,4 +411,68 @@ class PlannerAndListsTest {
         assertEquals(1, forcedAdd)
         assertEquals(2, database.plannerDao().getEntriesForSlot(filledSlot).size)
     }
+
+    @Test
+    fun `cooked food inventory can be added, updated, planned, and deleted`() = runBlocking {
+        val today = LocalDate.of(2026, 10, 15)
+        val cookedId = listsRepository.addCookedFoodItem(
+            name = "Mom's Rajma",
+            portions = 3,
+            dateCooked = today.toString(),
+            notes = "From home"
+        )
+        assertTrue(cookedId > 0)
+
+        val items = listsRepository.getAllCookedFoodItems()
+        assertEquals(1, items.size)
+        assertEquals("Mom's Rajma", items[0].name)
+        assertEquals(3, items[0].portions)
+
+        // Planner availableLeftovers returns this cooked food item
+        val leftovers = plannerRepository.availableLeftovers(today)
+        val rajmaLeftover = leftovers.firstOrNull { it.cookEntryId == -cookedId }
+        assertNotNull(rajmaLeftover)
+        assertEquals(3, rajmaLeftover!!.remainingPortions)
+
+        // Plan a portion as leftover in a meal slot
+        val slotId = plannerRepository.insertSlot(PlanSlotEntity(date = today, name = "Dinner", time = LocalTime.of(20, 0)))
+        val entryId = plannerRepository.addLeftoverEntry(slotId = slotId, fromEntryId = -cookedId, portions = 1)
+        assertTrue(entryId > 0)
+
+        // Cooked food inventory portions should now be 2
+        val updated = listsRepository.getAllCookedFoodItems().first()
+        assertEquals(2, updated.portions)
+
+        // Update portions manually (e.g. someone ate the remaining 2)
+        listsRepository.updateCookedFoodPortions(cookedId, 0)
+        assertTrue(listsRepository.getAllCookedFoodItems().isEmpty())
+    }
+
+    @Test
+    fun `upsertScannedInventoryItems inserts new items and updates existing`() = runBlocking {
+        // Pre-seed an item that is OUT
+        val existingId = listsRepository.addInventoryItem(name = "Whole Milk", category = "dairy", status = InventoryItemEntity.STATUS_OUT)
+        val initialItems = listsRepository.getAllInventoryItems()
+        assertEquals(1, initialItems.size)
+        assertEquals(InventoryItemEntity.STATUS_OUT, initialItems[0].status)
+
+        // Scan results include Whole Milk and new Roma Tomatoes
+        val scanned = listOf(
+            org.eu.angsumanray.recipecatcher.core.llm.ScannedGroceryItem(name = "Whole Milk", category = "dairy"),
+            org.eu.angsumanray.recipecatcher.core.llm.ScannedGroceryItem(name = "Roma Tomatoes", category = "produce")
+        )
+
+        val count = listsRepository.upsertScannedInventoryItems(scanned, defaultStatus = InventoryItemEntity.STATUS_IN_STOCK)
+        assertEquals(2, count)
+
+        val finalItems = listsRepository.getAllInventoryItems()
+        assertEquals(2, finalItems.size)
+
+        val milk = finalItems.first { it.name == "Whole Milk" }
+        assertEquals(existingId, milk.id)
+        assertEquals(InventoryItemEntity.STATUS_IN_STOCK, milk.status)
+
+        val tomatoes = finalItems.first { it.name == "Roma Tomatoes" }
+        assertEquals(InventoryItemEntity.STATUS_IN_STOCK, tomatoes.status)
+    }
 }

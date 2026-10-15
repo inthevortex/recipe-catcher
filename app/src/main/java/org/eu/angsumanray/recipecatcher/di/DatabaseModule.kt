@@ -57,9 +57,13 @@ object DatabaseModule {
             RecipeDatabase.DATABASE_NAME
         )
             .addCallback(RecipeDatabase.starterSeedCallback)
+            .addMigrations(RecipeDatabase.MIGRATION_1_2)
             .fallbackToDestructiveMigration(false)
             .build()
     }
+
+    @Provides
+    fun provideCookedFoodDao(database: RecipeDatabase): org.eu.angsumanray.recipecatcher.data.db.dao.CookedFoodDao = database.cookedFoodDao()
 
     @Provides
     fun provideRecipeDao(database: RecipeDatabase): RecipeDao = database.recipeDao()

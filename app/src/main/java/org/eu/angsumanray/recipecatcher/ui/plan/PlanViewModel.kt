@@ -321,7 +321,7 @@ class PlanViewModel @Inject constructor(
                     inStockIngredients = inventory.filter { it.status == InventoryItemEntity.STATUS_IN_STOCK }.map { it.name },
                     lowStockIngredients = inventory.filter { it.status == InventoryItemEntity.STATUS_LOW }.map { it.name },
                     availableLeftovers = leftovers.map {
-                        val title = it.recipeId?.let { rId -> recipesMap[rId]?.title } ?: "Leftover"
+                        val title = it.recipeId?.let { rId -> recipesMap[rId]?.title } ?: it.slotName
                         "$title (${it.remainingPortions} portions left, recipe_id ${it.recipeId ?: "none"})"
                     },
                     leftoverRecipeIds = leftoverRecipeIds,

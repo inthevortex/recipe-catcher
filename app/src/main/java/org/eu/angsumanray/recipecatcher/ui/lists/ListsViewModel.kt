@@ -1,5 +1,6 @@
 package org.eu.angsumanray.recipecatcher.ui.lists
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -9,6 +10,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import org.eu.angsumanray.recipecatcher.capture.ImagePreprocessor
+import org.eu.angsumanray.recipecatcher.core.llm.GroceryImageScanner
+import org.eu.angsumanray.recipecatcher.core.llm.ScannedGroceryItem
+import org.eu.angsumanray.recipecatcher.data.db.entity.CookedFoodItemEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.GroceryItemEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.InventoryItemEntity
 import org.eu.angsumanray.recipecatcher.data.repo.ListsRepository
@@ -18,20 +23,30 @@ import java.time.LocalDate
 import java.time.temporal.TemporalAdjusters
 import javax.inject.Inject
 
+import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
+
 data class ListsUiState(
     val isLoading: Boolean = true,
-    val selectedTab: Int = 0, // 0: Grocery, 1: Inventory
+    val selectedTab: Int = 0, // 0: Grocery, 1: Pantry Staples, 2: Cooked Food
     val currentWeekStart: LocalDate = LocalDate.now(),
     val groceryItems: List<GroceryItemEntity> = emptyList(),
     val inventoryItems: List<InventoryItemEntity> = emptyList(),
+    val cookedFoodItems: List<CookedFoodItemEntity> = emptyList(),
+    val isScanningGrocery: Boolean = false,
+    val scannedGroceryCandidates: List<ScannedGroceryItem>? = null,
     val snackbarMessage: String? = null
 )
 
 @HiltViewModel
 class ListsViewModel @Inject constructor(
     private val listsRepository: ListsRepository,
-    private val settingsStore: SettingsStore
+    private val settingsStore: SettingsStore,
+    private val groceryImageScanner: GroceryImageScanner,
+    private val imagePreprocessor: ImagePreprocessor,
+    private val imageStorageManager: ImageStorageManager
 ) : ViewModel() {
+
+    fun createCameraUri(): Uri = imageStorageManager.createTempCameraUri().first
 
     private val _uiState = MutableStateFlow(ListsUiState())
     val uiState: StateFlow<ListsUiState> = _uiState.asStateFlow()
@@ -51,12 +66,14 @@ class ListsViewModel @Inject constructor(
 
             combine(
                 listsRepository.observeGroceryItems(weekStart),
-                listsRepository.observeInventoryItems()
-            ) { grocery, inventory ->
+                listsRepository.observeInventoryItems(),
+                listsRepository.observeCookedFoodItems()
+            ) { grocery, inventory, cooked ->
                 _uiState.value.copy(
                     isLoading = false,
                     groceryItems = grocery,
-                    inventoryItems = inventory
+                    inventoryItems = inventory,
+                    cookedFoodItems = cooked
                 )
             }.collect { state ->
                 _uiState.value = state
@@ -67,6 +84,8 @@ class ListsViewModel @Inject constructor(
     fun selectTab(tab: Int) {
         _uiState.value = _uiState.value.copy(selectedTab = tab)
     }
+
+    // --- Grocery ---
 
     fun buildFromPlan() {
         viewModelScope.launch {
@@ -107,6 +126,8 @@ class ListsViewModel @Inject constructor(
         }
     }
 
+    // --- Pantry Inventory ---
+
     fun updateInventoryStatus(id: Long, status: String) {
         viewModelScope.launch {
             listsRepository.setInventoryStatus(id, status)
@@ -122,6 +143,111 @@ class ListsViewModel @Inject constructor(
     fun deleteInventoryItem(id: Long) {
         viewModelScope.launch {
             listsRepository.deleteInventoryItem(id)
+        }
+    }
+
+    // --- Grocery Image Scanning ---
+
+    fun scanGroceryImages(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isScanningGrocery = true)
+            try {
+                val base64List = uris.mapNotNull { uri ->
+                    try {
+                        imagePreprocessor.processUri(uri)?.base64
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+                if (base64List.isEmpty()) {
+                    _uiState.value = _uiState.value.copy(
+                        isScanningGrocery = false,
+                        snackbarMessage = "Could not process selected image(s)."
+                    )
+                    return@launch
+                }
+
+                val result = groceryImageScanner.scanGroceryImages(base64List)
+                result.fold(
+                    onSuccess = { items ->
+                        if (items.isEmpty()) {
+                            _uiState.value = _uiState.value.copy(
+                                isScanningGrocery = false,
+                                snackbarMessage = "No grocery items detected in the image(s)."
+                            )
+                        } else {
+                            _uiState.value = _uiState.value.copy(
+                                isScanningGrocery = false,
+                                scannedGroceryCandidates = items
+                            )
+                        }
+                    },
+                    onFailure = { error ->
+                        _uiState.value = _uiState.value.copy(
+                            isScanningGrocery = false,
+                            snackbarMessage = "Scanning failed: ${error.message ?: "Unknown error"}"
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isScanningGrocery = false,
+                    snackbarMessage = "Error scanning image: ${e.message}"
+                )
+            }
+        }
+    }
+
+    fun saveScannedGroceryItems(
+        items: List<ScannedGroceryItem>,
+        defaultStatus: String = InventoryItemEntity.STATUS_IN_STOCK
+    ) {
+        viewModelScope.launch {
+            val count = listsRepository.upsertScannedInventoryItems(items, defaultStatus)
+            _uiState.value = _uiState.value.copy(
+                scannedGroceryCandidates = null,
+                snackbarMessage = "Saved $count items to pantry inventory!"
+            )
+        }
+    }
+
+    fun dismissScannedGroceryDialog() {
+        _uiState.value = _uiState.value.copy(scannedGroceryCandidates = null)
+    }
+
+    // --- Cooked Food / Leftovers ---
+
+    fun addCookedFoodItem(
+        name: String,
+        portions: Int = 1,
+        dateCooked: String = LocalDate.now().toString(),
+        notes: String? = null,
+        recipeId: Long? = null
+    ) {
+        viewModelScope.launch {
+            listsRepository.addCookedFoodItem(
+                name = name,
+                portions = portions,
+                dateCooked = dateCooked,
+                notes = notes,
+                recipeId = recipeId
+            )
+            _uiState.value = _uiState.value.copy(
+                snackbarMessage = "Added '$name' ($portions portions) to Cooked Food!"
+            )
+        }
+    }
+
+    fun updateCookedFoodPortions(id: Long, newPortions: Int) {
+        viewModelScope.launch {
+            listsRepository.updateCookedFoodPortions(id, newPortions)
+        }
+    }
+
+    fun deleteCookedFoodItem(id: Long) {
+        viewModelScope.launch {
+            listsRepository.deleteCookedFoodItem(id)
         }
     }
 

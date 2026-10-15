@@ -207,6 +207,25 @@ class PlannerRepository @Inject constructor(
         portions: Int = 1
     ): Long {
         val existing = plannerDao.getEntriesForSlot(slotId)
+        if (fromEntryId < 0) {
+            val cookedFoodId = -fromEntryId
+            val cooked = database.cookedFoodDao().getCookedFoodItemById(cookedFoodId)
+            if (cooked != null) {
+                val entry = PlanEntryEntity(
+                    slotId = slotId,
+                    kind = PlanEntryEntity.KIND_LEFTOVER,
+                    recipeId = cooked.recipeId,
+                    text = cooked.name,
+                    portions = portions.coerceAtLeast(1),
+                    fromEntryId = null,
+                    position = existing.size
+                )
+                val newPortions = (cooked.portions - portions).coerceAtLeast(0)
+                database.cookedFoodDao().updatePortions(cookedFoodId, newPortions)
+                return plannerDao.insertEntry(entry)
+            }
+        }
+
         val source = resolveCookSource(fromEntryId)
         requireNotNull(source) { "Leftovers must come from a cook entry" }
         val entry = PlanEntryEntity(
@@ -241,16 +260,38 @@ class PlannerRepository @Inject constructor(
      */
     suspend fun availableLeftovers(date: LocalDate, lookbackDays: Long = 7): List<AvailableLeftover> {
         val slots = plannerDao.getSlotsBetween(date.minusDays(lookbackDays), date)
-        if (slots.isEmpty()) return emptyList()
-        val cooks = plannerDao.getEntriesForSlots(slots.map { it.id })
-            .filter { it.kind == PlanEntryEntity.KIND_COOK }
-        if (cooks.isEmpty()) return emptyList()
-        val leftovers = plannerDao.getLeftoversOf(cooks.map { it.id })
-        return PortionLedger.availableLeftovers(
-            targetDate = date.toString(),
-            allSlots = slots.map { it.toCore() },
-            allEntries = (cooks + leftovers).map { it.toCore() }
-        )
+        val planLeftovers = if (slots.isNotEmpty()) {
+            val cooks = plannerDao.getEntriesForSlots(slots.map { it.id })
+                .filter { it.kind == PlanEntryEntity.KIND_COOK }
+            if (cooks.isNotEmpty()) {
+                val leftovers = plannerDao.getLeftoversOf(cooks.map { it.id })
+                PortionLedger.availableLeftovers(
+                    targetDate = date.toString(),
+                    allSlots = slots.map { it.toCore() },
+                    allEntries = (cooks + leftovers).map { it.toCore() }
+                )
+            } else emptyList()
+        } else emptyList()
+
+        val cookedFoodLeftovers = try {
+            database.cookedFoodDao().getAllCookedFoodItems()
+                .filter { it.portions > 0 && it.dateCooked <= date.toString() }
+                .map { cooked ->
+                    AvailableLeftover(
+                        cookEntryId = -cooked.id,
+                        recipeId = cooked.recipeId,
+                        slotId = 0L,
+                        slotDate = cooked.dateCooked,
+                        slotName = cooked.notes ?: "Cooked Food: ${cooked.name}",
+                        initialPortions = cooked.portions,
+                        remainingPortions = cooked.portions
+                    )
+                }
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        return planLeftovers + cookedFoodLeftovers
     }
 
     suspend fun copyPreviousWeekLayout(targetWeekStart: LocalDate): Boolean {

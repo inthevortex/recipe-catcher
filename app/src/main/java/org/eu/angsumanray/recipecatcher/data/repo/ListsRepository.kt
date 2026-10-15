@@ -287,4 +287,60 @@ class ListsRepository @Inject constructor(
 
     suspend fun deleteInventoryItem(id: Long) =
         listsDao.deleteInventoryItemById(id)
+
+    // --- Cooked Food / Leftovers ---
+
+    fun observeCookedFoodItems(): Flow<List<org.eu.angsumanray.recipecatcher.data.db.entity.CookedFoodItemEntity>> =
+        database.cookedFoodDao().getCookedFoodItemsFlow()
+
+    suspend fun getAllCookedFoodItems(): List<org.eu.angsumanray.recipecatcher.data.db.entity.CookedFoodItemEntity> =
+        database.cookedFoodDao().getAllCookedFoodItems()
+
+    suspend fun addCookedFoodItem(
+        name: String,
+        portions: Int = 1,
+        dateCooked: String = LocalDate.now().toString(),
+        notes: String? = null,
+        recipeId: Long? = null
+    ): Long {
+        val entity = org.eu.angsumanray.recipecatcher.data.db.entity.CookedFoodItemEntity(
+            name = name.trim(),
+            portions = portions.coerceAtLeast(1),
+            dateCooked = dateCooked,
+            notes = notes?.trim()?.ifEmpty { null },
+            recipeId = recipeId,
+            updatedAt = System.currentTimeMillis()
+        )
+        return database.cookedFoodDao().insert(entity)
+    }
+
+    suspend fun updateCookedFoodPortions(id: Long, portions: Int) {
+        if (portions <= 0) {
+            database.cookedFoodDao().deleteById(id)
+        } else {
+            database.cookedFoodDao().updatePortions(id, portions)
+        }
+    }
+
+    suspend fun deleteCookedFoodItem(id: Long) =
+        database.cookedFoodDao().deleteById(id)
+
+    suspend fun upsertScannedInventoryItems(
+        items: List<org.eu.angsumanray.recipecatcher.core.llm.ScannedGroceryItem>,
+        defaultStatus: String = InventoryItemEntity.STATUS_IN_STOCK
+    ): Int {
+        var count = 0
+        database.withTransaction {
+            for (item in items) {
+                if (item.name.isBlank()) continue
+                addInventoryItem(
+                    name = item.name.trim(),
+                    category = item.category.trim().ifBlank { "pantry" },
+                    status = defaultStatus
+                )
+                count++
+            }
+        }
+        return count
+    }
 }

@@ -337,7 +337,7 @@ class BackupRestoreRoundTripTest {
     fun `restore rejects a backup from a newer schema or format`() {
         seedOneRecipe()
         val newerSchema = rewriteZip(backupBytes()) { name, bytes ->
-            if (name == "manifest.json") String(bytes).replace("\"db_schema_version\": 1", "\"db_schema_version\": 99").toByteArray() else bytes
+            if (name == "manifest.json") String(bytes).replace("\"db_schema_version\": ${RecipeDatabase.DATABASE_VERSION}", "\"db_schema_version\": 99").toByteArray() else bytes
         }
         assertInspectionFails(newerSchema, "newer than supported")
 

@@ -147,4 +147,17 @@ object NetworkModule {
             modelIdProvider = { settingsStore.chatModelIdFlow.first() }
         )
     }
+
+    @Provides
+    @Singleton
+    fun provideGroceryImageScanner(
+        @AnthropicHttpClient httpClient: HttpClient,
+        settingsStore: SettingsStore
+    ): org.eu.angsumanray.recipecatcher.core.llm.GroceryImageScanner {
+        return org.eu.angsumanray.recipecatcher.core.llm.ClaudeGroceryImageScanner(
+            httpClient = httpClient,
+            apiKeyProvider = { settingsStore.getApiKey() },
+            modelIdProvider = { settingsStore.modelIdFlow.first() }
+        )
+    }
 }

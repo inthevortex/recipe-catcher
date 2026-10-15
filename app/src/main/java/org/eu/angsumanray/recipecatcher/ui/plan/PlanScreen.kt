@@ -873,8 +873,8 @@ private fun leftoverLabel(
     recipeTitle: String?,
     leftover: org.eu.angsumanray.recipecatcher.core.planner.AvailableLeftover
 ): String =
-    "${recipeTitle ?: "Deleted recipe"}, ${leftover.remainingPortions} of ${leftover.initialPortions} portions left " +
-        "(${leftover.slotName}, ${leftover.slotDate})"
+    "${recipeTitle ?: leftover.slotName}, ${leftover.remainingPortions} of ${leftover.initialPortions} portions left " +
+        "(${leftover.slotDate})"
 
 @Composable
 fun PlanSuggestionsDialog(

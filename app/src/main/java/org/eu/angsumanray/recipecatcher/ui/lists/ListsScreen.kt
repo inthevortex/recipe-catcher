@@ -1,5 +1,9 @@
 package org.eu.angsumanray.recipecatcher.ui.lists
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -49,17 +54,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import org.eu.angsumanray.recipecatcher.core.llm.ScannedGroceryItem
 import org.eu.angsumanray.recipecatcher.core.planner.GroceryCategories
+import org.eu.angsumanray.recipecatcher.data.db.entity.CookedFoodItemEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.GroceryItemEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.InventoryItemEntity
+import java.time.LocalDate
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -78,6 +89,27 @@ fun ListsScreen(
 
     var showAddGroceryDialog by remember { mutableStateOf(false) }
     var showAddInventoryDialog by remember { mutableStateOf(false) }
+    var showAddCookedFoodDialog by remember { mutableStateOf(false) }
+    var showPhotoSourceDialog by remember { mutableStateOf(false) }
+    var pendingCameraUri by rememberSaveable { mutableStateOf<Uri?>(null) }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 5)
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.scanGroceryImages(uris)
+        }
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        val uri = pendingCameraUri
+        pendingCameraUri = null
+        if (success && uri != null) {
+            viewModel.scanGroceryImages(listOf(uri))
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -113,26 +145,43 @@ fun ListsScreen(
                 Tab(
                     selected = state.selectedTab == 1,
                     onClick = { viewModel.selectTab(1) },
-                    text = { Text("Inventory") }
+                    text = { Text("Pantry Staples") }
+                )
+                Tab(
+                    selected = state.selectedTab == 2,
+                    onClick = { viewModel.selectTab(2) },
+                    text = { Text("Cooked Food") }
                 )
             }
 
-            if (state.selectedTab == 0) {
-                GroceryListTabContent(
-                    items = state.groceryItems,
-                    onBuildFromPlan = { viewModel.buildFromPlan() },
-                    onToggleChecked = { id, checked -> viewModel.toggleGroceryItem(id, checked) },
-                    onDeleteItem = { id -> viewModel.deleteGroceryItem(id) },
-                    onClearChecked = { viewModel.clearCheckedGrocery() },
-                    onOpenAddDialog = { showAddGroceryDialog = true }
-                )
-            } else {
-                InventoryTabContent(
-                    items = state.inventoryItems,
-                    onUpdateStatus = { id, status -> viewModel.updateInventoryStatus(id, status) },
-                    onDeleteItem = { id -> viewModel.deleteInventoryItem(id) },
-                    onOpenAddDialog = { showAddInventoryDialog = true }
-                )
+            when (state.selectedTab) {
+                0 -> {
+                    GroceryListTabContent(
+                        items = state.groceryItems,
+                        onBuildFromPlan = { viewModel.buildFromPlan() },
+                        onToggleChecked = { id, checked -> viewModel.toggleGroceryItem(id, checked) },
+                        onDeleteItem = { id -> viewModel.deleteGroceryItem(id) },
+                        onClearChecked = { viewModel.clearCheckedGrocery() },
+                        onOpenAddDialog = { showAddGroceryDialog = true }
+                    )
+                }
+                1 -> {
+                    InventoryTabContent(
+                        items = state.inventoryItems,
+                        onUpdateStatus = { id, status -> viewModel.updateInventoryStatus(id, status) },
+                        onDeleteItem = { id -> viewModel.deleteInventoryItem(id) },
+                        onOpenAddDialog = { showAddInventoryDialog = true },
+                        onOpenScanDialog = { showPhotoSourceDialog = true }
+                    )
+                }
+                2 -> {
+                    CookedFoodTabContent(
+                        items = state.cookedFoodItems,
+                        onUpdatePortions = { id, portions -> viewModel.updateCookedFoodPortions(id, portions) },
+                        onDeleteItem = { id -> viewModel.deleteCookedFoodItem(id) },
+                        onOpenAddDialog = { showAddCookedFoodDialog = true }
+                    )
+                }
             }
         }
     }
@@ -153,6 +202,82 @@ fun ListsScreen(
             onConfirm = { name, category, status ->
                 viewModel.addInventoryItem(name, category, status)
                 showAddInventoryDialog = false
+            }
+        )
+    }
+
+    if (showAddCookedFoodDialog) {
+        AddCookedFoodDialog(
+            onDismiss = { showAddCookedFoodDialog = false },
+            onConfirm = { name, portions, date, notes ->
+                viewModel.addCookedFoodItem(name, portions, date, notes)
+                showAddCookedFoodDialog = false
+            }
+        )
+    }
+
+    if (showPhotoSourceDialog) {
+        AlertDialog(
+            onDismissRequest = { showPhotoSourceDialog = false },
+            title = { Text("Scan Grocery Bill or Photos") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Take a photo of a store receipt/bill, app order screenshot, or grocery bag items to add/update your consumables inventory.")
+                    OutlinedButton(
+                        onClick = {
+                            showPhotoSourceDialog = false
+                            val uri = viewModel.createCameraUri()
+                            pendingCameraUri = uri
+                            cameraLauncher.launch(uri)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Take photo with camera")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            showPhotoSourceDialog = false
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Pick photos from gallery")
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showPhotoSourceDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (state.isScanningGrocery) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Analyzing Grocery Photo...") },
+            text = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                    Text("Extracting grocery and pantry items with AI vision...")
+                }
+            },
+            confirmButton = {}
+        )
+    }
+
+    state.scannedGroceryCandidates?.let { candidates ->
+        ReviewScannedGroceryDialog(
+            initialItems = candidates,
+            onDismiss = { viewModel.dismissScannedGroceryDialog() },
+            onConfirm = { items, status ->
+                viewModel.saveScannedGroceryItems(items, status)
             }
         )
     }
@@ -315,7 +440,8 @@ fun InventoryTabContent(
     items: List<InventoryItemEntity>,
     onUpdateStatus: (Long, String) -> Unit,
     onDeleteItem: (Long) -> Unit,
-    onOpenAddDialog: () -> Unit
+    onOpenAddDialog: () -> Unit,
+    onOpenScanDialog: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -328,14 +454,19 @@ fun InventoryTabContent(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Pantry Inventory (${items.size} items)",
+                text = "Pantry (${items.size} items)",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
-            FilledTonalButton(onClick = onOpenAddDialog) {
-                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Add Item")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onOpenScanDialog) {
+                    Text("Scan Bill / Photo")
+                }
+                FilledTonalButton(onClick = onOpenAddDialog) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Add")
+                }
             }
         }
 
@@ -346,11 +477,19 @@ fun InventoryTabContent(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "Inventory is empty.\nAdd your pantry staples to track stock levels.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "Pantry inventory is empty.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Add staples or scan a grocery bill to track stock levels.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             return
         }
@@ -409,7 +548,6 @@ fun InventoryTabContent(
                                     )
                                 }
 
-                                // Quick status switcher chips
                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                     FilterChip(
                                         selected = item.status == InventoryItemEntity.STATUS_IN_STOCK,
@@ -441,6 +579,325 @@ fun InventoryTabContent(
 }
 
 @Composable
+fun CookedFoodTabContent(
+    items: List<CookedFoodItemEntity>,
+    onUpdatePortions: (Long, Int) -> Unit,
+    onDeleteItem: (Long) -> Unit,
+    onOpenAddDialog: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Cooked Food (${items.size} dishes)",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            FilledTonalButton(onClick = onOpenAddDialog) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Add Dish")
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (items.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "No cooked food or leftovers stored",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Add food brought from home, takeout leftovers, or extra cooked portions.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            return
+        }
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(items, key = { it.id }) { item ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = item.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = "Cooked: ${item.dateCooked}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (!item.notes.isNullOrBlank()) {
+                                    Text(
+                                        text = "• ${item.notes}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+
+                        // Portion controls: - count +
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { onUpdatePortions(item.id, item.portions - 1) },
+                                modifier = Modifier.size(36.dp),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                            ) {
+                                Text("−", fontWeight = FontWeight.Bold)
+                            }
+                            Text(
+                                text = "${item.portions}",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp)
+                            )
+                            OutlinedButton(
+                                onClick = { onUpdatePortions(item.id, item.portions + 1) },
+                                modifier = Modifier.size(36.dp),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                            ) {
+                                Text("+", fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        IconButton(onClick = { onDeleteItem(item.id) }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete dish", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AddCookedFoodDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (name: String, portions: Int, dateCooked: String, notes: String?) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var portions by remember { mutableIntStateOf(2) }
+    var dateCooked by remember { mutableStateOf(LocalDate.now().toString()) }
+    var notes by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add Cooked Food / Leftovers") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Dish Name (e.g. Mom's Rajma, Takeout Pizza)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Portions:", style = MaterialTheme.typography.bodyMedium)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(
+                            onClick = { if (portions > 1) portions-- },
+                            modifier = Modifier.size(36.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                        ) {
+                            Text("−")
+                        }
+                        Text(
+                            text = "$portions",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 12.dp)
+                        )
+                        OutlinedButton(
+                            onClick = { portions++ },
+                            modifier = Modifier.size(36.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                        ) {
+                            Text("+")
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = dateCooked,
+                    onValueChange = { dateCooked = it },
+                    label = { Text("Date (YYYY-MM-DD)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = notes,
+                    onValueChange = { notes = it },
+                    label = { Text("Notes (e.g. From home, Shelf 2)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = name.isNotBlank(),
+                onClick = { onConfirm(name.trim(), portions, dateCooked.trim(), notes.trim().ifBlank { null }) }
+            ) {
+                Text("Add to Cooked Food")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+fun ReviewScannedGroceryDialog(
+    initialItems: List<ScannedGroceryItem>,
+    onDismiss: () -> Unit,
+    onConfirm: (List<ScannedGroceryItem>, defaultStatus: String) -> Unit
+) {
+    val items = remember { mutableStateListOf(*initialItems.toTypedArray()) }
+    var selectedStatus by remember { mutableStateOf(InventoryItemEntity.STATUS_IN_STOCK) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Review Scanned Items (${items.size})") },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Edit names or remove incorrect items before saving to inventory.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("Default Status:", style = MaterialTheme.typography.labelMedium)
+                    FilterChip(
+                        selected = selectedStatus == InventoryItemEntity.STATUS_IN_STOCK,
+                        onClick = { selectedStatus = InventoryItemEntity.STATUS_IN_STOCK },
+                        label = { Text("In Stock") }
+                    )
+                    FilterChip(
+                        selected = selectedStatus == InventoryItemEntity.STATUS_LOW,
+                        onClick = { selectedStatus = InventoryItemEntity.STATUS_LOW },
+                        label = { Text("Low") }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(300.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    itemsIndexed(items) { index, item ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    OutlinedTextField(
+                                        value = item.name,
+                                        onValueChange = { newName ->
+                                            items[index] = item.copy(name = newName)
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        textStyle = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Text(
+                                        text = item.category.replaceFirstChar { it.uppercase() } + (item.estimatedQuantity?.let { " • $it" } ?: ""),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+                                    )
+                                }
+                                IconButton(onClick = { items.removeAt(index) }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedButton(
+                    onClick = { items.add(ScannedGroceryItem(name = "", category = "pantry")) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Add Another Item")
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = items.any { it.name.isNotBlank() },
+                onClick = { onConfirm(items.filter { it.name.isNotBlank() }, selectedStatus) }
+            ) {
+                Text("Save to Inventory (${items.count { it.name.isNotBlank() }})")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
 fun AddGroceryItemDialog(
     onDismiss: () -> Unit,
     onConfirm: (name: String, category: String, quantity: String?) -> Unit
@@ -465,7 +922,7 @@ fun AddGroceryItemDialog(
                 OutlinedTextField(
                     value = quantity,
                     onValueChange = { quantity = it },
-                    label = { Text("Quantity (e.g. 500g, 2 cans)") },
+                    label = { Text("Quantity (e.g., 2 lbs, 500g)") },
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(8.dp))

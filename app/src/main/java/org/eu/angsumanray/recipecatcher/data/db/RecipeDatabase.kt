@@ -32,6 +32,10 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeTagEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.StepEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 
+import androidx.room.migration.Migration
+import org.eu.angsumanray.recipecatcher.data.db.dao.CookedFoodDao
+import org.eu.angsumanray.recipecatcher.data.db.entity.CookedFoodItemEntity
+
 @Database(
     entities = [
         RecipeEntity::class,
@@ -46,11 +50,12 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
         PlanEntryEntity::class,
         InventoryItemEntity::class,
         GroceryItemEntity::class,
+        CookedFoodItemEntity::class,
         ChatSessionEntity::class,
         ChatMessageEntity::class,
         RecipeFtsEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -67,11 +72,30 @@ abstract class RecipeDatabase : RoomDatabase() {
     abstract fun llmUsageDao(): LlmUsageDao
     abstract fun plannerDao(): PlannerDao
     abstract fun listsDao(): ListsDao
+    abstract fun cookedFoodDao(): CookedFoodDao
     abstract fun chatDao(): ChatDao
 
     companion object {
         const val DATABASE_NAME = "recipes.db"
-        const val DATABASE_VERSION = 1
+        const val DATABASE_VERSION = 2
+
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `cooked_food_item` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `recipe_id` INTEGER,
+                        `portions` INTEGER NOT NULL,
+                        `date_cooked` TEXT NOT NULL,
+                        `notes` TEXT,
+                        `updated_at` INTEGER NOT NULL,
+                        FOREIGN KEY(`recipe_id`) REFERENCES `recipe`(`id`) ON UPDATE NO ACTION ON DELETE SET NULL
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_cooked_food_item_recipe_id` ON `cooked_food_item` (`recipe_id`)")
+            }
+        }
 
         /**
          * Seeds the starter lists inside the database-creation transaction, so nothing can read
