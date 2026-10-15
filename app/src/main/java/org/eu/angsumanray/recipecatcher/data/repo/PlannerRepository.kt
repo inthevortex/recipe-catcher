@@ -351,9 +351,14 @@ class PlannerRepository @Inject constructor(
     }
 
     /** Marks [entryId] done without toggling, so a repeated tap or a stale notification can't undo it. */
-    suspend fun markEntryDone(entryId: Long) {
+    suspend fun markEntryDone(
+        entryId: Long,
+        cookedOn: LocalDate = LocalDate.now(),
+        photoPath: String? = null,
+        note: String? = null
+    ) {
         val entry = plannerDao.getEntryById(entryId) ?: return
-        if (entry.doneAt == null) setEntryDone(entry, done = true)
+        if (entry.doneAt == null) setEntryDone(entry, done = true, photoPath = photoPath, note = note, cookedOn = cookedOn)
     }
 
     /**
@@ -364,7 +369,8 @@ class PlannerRepository @Inject constructor(
         entry: PlanEntryEntity,
         done: Boolean,
         photoPath: String? = null,
-        note: String? = null
+        note: String? = null,
+        cookedOn: LocalDate = LocalDate.now()
     ) {
         database.withTransaction {
             val logsCook = entry.kind == PlanEntryEntity.KIND_COOK && entry.recipeId != null
@@ -374,7 +380,7 @@ class PlannerRepository @Inject constructor(
                     cookLogDao.insert(
                         CookLogEntity(
                             recipeId = entry.recipeId!!,
-                            cookedOn = LocalDate.now(),
+                            cookedOn = cookedOn,
                             note = note,
                             photoPath = photoPath
                         )
@@ -384,6 +390,7 @@ class PlannerRepository @Inject constructor(
                 plannerDao.setEntryDone(entry.id, null)
                 val doneAt = entry.doneAt
                 if (logsCook && doneAt != null) {
+                    // Only a log dated the day of the tick is removed; one backdated from the sheet stays.
                     val doneOn = Instant.ofEpochMilli(doneAt).atZone(ZoneId.systemDefault()).toLocalDate()
                     cookLogDao.deleteLatestForRecipeOn(entry.recipeId!!, doneOn)
                 }

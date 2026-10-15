@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -42,7 +43,6 @@ class SettingsStore @Inject constructor(
         const val DEFAULT_WEEK_STARTS_ON = "Monday"
         const val DEFAULT_PREP_ALERT_TIME = "21:00"
 
-        private val KEY_MODEL_ID = stringPreferencesKey("model_id")
         private val KEY_THEME = stringPreferencesKey("app_theme")
         private val KEY_PRICE_INPUT_M = doublePreferencesKey("price_input_m")
         private val KEY_PRICE_OUTPUT_M = doublePreferencesKey("price_output_m")
@@ -181,13 +181,12 @@ class SettingsStore @Inject constructor(
         }
     }
 
-    val modelIdFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
-        prefs[KEY_MODEL_ID] ?: DEFAULT_MODEL_ID
-    }
+    /** Extraction always runs on Haiku 5.5; a model ID saved by earlier builds is ignored. */
+    val modelIdFlow: Flow<String> = flowOf(DEFAULT_MODEL_ID)
 
+    /** Model for chat and plan suggestions; anything other than the two offered models reads as Haiku. */
     val chatModelIdFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
-        prefs[KEY_CHAT_MODEL_ID]?.takeIf { it.isNotBlank() }
-            ?: prefs[KEY_MODEL_ID]?.takeIf { it.isNotBlank() }
+        prefs[KEY_CHAT_MODEL_ID]?.takeIf { it == CHAT_MODEL_HAIKU || it == CHAT_MODEL_SONNET }
             ?: DEFAULT_CHAT_MODEL_ID
     }
 
@@ -197,10 +196,6 @@ class SettingsStore @Inject constructor(
 
     val maxWebSearchesFlow: Flow<Int> = context.settingsDataStore.data.map { prefs ->
         (prefs[KEY_MAX_WEB_SEARCHES] ?: DEFAULT_MAX_WEB_SEARCHES).coerceIn(MIN_WEB_SEARCHES, MAX_WEB_SEARCHES)
-    }
-
-    val chatModelIdSettingFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
-        prefs[KEY_CHAT_MODEL_ID] ?: DEFAULT_CHAT_MODEL_ID
     }
 
     suspend fun setChatModelId(modelId: String) {
@@ -270,12 +265,6 @@ class SettingsStore @Inject constructor(
             prefs[KEY_PRICE_OUTPUT_M] = prices.outputPerMillion
             prefs[KEY_PRICE_CACHE_M] = prices.cacheReadPerMillion
             prefs[KEY_PRICE_WEB] = prices.perWebSearch
-        }
-    }
-
-    suspend fun setModelId(modelId: String) {
-        context.settingsDataStore.edit { prefs ->
-            prefs[KEY_MODEL_ID] = modelId.trim().ifEmpty { DEFAULT_MODEL_ID }
         }
     }
 

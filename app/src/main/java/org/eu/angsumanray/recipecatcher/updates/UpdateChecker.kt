@@ -1,6 +1,7 @@
 package org.eu.angsumanray.recipecatcher.updates
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -86,7 +87,10 @@ class UpdateChecker @Inject constructor(
 
         val isNewer = isVersionNewer(release.tag_name, currentVersion)
         val appApk = release.assets.firstOrNull { it.name.equals(APP_APK_NAME, ignoreCase = true) }
-            ?: release.assets.firstOrNull { it.name.endsWith("-app-release.apk", ignoreCase = true) || it.name.endsWith(".apk", ignoreCase = true) }
+            ?: release.assets.firstOrNull { it.name.endsWith("-app-release.apk", ignoreCase = true) }
+            ?: release.assets.firstOrNull {
+                it.name.endsWith(".apk", ignoreCase = true) && !it.name.contains("wear", ignoreCase = true)
+            }
         val wearApk = release.assets.firstOrNull { it.name.equals(WEAR_APK_NAME, ignoreCase = true) }
             ?: release.assets.firstOrNull { it.name.endsWith("-wear-release.apk", ignoreCase = true) }
 
@@ -94,6 +98,8 @@ class UpdateChecker @Inject constructor(
             // Propagate /update_available to paired watch companion
             try {
                 wearSync?.sendUpdateAvailable(release.tag_name)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to send update message to wear companion", e)
             }

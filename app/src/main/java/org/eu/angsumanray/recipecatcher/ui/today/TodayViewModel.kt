@@ -18,7 +18,6 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.PlanEntryEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.PlanSlotEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
-import org.eu.angsumanray.recipecatcher.data.repo.CookLogRepository
 import org.eu.angsumanray.recipecatcher.data.repo.ListsRepository
 import org.eu.angsumanray.recipecatcher.data.repo.PlannerRepository
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
@@ -46,7 +45,6 @@ class TodayViewModel @Inject constructor(
     private val plannerRepository: PlannerRepository,
     private val recipeRepository: RecipeRepository,
     private val listsRepository: ListsRepository,
-    private val cookLogRepository: CookLogRepository,
     private val imageStorageManager: ImageStorageManager
 ) : ViewModel() {
 
@@ -127,7 +125,6 @@ class TodayViewModel @Inject constructor(
 
     fun markCookedWithReconciliation(
         entryId: Long,
-        recipeId: Long,
         date: LocalDate,
         note: String?,
         photoUri: Uri?,
@@ -141,14 +138,7 @@ class TodayViewModel @Inject constructor(
                 imageStorageManager.saveCookedImageFromUri(photoUri)
             } else null
 
-            cookLogRepository.addCookLog(
-                recipeId = recipeId,
-                cookedOn = date,
-                note = note,
-                photoPath = savedPath
-            )
-
-            plannerRepository.toggleEntryDone(entryId, photoPath = savedPath, note = note)
+            plannerRepository.markEntryDone(entryId, cookedOn = date, photoPath = savedPath, note = note)
         }
     }
 }

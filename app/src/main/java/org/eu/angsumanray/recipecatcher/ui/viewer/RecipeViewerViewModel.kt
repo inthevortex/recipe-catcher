@@ -245,7 +245,7 @@ class RecipeViewerViewModel @Inject constructor(
 
     fun getSharePlainText(): String? {
         val recipe = _uiState.value.recipe ?: return null
-        val ingredients = _uiState.value.rawIngredients.map { ing ->
+        val ingredients = _uiState.value.scaledIngredients.map { ing ->
             Ingredient(
                 name = ing.name,
                 quantity = ing.quantity,

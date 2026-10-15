@@ -36,6 +36,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dagger.hilt.android.AndroidEntryPoint
 import org.eu.angsumanray.recipecatcher.storage.ImageCleanupWorker
+import org.eu.angsumanray.recipecatcher.updates.UpdateCheckWorker
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
@@ -92,6 +93,7 @@ class MainActivity : ComponentActivity() {
         }
 
         ImageCleanupWorker.scheduleWeekly(this)
+        UpdateCheckWorker.scheduleDaily(this)
         // After recreation the nav back stack is restored, so only a fresh launch acts on its intent.
         if (savedInstanceState == null) launchIntentState.value = intent
 

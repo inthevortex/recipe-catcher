@@ -68,9 +68,10 @@ class ImageCleanupWorker @AssistedInject constructor(
             val request = PeriodicWorkRequestBuilder<ImageCleanupWorker>(7, TimeUnit.DAYS)
                 .setConstraints(constraints)
                 .build()
+            // UPDATE moves installs still scheduled with the former capture-package worker onto this class.
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 PERIODIC_WORK_NAME,
-                ExistingPeriodicWorkPolicy.KEEP,
+                ExistingPeriodicWorkPolicy.UPDATE,
                 request
             )
         }

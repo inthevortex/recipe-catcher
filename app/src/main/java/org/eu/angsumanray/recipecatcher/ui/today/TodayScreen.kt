@@ -300,11 +300,9 @@ fun TodayScreen(
             onCreateTempCameraUri = { viewModel.createTempCameraUri() },
             onDismiss = { pendingReconciliationCookItem = null },
             onConfirm = { date, note, photoUri, reconciliationItems ->
-                val recipeId = pendingItem.recipe?.id
-                if (recipeId != null) {
+                if (pendingItem.recipe != null) {
                     viewModel.markCookedWithReconciliation(
                         entryId = pendingItem.entry.id,
-                        recipeId = recipeId,
                         date = date,
                         note = note,
                         photoUri = photoUri,

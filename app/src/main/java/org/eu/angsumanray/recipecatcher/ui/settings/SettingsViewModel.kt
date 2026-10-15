@@ -90,8 +90,8 @@ class SettingsViewModel @Inject constructor(
     val modelId: StateFlow<String> = settingsStore.modelIdFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsStore.DEFAULT_MODEL_ID)
 
-    val chatModelId: StateFlow<String> = settingsStore.chatModelIdSettingFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+    val chatModelId: StateFlow<String> = settingsStore.chatModelIdFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsStore.DEFAULT_CHAT_MODEL_ID)
 
     val includeWebDefault: StateFlow<Boolean> = settingsStore.includeWebDefaultFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
@@ -223,12 +223,6 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settingsStore.saveApiKey(key.trim())
             _apiKey.value = key.trim()
-        }
-    }
-
-    fun setModelId(id: String) {
-        viewModelScope.launch {
-            settingsStore.setModelId(id)
         }
     }
 

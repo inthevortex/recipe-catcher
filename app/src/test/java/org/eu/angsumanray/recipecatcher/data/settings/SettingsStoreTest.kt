@@ -47,12 +47,10 @@ class SettingsStoreTest {
     }
 
     @Test
-    fun `SettingsStore updates model ID and theme`() = runBlocking {
+    fun `SettingsStore keeps extraction on Haiku and updates theme`() = runBlocking {
         assertEquals("claude-haiku-5-5", settingsStore.modelIdFlow.first())
         assertEquals("dark", settingsStore.themeFlow.first())
 
-        settingsStore.setModelId("claude-sonnet-4")
-        assertEquals("claude-sonnet-4", settingsStore.modelIdFlow.first())
 
         settingsStore.setTheme(SettingsStore.THEME_LIGHT)
         assertEquals(SettingsStore.THEME_LIGHT, settingsStore.themeFlow.first())
@@ -62,16 +60,19 @@ class SettingsStoreTest {
     fun `SettingsStore manages chat model ID with dual model support`() = runBlocking {
         // Defaults to claude-haiku-5-5
         assertEquals(SettingsStore.DEFAULT_CHAT_MODEL_ID, settingsStore.chatModelIdFlow.first())
-        assertEquals(SettingsStore.DEFAULT_CHAT_MODEL_ID, settingsStore.chatModelIdSettingFlow.first())
 
         // Set to Claude 3.5 Sonnet
         settingsStore.setChatModelId(SettingsStore.CHAT_MODEL_SONNET)
         assertEquals("claude-3-5-sonnet", settingsStore.chatModelIdFlow.first())
-        assertEquals("claude-3-5-sonnet", settingsStore.chatModelIdSettingFlow.first())
+        assertEquals("claude-haiku-5-5", settingsStore.modelIdFlow.first())
 
         // Revert back to Haiku
         settingsStore.setChatModelId(SettingsStore.CHAT_MODEL_HAIKU)
         assertEquals("claude-haiku-5-5", settingsStore.chatModelIdFlow.first())
+
+        // An unknown stored ID falls back to Haiku, matching what Settings shows
+        settingsStore.setChatModelId("claude-sonnet-4")
+        assertEquals(SettingsStore.DEFAULT_CHAT_MODEL_ID, settingsStore.chatModelIdFlow.first())
     }
 
     @Test
