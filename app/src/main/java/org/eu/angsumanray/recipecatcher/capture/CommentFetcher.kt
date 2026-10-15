@@ -35,7 +35,7 @@ class CommentFetcher @Inject constructor(
         private const val TAG = "CommentFetcher"
         private const val PAGE_LOAD_TIMEOUT_MILLIS = 15_000L
         /** After the page loads, the comments endpoint and rendered comments get up to this long. */
-        private const val SETTLE_MAX_MILLIS = 12_000L
+        private const val SETTLE_MAX_MILLIS = 25_000L
         private const val MAX_COMMENT_CHARS = 5_000
 
         private const val CSS_FIX_SCRIPT = """

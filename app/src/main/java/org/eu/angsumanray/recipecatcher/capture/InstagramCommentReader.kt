@@ -32,7 +32,6 @@ class InstagramCommentReader(
     private var deadline = 0L
     private var apiDeadline = 0L
     private var apiPending = false
-    private var bestDomText: String? = null
 
     fun start() {
         val now = SystemClock.uptimeMillis()
@@ -107,14 +106,12 @@ class InstagramCommentReader(
             } catch (_: Exception) {
                 emptyList()
             }
-            InstagramComments.mostRecipeLike(texts)?.let { best ->
-                val score = InstagramComments.recipeScore(best)
-                if (score >= STRONG_RECIPE_SCORE) {
+            InstagramComments.mostRecipeLike(texts)
+                ?.takeIf { InstagramComments.recipeScore(it) >= MIN_PAGE_RECIPE_SCORE }
+                ?.let { best ->
                     finish(best)
                     return@evaluateJavascript
                 }
-                if (score > 0) bestDomText = best
-            }
             scheduleNext()
         }
     }
@@ -122,8 +119,8 @@ class InstagramCommentReader(
     private fun scheduleNext() {
         if (done) return
         if (SystemClock.uptimeMillis() >= deadline) {
-            Log.d(TAG, if (bestDomText != null) "Deadline reached; using best page comment" else "Deadline reached without a recipe-like comment")
-            finish(bestDomText)
+            Log.d(TAG, "Deadline reached without a recipe-like comment")
+            finish(null)
         } else {
             handler.postDelayed({ poll() }, POLL_INTERVAL_MILLIS)
         }
@@ -139,10 +136,10 @@ class InstagramCommentReader(
     companion object {
         private const val TAG = "InstagramCommentReader"
         private const val POLL_INTERVAL_MILLIS = 500L
-        private const val API_TIMEOUT_MILLIS = 10_000L
+        private const val API_TIMEOUT_MILLIS = 20_000L
 
-        /** A rendered comment this recipe-like is taken at once instead of waiting for more rows. */
-        private const val STRONG_RECIPE_SCORE = 2
+        /** Rendered comments below this score are requests or chatter, not the recipe. */
+        private const val MIN_PAGE_RECIPE_SCORE = 2
 
         private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 

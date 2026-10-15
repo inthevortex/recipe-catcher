@@ -49,12 +49,11 @@ object InstaSelectors {
     /** Mobile web App ID, used when the page doesn't expose its own. */
     private const val FALLBACK_IG_APP_ID = "1217981644879628"
 
-    /** Comment pages read when looking for a specific comment, and otherwise. */
-    private const val MAX_TARGET_PAGES = 5
-    private const val MAX_UNTARGETED_PAGES = 2
-
-    /** Reply threads opened when the comment wanted isn't among the top-level comments. */
-    private const val MAX_REPLY_THREADS = 8
+    /** Comment pages read, and reply threads opened, when looking for a specific comment and otherwise. */
+    private const val MAX_TARGET_PAGES = 10
+    private const val MAX_UNTARGETED_PAGES = 5
+    private const val MAX_TARGET_THREADS = 20
+    private const val MAX_UNTARGETED_THREADS = 5
 
     val RECIPE_CUES = listOf(
         "recipe in comment",
@@ -95,6 +94,7 @@ object InstaSelectors {
     fun buildCommentsApiJs(mediaId: String, targetCommentId: String? = null): String {
         val targetJs = jsString(targetCommentId)
         val maxPages = if (targetCommentId.isNullOrBlank()) MAX_UNTARGETED_PAGES else MAX_TARGET_PAGES
+        val maxThreads = if (targetCommentId.isNullOrBlank()) MAX_UNTARGETED_THREADS else MAX_TARGET_THREADS
         return """
             (function() {
                 if (window.__rcApi) return;
@@ -129,15 +129,19 @@ object InstaSelectors {
                         'X-Requested-With': 'XMLHttpRequest'
                     };
                     var merged = null;
-                    var minId = null;
+                    var cursor = '';
                     for (var page = 0; page < $maxPages; page++) {
-                        var url = '/api/v1/media/' + mediaId + '/comments/?can_support_threading=true&permalink_enabled=false' +
-                                  (minId ? '&min_id=' + encodeURIComponent(minId) : '');
+                        var url = '/api/v1/media/' + mediaId + '/comments/?can_support_threading=true&permalink_enabled=false' + cursor;
                         var res = await fetch(url, { credentials: 'include', headers: headers });
                         if (!res.ok) throw new Error('HTTP ' + res.status);
                         var body = parseBody(await res.text());
                         var comments = body.comments || [];
-                        notes.push('page' + page + ':' + comments.length);
+                        notes.push('page' + page + ':' + comments.length +
+                                   (body.comment_count != null ? '/' + body.comment_count : '') +
+                                   (body.has_more_comments ? ',more' : '') +
+                                   (body.has_more_headload_comments ? ',head' : '') +
+                                   (body.next_max_id ? ',max' : '') +
+                                   (body.next_min_id ? ',min' : ''));
                         if (!merged) {
                             merged = body;
                             merged.comments = comments.slice();
@@ -145,14 +149,20 @@ object InstaSelectors {
                             merged.comments = merged.comments.concat(comments);
                         }
                         if (comments.some(isTarget)) break;
-                        if (!body.has_more_comments || !body.next_min_id) break;
-                        minId = body.next_min_id;
+                        // Older comments page with max_id, newer ones with min_id.
+                        if (body.has_more_comments && body.next_max_id) {
+                            cursor = '&max_id=' + encodeURIComponent(body.next_max_id);
+                        } else if ((body.has_more_headload_comments || body.has_more_comments) && body.next_min_id) {
+                            cursor = '&min_id=' + encodeURIComponent(body.next_min_id);
+                        } else {
+                            break;
+                        }
                     }
 
                     // The recipe is often the author's reply to a "recipe?" comment.
                     if (!merged.comments.some(isTarget)) {
                         var parents = merged.comments.filter(function(c) { return (c.child_comment_count || 0) > 0; })
-                                                     .slice(0, $MAX_REPLY_THREADS);
+                                                     .slice(0, $maxThreads);
                         for (var t = 0; t < parents.length; t++) {
                             try {
                                 var threadUrl = '/api/v1/media/' + mediaId + '/comments/' + parents[t].pk + '/child_comments/';
@@ -161,6 +171,7 @@ object InstaSelectors {
                                 if (!threadRes.ok) continue;
                                 var thread = parseBody(await threadRes.text());
                                 parents[t].child_comments = thread.child_comments || [];
+                                notes.push('replies' + t + ':' + parents[t].child_comments.length + '/' + parents[t].child_comment_count);
                                 if (parents[t].child_comments.some(isTarget)) break;
                             } catch (e) {
                                 notes.push('thread' + t + ':' + e);

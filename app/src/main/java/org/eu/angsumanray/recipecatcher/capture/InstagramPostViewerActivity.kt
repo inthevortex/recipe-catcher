@@ -224,7 +224,7 @@ class InstagramPostViewerActivity : ComponentActivity() {
 }
 
 private const val MIN_SELECTION_LENGTH = 20
-private const val READ_TIMEOUT_MILLIS = 10_000L
+private const val READ_TIMEOUT_MILLIS = 25_000L
 
 private const val READ_SELECTION_JS = "(function() { return window.getSelection().toString(); })();"
 
