@@ -12,25 +12,29 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -44,6 +48,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -55,15 +60,12 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -78,18 +80,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import java.io.File
 import org.eu.angsumanray.recipecatcher.capture.InstagramPostViewerActivity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeFilter
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeSortOrder
-import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -250,23 +257,23 @@ fun LibraryScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // Search Bar
-            SearchBarSection(
+            LibrarySearchField(
                 query = filter.query,
                 onQueryChange = { viewModel.updateSearchQuery(it) }
             )
 
-            // Minimal Active & Quick Filter Chips Row
-            FilterChipsRow(
+            LibraryToolbar(
                 filter = filter,
+                viewMode = viewMode,
                 allTags = allTags,
                 allDiet = allDiet,
                 allEquipment = allEquipment,
+                onViewModeSelected = { viewModel.setViewMode(it) },
                 onOpenFilterSheet = { showFilterSheet = true },
                 onSortSelected = { viewModel.setSortOrder(it) },
+                onFavouriteToggled = { viewModel.toggleFavouriteFilter() },
                 onDietSelected = { viewModel.setDietTypeFilter(it) },
                 onWithoutDietToggled = { viewModel.toggleWithoutDietFilter(it) },
-                onFavouriteToggled = { viewModel.toggleFavouriteFilter() },
                 onNeverCookedToggled = { viewModel.toggleNeverCookedFilter() },
                 onComplexitySelected = { viewModel.setComplexityFilter(it) },
                 onEquipmentToggled = { viewModel.toggleEquipmentFilter(it) },
@@ -277,28 +284,6 @@ fun LibraryScreen(
                 onTagToggled = { viewModel.toggleTagFilter(it) },
                 onClearAll = { viewModel.clearAllFilters() }
             )
-
-            // View Mode Switcher (All Saved vs Group by Tags)
-            SingleChoiceSegmentedButtonRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp)
-            ) {
-                SegmentedButton(
-                    selected = viewMode == LibraryViewMode.ALL,
-                    onClick = { viewModel.setViewMode(LibraryViewMode.ALL) },
-                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)
-                ) {
-                    Text("All Saved (${savedRecipes.size})")
-                }
-                SegmentedButton(
-                    selected = viewMode == LibraryViewMode.BY_TAG,
-                    onClick = { viewModel.setViewMode(LibraryViewMode.BY_TAG) },
-                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)
-                ) {
-                    Text("Group by Tags (${tagGroups.size})")
-                }
-            }
 
             if (viewMode == LibraryViewMode.BY_TAG) {
                 // Group by Tags View: Vertical list of tag groups with horizontal recipe carousels
@@ -566,48 +551,86 @@ fun LibraryScreen(
             onSpiceSelected = { viewModel.setSpiceLevelFilter(it) },
             onMakeAheadToggled = { viewModel.toggleMakeAheadFilter() },
             onFreezerToggled = { viewModel.toggleFreezerFriendlyFilter() },
+            onNeverCookedToggled = { viewModel.toggleNeverCookedFilter() },
+            onToReviewToggled = { viewModel.toggleToReviewFilter() },
             onTagToggled = { viewModel.toggleTagFilter(it) },
             onClearAll = { viewModel.clearAllFilters() }
         )
     }
 }
 
+/** A single-line pill search field, shorter than a Material text field. */
 @Composable
-private fun SearchBarSection(
+private fun LibrarySearchField(
     query: String,
-    onQueryChange: (String) -> Unit
+    onQueryChange: (String) -> Unit,
+    placeholder: String = "Search recipes, ingredients, notes...",
+    modifier: Modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
 ) {
-    OutlinedTextField(
-        value = query,
-        onValueChange = onQueryChange,
-        modifier = Modifier
+    Surface(
+        modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        placeholder = { Text("Search recipes, ingredients, notes...") },
-        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-        trailingIcon = {
+            .height(44.dp),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Search,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                if (query.isEmpty()) {
+                    Text(
+                        placeholder,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQueryChange,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             if (query.isNotEmpty()) {
-                IconButton(onClick = { onQueryChange("") }) {
-                    Icon(Icons.Default.Clear, contentDescription = "Clear search")
+                IconButton(onClick = { onQueryChange("") }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Clear, contentDescription = "Clear search", modifier = Modifier.size(18.dp))
                 }
             }
-        },
-        singleLine = true,
-        shape = RoundedCornerShape(24.dp)
-    )
+        }
+    }
 }
 
+/**
+ * One row under the search field: the view switch (all recipes or grouped by tag) on the left,
+ * the filter, sort and favourites buttons on the right, and between them a chip for each active
+ * filter so it can be removed in a tap.
+ */
 @Composable
-private fun FilterChipsRow(
+private fun LibraryToolbar(
     filter: RecipeFilter,
+    viewMode: LibraryViewMode,
     allTags: List<TagEntity>,
     allDiet: List<TagEntity>,
     allEquipment: List<TagEntity>,
+    onViewModeSelected: (LibraryViewMode) -> Unit,
     onOpenFilterSheet: () -> Unit,
     onSortSelected: (RecipeSortOrder) -> Unit,
+    onFavouriteToggled: () -> Unit,
     onDietSelected: (String?) -> Unit,
     onWithoutDietToggled: (Long) -> Unit,
-    onFavouriteToggled: () -> Unit,
     onNeverCookedToggled: () -> Unit,
     onComplexitySelected: (String?) -> Unit,
     onEquipmentToggled: (Long) -> Unit,
@@ -619,54 +642,108 @@ private fun FilterChipsRow(
     onClearAll: () -> Unit
 ) {
     var showSortMenu by remember { mutableStateOf(false) }
+    val selectedTint = MaterialTheme.colorScheme.primary
+    val idleTint = MaterialTheme.colorScheme.onSurfaceVariant
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(start = 12.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Clear all (if any filter active)
-        if (filter.isActive) {
-            SuggestionChip(
-                onClick = onClearAll,
-                label = { Text("Clear all") },
-                icon = { Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp)) }
-            )
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh
+        ) {
+            Row(modifier = Modifier.padding(2.dp)) {
+                ViewModeButton(
+                    icon = LibraryIcons.GridView,
+                    description = "All recipes",
+                    selected = viewMode == LibraryViewMode.ALL,
+                    onClick = { onViewModeSelected(LibraryViewMode.ALL) }
+                )
+                ViewModeButton(
+                    icon = LibraryIcons.Label,
+                    description = "Group by tags",
+                    selected = viewMode == LibraryViewMode.BY_TAG,
+                    onClick = { onViewModeSelected(LibraryViewMode.BY_TAG) }
+                )
+            }
         }
 
-        // 1. "Filters" Sheet Button
-        val activeCount = filter.activeFilterCount
-        FilterChip(
-            selected = activeCount > 0,
-            onClick = onOpenFilterSheet,
-            label = { Text(if (activeCount > 0) "Filters ($activeCount)" else "Filters") },
-            leadingIcon = {
-                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 6.dp)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            @Composable
+            fun ActiveChip(label: String, onRemove: () -> Unit) {
+                InputChip(
+                    selected = true,
+                    onClick = onRemove,
+                    label = { Text(label, maxLines = 1) },
+                    trailingIcon = { Icon(Icons.Default.Close, contentDescription = "Remove $label", modifier = Modifier.size(14.dp)) }
+                )
             }
-        )
 
-        // 2. Sort order dropdown chip
+            if (filter.neverCooked) ActiveChip("Never cooked", onNeverCookedToggled)
+            if (filter.toReview == true) ActiveChip("To review", onToReviewToggled)
+            filter.dietType?.takeIf { it.isNotBlank() }?.let { diet ->
+                ActiveChip(diet.replaceFirstChar { it.uppercase() }) { onDietSelected(diet) }
+            }
+            filter.complexity?.takeIf { it.isNotBlank() }?.let { level ->
+                ActiveChip(level.replaceFirstChar { it.uppercase() }) { onComplexitySelected(level) }
+            }
+            filter.spiceLevel?.takeIf { it.isNotBlank() }?.let { spice ->
+                ActiveChip("${spice.replaceFirstChar { it.uppercase() }} spice") { onSpiceSelected(spice) }
+            }
+            if (filter.makeAhead == true) ActiveChip("Make-ahead", onMakeAheadToggled)
+            if (filter.freezerFriendly == true) ActiveChip("Freezer-friendly", onFreezerToggled)
+            filter.tagIds.forEach { tagId ->
+                allTags.firstOrNull { it.id == tagId }?.let { tag -> ActiveChip(tag.name) { onTagToggled(tagId) } }
+            }
+            filter.withoutDietTagIds.forEach { dietId ->
+                allDiet.firstOrNull { it.id == dietId }?.let { tag -> ActiveChip("Without ${tag.name}") { onWithoutDietToggled(dietId) } }
+            }
+            filter.equipmentTagIds.forEach { eqId ->
+                allEquipment.firstOrNull { it.id == eqId }?.let { tag -> ActiveChip(tag.name) { onEquipmentToggled(eqId) } }
+            }
+            if (filter.isActive) {
+                TextButton(onClick = onClearAll) { Text("Clear all") }
+            }
+        }
+
+        val activeCount = filter.activeFilterCount
+        IconButton(onClick = onOpenFilterSheet) {
+            BadgedBox(badge = { if (activeCount > 0) Badge { Text("$activeCount") } }) {
+                Icon(
+                    LibraryIcons.Tune,
+                    contentDescription = if (activeCount > 0) "Filters ($activeCount active)" else "Filters",
+                    tint = if (activeCount > 0) selectedTint else idleTint
+                )
+            }
+        }
+
         Box {
-            FilterChip(
-                selected = filter.sortOrder != RecipeSortOrder.NEWEST_SAVED,
-                onClick = { showSortMenu = true },
-                label = { Text(filter.sortOrder.displayName) },
-                trailingIcon = { Icon(Icons.Default.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(16.dp)) }
-            )
-            DropdownMenu(
-                expanded = showSortMenu,
-                onDismissRequest = { showSortMenu = false }
-            ) {
+            IconButton(onClick = { showSortMenu = true }) {
+                Icon(
+                    LibraryIcons.Sort,
+                    contentDescription = "Sort: ${filter.sortOrder.displayName}",
+                    tint = if (filter.sortOrder != RecipeSortOrder.NEWEST_SAVED) selectedTint else idleTint
+                )
+            }
+            DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
                 RecipeSortOrder.entries.forEach { sortOption ->
+                    val selected = filter.sortOrder == sortOption
                     DropdownMenuItem(
                         text = {
-                            Text(
-                                sortOption.displayName,
-                                fontWeight = if (filter.sortOrder == sortOption) FontWeight.Bold else FontWeight.Normal
-                            )
+                            Text(sortOption.displayName, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+                        },
+                        leadingIcon = {
+                            if (selected) Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                         },
                         onClick = {
                             onSortSelected(sortOption)
@@ -677,119 +754,39 @@ private fun FilterChipsRow(
             }
         }
 
-        // 3. Quick 1-tap toggles
-        FilterChip(
-            selected = filter.isFavourite == true,
-            onClick = onFavouriteToggled,
-            label = { Text("Favourites") }
-        )
-        FilterChip(
-            selected = filter.neverCooked,
-            onClick = onNeverCookedToggled,
-            label = { Text("Never cooked") }
-        )
-        FilterChip(
-            selected = filter.toReview == true,
-            onClick = onToReviewToggled,
-            label = { Text("To review") }
-        )
-
-        // 4. Specifically active filters with dismiss 'X'
-        if (!filter.dietType.isNullOrBlank()) {
-            FilterChip(
-                selected = true,
-                onClick = { onDietSelected(filter.dietType) },
-                label = { Text(filter.dietType.replaceFirstChar { it.uppercase() }) },
-                trailingIcon = {
-                    Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
-                }
+        val favouritesOnly = filter.isFavourite == true
+        IconButton(onClick = onFavouriteToggled) {
+            Icon(
+                if (favouritesOnly) Icons.Default.Star else LibraryIcons.StarBorder,
+                contentDescription = if (favouritesOnly) "Show all recipes" else "Show favourites only",
+                tint = if (favouritesOnly) selectedTint else idleTint
             )
         }
+    }
+}
 
-        if (!filter.complexity.isNullOrBlank()) {
-            FilterChip(
-                selected = true,
-                onClick = { onComplexitySelected(filter.complexity) },
-                label = { Text(filter.complexity.replaceFirstChar { it.uppercase() }) },
-                trailingIcon = {
-                    Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
-                }
+@Composable
+private fun ViewModeButton(
+    icon: ImageVector,
+    description: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(18.dp),
+        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+        modifier = Modifier
+            .size(width = 44.dp, height = 36.dp)
+            .semantics { this.selected = selected }
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                icon,
+                contentDescription = description,
+                modifier = Modifier.size(20.dp),
+                tint = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
-
-        if (!filter.spiceLevel.isNullOrBlank()) {
-            FilterChip(
-                selected = true,
-                onClick = { onSpiceSelected(filter.spiceLevel) },
-                label = { Text("${filter.spiceLevel.replaceFirstChar { it.uppercase() }} spice") },
-                trailingIcon = {
-                    Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
-                }
-            )
-        }
-
-        if (filter.makeAhead == true) {
-            FilterChip(
-                selected = true,
-                onClick = onMakeAheadToggled,
-                label = { Text("Make-ahead") },
-                trailingIcon = {
-                    Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
-                }
-            )
-        }
-
-        if (filter.freezerFriendly == true) {
-            FilterChip(
-                selected = true,
-                onClick = onFreezerToggled,
-                label = { Text("Freezer-friendly") },
-                trailingIcon = {
-                    Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
-                }
-            )
-        }
-
-        filter.tagIds.forEach { tagId ->
-            val tag = allTags.firstOrNull { it.id == tagId }
-            if (tag != null) {
-                FilterChip(
-                    selected = true,
-                    onClick = { onTagToggled(tagId) },
-                    label = { Text(tag.name) },
-                    trailingIcon = {
-                        Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
-                    }
-                )
-            }
-        }
-
-        filter.withoutDietTagIds.forEach { dietId ->
-            val dietTag = allDiet.firstOrNull { it.id == dietId }
-            if (dietTag != null) {
-                FilterChip(
-                    selected = true,
-                    onClick = { onWithoutDietToggled(dietId) },
-                    label = { Text("Without ${dietTag.name}") },
-                    trailingIcon = {
-                        Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
-                    }
-                )
-            }
-        }
-
-        filter.equipmentTagIds.forEach { eqId ->
-            val eqTag = allEquipment.firstOrNull { it.id == eqId }
-            if (eqTag != null) {
-                FilterChip(
-                    selected = true,
-                    onClick = { onEquipmentToggled(eqId) },
-                    label = { Text(eqTag.name) },
-                    trailingIcon = {
-                        Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
-                    }
-                )
-            }
         }
     }
 }
@@ -810,10 +807,44 @@ private fun FilterBottomSheet(
     onSpiceSelected: (String?) -> Unit,
     onMakeAheadToggled: () -> Unit,
     onFreezerToggled: () -> Unit,
+    onNeverCookedToggled: () -> Unit,
+    onToReviewToggled: () -> Unit,
     onTagToggled: (Long) -> Unit,
     onClearAll: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var search by remember { mutableStateOf("") }
+    val query = search.trim()
+    fun matches(label: String) = query.isEmpty() || label.contains(query, ignoreCase = true)
+
+    /** One filter option: its label, whether it is on, and what tapping it does. */
+    class Option(val label: String, val selected: Boolean, val onClick: () -> Unit)
+
+    val sections = listOf(
+        "Show only" to listOf(
+            Option("Never cooked", filter.neverCooked, onNeverCookedToggled),
+            Option("To review", filter.toReview == true, onToReviewToggled)
+        ),
+        "Diet" to listOf("vegan", "vegetarian", "eggetarian", "non-veg").map { diet ->
+            Option(diet.replaceFirstChar { it.uppercase() }, filter.dietType.equals(diet, ignoreCase = true)) { onDietSelected(diet) }
+        },
+        "Complexity" to listOf("easy", "medium", "hard").map { level ->
+            Option(level.replaceFirstChar { it.uppercase() }, filter.complexity.equals(level, ignoreCase = true)) { onComplexitySelected(level) }
+        },
+        "Spice level" to listOf("mild", "medium", "hot").map { spice ->
+            Option("${spice.replaceFirstChar { it.uppercase() }} spice", filter.spiceLevel.equals(spice, ignoreCase = true)) { onSpiceSelected(spice) }
+        },
+        "Special" to listOf(
+            Option("Make-ahead", filter.makeAhead == true, onMakeAheadToggled),
+            Option("Freezer-friendly", filter.freezerFriendly == true, onFreezerToggled)
+        ),
+        "Tags" to allTags.map { tag -> Option(tag.name, tag.id in filter.tagIds) { onTagToggled(tag.id) } },
+        "Exclude (allergens & diets)" to allDiet.map { tag ->
+            Option("Without ${tag.name}", tag.id in filter.withoutDietTagIds) { onWithoutDietToggled(tag.id) }
+        },
+        "Equipment" to allEquipment.map { tag -> Option(tag.name, tag.id in filter.equipmentTagIds) { onEquipmentToggled(tag.id) } }
+    ).map { (title, options) -> title to options.filter { matches(it.label) } }
+        .filter { (_, options) -> options.isNotEmpty() }
 
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
@@ -822,11 +853,12 @@ private fun FilterBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .verticalScroll(rememberScrollState())
+                .fillMaxHeight(0.9f)
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -842,151 +874,54 @@ private fun FilterBottomSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            LibrarySearchField(
+                query = search,
+                onQueryChange = { search = it },
+                placeholder = "Search filters, tags, equipment...",
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+            )
 
-            // 1. Diet Type
-            Text("Diet", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(6.dp))
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)
             ) {
-                listOf("vegan", "vegetarian", "eggetarian", "non-veg").forEach { diet ->
-                    val isSelected = filter.dietType.equals(diet, ignoreCase = true)
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { onDietSelected(diet) },
-                        label = { Text(diet.replaceFirstChar { it.uppercase() }) }
+                if (sections.isEmpty()) {
+                    Text(
+                        "No filters match \"$query\"",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 16.dp)
                     )
                 }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // 2. Complexity
-            Text("Complexity", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(6.dp))
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                listOf("easy", "medium", "hard").forEach { level ->
-                    val isSelected = filter.complexity.equals(level, ignoreCase = true)
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { onComplexitySelected(level) },
-                        label = { Text(level.replaceFirstChar { it.uppercase() }) }
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // 3. Spice Level
-            Text("Spice Level", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(6.dp))
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                listOf("mild", "medium", "hot").forEach { spice ->
-                    val isSelected = filter.spiceLevel.equals(spice, ignoreCase = true)
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { onSpiceSelected(spice) },
-                        label = { Text("${spice.replaceFirstChar { it.uppercase() }} spice") }
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // 4. Special Properties
-            Text("Special", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(6.dp))
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FilterChip(
-                    selected = filter.makeAhead == true,
-                    onClick = onMakeAheadToggled,
-                    label = { Text("Make-ahead") }
-                )
-                FilterChip(
-                    selected = filter.freezerFriendly == true,
-                    onClick = onFreezerToggled,
-                    label = { Text("Freezer-friendly") }
-                )
-            }
-
-            // 5. Tags
-            if (allTags.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Tags", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(6.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    allTags.forEach { tag ->
-                        val isSelected = tag.id in filter.tagIds
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { onTagToggled(tag.id) },
-                            label = { Text(tag.name) }
-                        )
+                sections.forEach { (title, options) ->
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        options.forEach { option ->
+                            FilterChip(
+                                selected = option.selected,
+                                onClick = option.onClick,
+                                label = { Text(option.label) }
+                            )
+                        }
                     }
                 }
-            }
-
-            // 6. Exclude Allergens / Diets
-            if (allDiet.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(16.dp))
-                Text("Exclude (Allergens & Diets)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(6.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    allDiet.forEach { dietTag ->
-                        val isSelected = dietTag.id in filter.withoutDietTagIds
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { onWithoutDietToggled(dietTag.id) },
-                            label = { Text("Without ${dietTag.name}") }
-                        )
-                    }
-                }
             }
-
-            // 7. Equipment
-            if (allEquipment.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Equipment", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(6.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    allEquipment.forEach { eqTag ->
-                        val isSelected = eqTag.id in filter.equipmentTagIds
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { onEquipmentToggled(eqTag.id) },
-                            label = { Text(eqTag.name) }
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
 
             Button(
                 onClick = onDismissRequest,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 32.dp)
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .navigationBarsPadding()
             ) {
                 Text(if (filter.isActive) "Show $savedCount Recipes" else "Done")
             }
