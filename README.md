@@ -436,6 +436,12 @@ Calendar dates are stored as ISO-8601 text (`YYYY-MM-DD`) and slot times as `HH:
 
 ## Getting started
 
+> [!TIP]
+> **Looking to install the app or set up your phone?**
+> Follow the comprehensive **[Setup & Installation Guide](docs/SETUP.md)** for step-by-step instructions on downloading release APKs (phone & Wear OS), configuring your Anthropic API key, and bulk-importing saved recipes from Instagram.
+>
+> To build from source, follow the developer instructions below and refer to the [Developer Guide](docs/DEVELOPMENT.md).
+
 ### Prerequisites
 
 - **Android Studio**, a recent stable release that supports AGP 8.13
@@ -512,7 +518,7 @@ $DROID emu-stop
 - **Releases:** pushing a tag such as `v1.2.3` builds `:app:assembleRelease` with R8, signs it, fails if the APK is unsigned, and attaches it to a GitHub Release. `versionName` comes from the tag and `versionCode` from the workflow run number.
 - **Signing key:** generated once with `scripts/generate-keystore.sh`, stored base64-encoded as Actions secrets (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`) and kept offline in a password manager. Android only installs updates signed with the same key, so every release installs over the previous one with all data intact.
 - **Local release builds** can point at a keystore with `KEYSTORE_PATH` plus the same password and alias variables.
-- **Distribution:** sideloaded from the GitHub Release. There is no Play Store listing.
+- **Distribution:** sideloaded from the GitHub Release. There is no Play Store listing. See the [Setup Guide](docs/SETUP.md) for full sideloading instructions for phone and Wear OS.
 
 ---
 
@@ -589,6 +595,7 @@ Recipe Catcher is open-source software licensed under the [Apache License, Versi
 | [App spec](docs/App%20spec.md) | Screen-by-screen behaviour, capture flows, settings, chat, import and planning |
 | [Tech spec](docs/Tech%20spec.md) | Stack, data model, fetchers, LLM calls, planner internals, backup format, build and testing |
 | [Developer Guide](docs/DEVELOPMENT.md) | Local build setup, emulator/device debugging, Wear OS pairing, testing, and verification |
+| [Setup Guide](docs/SETUP.md) | End-user installation (phone & Wear OS APKs), Anthropic API key, and Instagram data export bulk import |
 | [Waves](docs/Waves.md) | Build order and live task tracker |
 | [AGENTS.md](AGENTS.md) | Agent guidelines, module invariants and the multi-agent lifecycle |
 

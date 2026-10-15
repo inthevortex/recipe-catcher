@@ -12,6 +12,7 @@ Recipe Catcher is an **offline-first, single-user, personal Android application*
 - **App Specification**: See [docs/App spec.md](docs/App%20spec.md)
 - **Technical Specification**: See [docs/Tech spec.md](docs/Tech%20spec.md)
 - **Wave-Wise Plan**: See [docs/Waves.md](docs/Waves.md) (Live Task Manager)
+- **Setup & Installation Guide**: See [docs/SETUP.md](docs/SETUP.md)
 
 ---
 
@@ -35,7 +36,7 @@ The project follows strict Clean Architecture across decoupled modules:
 - `com.android.application`, `compileSdk 37`, `targetSdk 37`, `minSdk 31`. Package ID: `org.eu.angsumanray.recipecatcher`.
 - UI: Jetpack Compose + Material 3 with Dynamic Color (Material You) and Dark Theme by default.
 - DI: Hilt (`@AndroidEntryPoint`, `@HiltViewModel`).
-- Database: Room SQLite + FTS4 table (`recipe_fts`), Schema v1 with all 14 tables established, `exportSchema = true`.
+- Database: Room SQLite + FTS4 table (`recipe_fts`), Schema v2 with all 14 tables established, `exportSchema = true`.
 - Background work: WorkManager `CoroutineWorker` for offline resilience.
 - Secrets: AES-GCM in AndroidKeyStore with ciphertext in DataStore.
 
@@ -109,4 +110,4 @@ Every wave follows a strict sequential lifecycle:
 5. **Upstream Push**: Once the wave is fully committed, verified, and clean, push the branch to upstream (`git push origin <branch>`).
 
 > [!NOTE]
-> Autonomous orchestration proceeds sequentially through Wave 6. Upon completion and push of Wave 6, the agent will pause to allow physical device testing, issue triaging, and roadmap planning for Wave 7 and beyond.
+> Autonomous orchestration proceeded sequentially through Wave 6. Waves 0 through 6 are fully implemented and verified. Waves 7 and 8 specifications are established in the documentation. The app is currently undergoing physical device testing, user feedback triaging, and hardening.
