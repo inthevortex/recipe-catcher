@@ -74,6 +74,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var recipeRepository: RecipeRepository
 
+    @Inject
+    lateinit var commentFetcher: org.eu.angsumanray.recipecatcher.capture.CommentFetcher
+
     // Prep and start-cooking reminders are silent until this is granted.
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
@@ -227,6 +230,7 @@ class MainActivity : ComponentActivity() {
                     composable("paste_link") {
                         PasteLinkScreen(
                             recipeRepository = recipeRepository,
+                            commentFetcher = commentFetcher,
                             onNavigateBack = { navController.popBackStack() },
                             onRecipeCaptured = { id ->
                                 navController.popBackStack()
@@ -301,7 +305,16 @@ class MainActivity : ComponentActivity() {
                         SettingsScreen(
                             viewModel = viewModel,
                             onNavigateBack = { navController.popBackStack() },
-                            onNavigateToListManager = { navController.navigate("list_manager") }
+                            onNavigateToListManager = { navController.navigate("list_manager") },
+                            onNavigateToImportSaves = { navController.navigate("import_saves") }
+                        )
+                    }
+
+                    composable("import_saves") {
+                        val viewModel = hiltViewModel<org.eu.angsumanray.recipecatcher.ui.importer.ImportViewModel>()
+                        org.eu.angsumanray.recipecatcher.ui.importer.ImportScreen(
+                            viewModel = viewModel,
+                            onNavigateBack = { navController.popBackStack() }
                         )
                     }
 

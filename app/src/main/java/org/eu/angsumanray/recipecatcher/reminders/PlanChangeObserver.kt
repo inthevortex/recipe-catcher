@@ -24,7 +24,8 @@ class PlanChangeObserver @Inject constructor(
     @ApplicationContext private val context: Context,
     private val plannerDao: PlannerDao,
     private val settingsStore: SettingsStore,
-    private val reminderScheduler: ReminderScheduler
+    private val reminderScheduler: ReminderScheduler,
+    private val wearSync: org.eu.angsumanray.recipecatcher.wear.WearSync
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -43,6 +44,7 @@ class PlanChangeObserver @Inject constructor(
                     runCatching {
                         reminderScheduler.rescheduleAll()
                         TodayWidget.refresh(context)
+                        wearSync.publishToday()
                     }
                 }
         }

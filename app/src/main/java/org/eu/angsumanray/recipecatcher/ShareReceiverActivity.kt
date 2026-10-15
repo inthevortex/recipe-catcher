@@ -18,6 +18,9 @@ class ShareReceiverActivity : ComponentActivity() {
     @Inject
     lateinit var recipeRepository: RecipeRepository
 
+    @Inject
+    lateinit var commentFetcher: org.eu.angsumanray.recipecatcher.capture.CommentFetcher
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -50,6 +53,12 @@ class ShareReceiverActivity : ComponentActivity() {
                 })
             }
             is CaptureStart.Created -> {
+                if (start.sourceType == org.eu.angsumanray.recipecatcher.core.model.SourceType.INSTAGRAM) {
+                    val topComment = commentFetcher.fetchTopComment(text)
+                    if (!topComment.isNullOrBlank()) {
+                        recipeRepository.updateCommentRaw(start.recipeId, topComment)
+                    }
+                }
                 CaptureWorker.enqueue(applicationContext, start.recipeId)
                 Toast.makeText(this, "Capturing recipe...", Toast.LENGTH_SHORT).show()
                 startActivity(Intent(this, MainActivity::class.java).apply {

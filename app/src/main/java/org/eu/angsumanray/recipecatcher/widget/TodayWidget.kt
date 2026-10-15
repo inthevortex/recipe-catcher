@@ -221,6 +221,7 @@ class ToggleEntryAction : ActionCallback {
         withContext(Dispatchers.IO) {
             entryPoint.plannerRepository().toggleEntryDone(entryId)
             entryPoint.reminderScheduler().rescheduleAll()
+            entryPoint.wearSync().publishToday()
         }
         TodayWidget().update(context, glanceId)
     }

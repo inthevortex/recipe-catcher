@@ -18,16 +18,17 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action !in HANDLED_ACTIONS) return
 
-        val scheduler = EntryPointAccessors.fromApplication(
+        val entryPoint = EntryPointAccessors.fromApplication(
             context.applicationContext,
             ReminderReceiver.ReminderReceiverEntryPoint::class.java
-        ).reminderScheduler()
+        )
 
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                scheduler.rescheduleAll()
+                entryPoint.reminderScheduler().rescheduleAll()
                 TodayWidget.refresh(context)
+                entryPoint.wearSync().publishToday()
             } finally {
                 pendingResult.finish()
             }
@@ -39,7 +40,8 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED,
             Intent.ACTION_TIME_CHANGED,
-            Intent.ACTION_TIMEZONE_CHANGED
+            Intent.ACTION_TIMEZONE_CHANGED,
+            Intent.ACTION_DATE_CHANGED
         )
     }
 }

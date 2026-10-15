@@ -29,6 +29,7 @@ class ReminderReceiver : BroadcastReceiver() {
     interface ReminderReceiverEntryPoint {
         fun plannerRepository(): PlannerRepository
         fun reminderScheduler(): ReminderScheduler
+        fun wearSync(): org.eu.angsumanray.recipecatcher.wear.WearSync
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -58,6 +59,7 @@ class ReminderReceiver : BroadcastReceiver() {
                         entryPoint.plannerRepository().markEntryDone(entryId)
                         entryPoint.reminderScheduler().rescheduleAll()
                         TodayWidget.refresh(context)
+                        entryPoint.wearSync().publishToday()
                     }
                 }
             }
@@ -65,6 +67,7 @@ class ReminderReceiver : BroadcastReceiver() {
             ACTION_MIDNIGHT_REFRESH -> runAsync {
                 entryPoint.reminderScheduler().rescheduleAll()
                 TodayWidget.refresh(context)
+                entryPoint.wearSync().publishToday()
             }
         }
     }

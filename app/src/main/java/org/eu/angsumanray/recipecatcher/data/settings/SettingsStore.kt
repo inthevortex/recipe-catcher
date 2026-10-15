@@ -66,6 +66,12 @@ class SettingsStore @Inject constructor(
         const val DEFAULT_MAX_WEB_SEARCHES = 3
         const val MIN_WEB_SEARCHES = 1
         const val MAX_WEB_SEARCHES = 10
+
+        private val KEY_IMPORT_PAUSED = androidx.datastore.preferences.core.booleanPreferencesKey("import_paused")
+        private val KEY_TAG_WITH_COLLECTIONS = androidx.datastore.preferences.core.booleanPreferencesKey("tag_with_collections")
+        private val KEY_IMPORT_COOLDOWN_UNTIL = androidx.datastore.preferences.core.longPreferencesKey("import_cooldown_until")
+        private val KEY_INSTAGRAM_LOGGED_IN = androidx.datastore.preferences.core.booleanPreferencesKey("instagram_logged_in")
+        private val KEY_FETCH_TOP_COMMENT = androidx.datastore.preferences.core.booleanPreferencesKey("fetch_top_comment")
     }
 
     val weekStartsOnFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
@@ -275,5 +281,59 @@ class SettingsStore @Inject constructor(
         val cacheCost = (cacheReadTokens.toDouble() / 1_000_000.0) * prices.cacheReadPerMillion
         val webCost = webSearches * prices.perWebSearch
         return inputCost + outputCost + cacheCost + webCost
+    }
+
+    val importPausedFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_IMPORT_PAUSED] ?: false
+    }
+
+    suspend fun setImportPaused(paused: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_IMPORT_PAUSED] = paused
+        }
+    }
+
+    val tagWithCollectionsFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_TAG_WITH_COLLECTIONS] ?: true
+    }
+
+    suspend fun setTagWithCollections(enabled: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_TAG_WITH_COLLECTIONS] = enabled
+        }
+    }
+
+    val importCooldownUntilFlow: Flow<Long> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_IMPORT_COOLDOWN_UNTIL] ?: 0L
+    }
+
+    suspend fun setImportCooldownUntil(timestamp: Long) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_IMPORT_COOLDOWN_UNTIL] = timestamp
+        }
+    }
+
+    val instagramLoggedInFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_INSTAGRAM_LOGGED_IN] ?: false
+    }
+
+    suspend fun setInstagramLoggedIn(loggedIn: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_INSTAGRAM_LOGGED_IN] = loggedIn
+            if (!loggedIn) {
+                // If logging out, also disable top comment fetching
+                prefs[KEY_FETCH_TOP_COMMENT] = false
+            }
+        }
+    }
+
+    val fetchTopCommentFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_FETCH_TOP_COMMENT] ?: false
+    }
+
+    suspend fun setFetchTopComment(enabled: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_FETCH_TOP_COMMENT] = enabled
+        }
     }
 }

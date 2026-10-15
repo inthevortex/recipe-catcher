@@ -124,10 +124,10 @@ The three features that call the LLM on demand, sharing one web-search client.
 
 Your Instagram backlog, the comment fallback, and the watch.
 
-- [ ] `SavedPostsImporter` and `ImportWorker`: one post about every 30 seconds, pause and resume, 30-minute cooldown after 3 failures, collection tags, To review filter, Skipped list.
-- [ ] Instagram login WebView and top-comment fetch, run only during a foreground capture.
-- [ ] `:wear` module: Today list, tile, complication, Data Layer sync, DataStore tick queue.
-- [ ] Release workflow builds and signs the phone and watch APKs with the same key; the watch app installs with `adb install -r`.
+- [x] `SavedPostsImporter` and `ImportWorker`: one post about every 30 seconds, pause and resume, 30-minute cooldown after 3 failures, collection tags, To review filter, Skipped list.
+- [x] Instagram login WebView and top-comment fetch, run only during a foreground capture.
+- [x] `:wear` module: Today list, tile, complication, Data Layer sync, DataStore tick queue.
+- [x] Release workflow builds and signs the phone and watch APKs with the same key; the watch app installs with `adb install -r`.
 
 **Done when:** a real export imports with no duplicates and survives a restart mid-queue, and a tick on the watch updates the phone and widget within seconds.
 

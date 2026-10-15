@@ -133,6 +133,8 @@ dependencies {
     implementation(libs.ktor.client.content.negotiation)
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.play.services.wearable)
+    implementation(libs.kotlinx.coroutines.play.services)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

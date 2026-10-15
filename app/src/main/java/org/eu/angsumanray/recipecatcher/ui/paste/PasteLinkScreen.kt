@@ -42,6 +42,7 @@ import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 @Composable
 fun PasteLinkScreen(
     recipeRepository: RecipeRepository,
+    commentFetcher: org.eu.angsumanray.recipecatcher.capture.CommentFetcher? = null,
     onNavigateBack: () -> Unit,
     onRecipeCaptured: (Long) -> Unit
 ) {
@@ -156,6 +157,12 @@ fun PasteLinkScreen(
                                 }
                                 is CaptureStart.Existing -> onRecipeCaptured(start.recipeId)
                                 is CaptureStart.Created -> {
+                                    if (start.sourceType == org.eu.angsumanray.recipecatcher.core.model.SourceType.INSTAGRAM && commentFetcher != null) {
+                                        val topComment = commentFetcher.fetchTopComment(trimmed)
+                                        if (!topComment.isNullOrBlank()) {
+                                            recipeRepository.updateCommentRaw(start.recipeId, topComment)
+                                        }
+                                    }
                                     CaptureWorker.enqueue(context, start.recipeId)
                                     onRecipeCaptured(start.recipeId)
                                 }

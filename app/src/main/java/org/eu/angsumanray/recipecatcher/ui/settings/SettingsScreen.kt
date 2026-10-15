@@ -61,8 +61,10 @@ import java.util.Locale
 fun SettingsScreen(
     viewModel: SettingsViewModel,
     onNavigateBack: () -> Unit,
-    onNavigateToListManager: () -> Unit = {}
+    onNavigateToListManager: () -> Unit = {},
+    onNavigateToImportSaves: () -> Unit = {}
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val apiKey by viewModel.apiKey.collectAsState()
     val modelId by viewModel.modelId.collectAsState()
     val chatModelId by viewModel.chatModelId.collectAsState()
@@ -71,6 +73,9 @@ fun SettingsScreen(
     val theme by viewModel.theme.collectAsState()
     val testStatus by viewModel.testKeyStatus.collectAsState()
     val spendStats by viewModel.spendStats.collectAsState()
+
+    val isInstagramLoggedIn by viewModel.isInstagramLoggedIn.collectAsState()
+    val fetchTopComment by viewModel.fetchTopComment.collectAsState()
 
     val lastBackupAt by viewModel.lastBackupAt.collectAsState()
     val newRecipesSinceBackup by viewModel.newRecipesSinceBackup.collectAsState()
@@ -533,6 +538,99 @@ fun SettingsScreen(
                         ) {
                             Text("Restore")
                         }
+                    }
+                }
+            }
+
+            // Instagram Integration Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Instagram Integration",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Log in to your Instagram account to enable fetching top comments where recipes are shared in comments instead of captions.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("Account Status:", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                text = if (isInstagramLoggedIn) "Logged in" else "Logged out",
+                                fontWeight = FontWeight.Bold,
+                                color = if (isInstagramLoggedIn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        if (isInstagramLoggedIn) {
+                            OutlinedButton(onClick = { viewModel.logoutInstagram() }) {
+                                Text("Log out")
+                            }
+                        } else {
+                            Button(onClick = {
+                                val intent = android.content.Intent(context, org.eu.angsumanray.recipecatcher.capture.LoginWebViewActivity::class.java)
+                                context.startActivity(intent)
+                            }) {
+                                Text("Log in")
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Fetch top comment", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                text = if (isInstagramLoggedIn) "Append first comment to caption during foreground captures" else "Requires Instagram login",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = fetchTopComment && isInstagramLoggedIn,
+                            onCheckedChange = { viewModel.setFetchTopComment(it) },
+                            enabled = isInstagramLoggedIn
+                        )
+                    }
+                }
+            }
+
+            // Bulk Import Saves Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Import Saves",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Bulk import your saved Instagram posts, reels, and collections from a data export or pasted links.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Button(
+                        onClick = onNavigateToImportSaves,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Import Saves")
                     }
                 }
             }

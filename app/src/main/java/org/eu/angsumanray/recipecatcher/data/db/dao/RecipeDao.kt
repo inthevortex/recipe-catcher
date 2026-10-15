@@ -79,6 +79,9 @@ interface RecipeDao {
     @Query("SELECT image_path FROM recipe WHERE image_path IS NOT NULL UNION SELECT cover_photo_path FROM recipe WHERE cover_photo_path IS NOT NULL")
     suspend fun getReferencedImagePaths(): List<String>
 
+    @Query("UPDATE recipe SET comment_raw = :commentRaw, updated_at = :updatedAt WHERE id = :id")
+    suspend fun updateCommentRaw(id: Long, commentRaw: String?, updatedAt: Long = System.currentTimeMillis())
+
     @Query("SELECT COUNT(*) FROM recipe")
     suspend fun count(): Int
 }

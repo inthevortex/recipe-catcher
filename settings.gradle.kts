@@ -23,3 +23,4 @@ dependencyResolutionManagement {
 rootProject.name = "recipe-catcher"
 include(":core")
 include(":app")
+include(":wear")

@@ -36,6 +36,14 @@ junitVersion = "1.2.1"
 espressoCore = "3.6.1"
 turbine = "1.2.0"
 
+# Wear OS
+wearMinSdk = "30"
+playServicesWearable = "19.0.0"
+wearCompose = "1.4.1"
+wearTiles = "1.4.1"
+wearProtoLayout = "1.2.1"
+wearWatchface = "1.2.1"
+
 [libraries]
 # Kotlin
 kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }
@@ -110,6 +118,25 @@ androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "j
 androidx-test-espresso-core = { module = "androidx.test.espresso:espresso-core", version.ref = "espressoCore" }
 turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
 robolectric = { module = "org.robolectric:robolectric", version = "4.14.1" }
+
+# Play Services Wearable
+play-services-wearable = { module = "com.google.android.gms:play-services-wearable", version.ref = "playServicesWearable" }
+kotlinx-coroutines-play-services = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-play-services", version.ref = "coroutines" }
+
+# Wear Compose
+androidx-wear-compose-material = { module = "androidx.wear.compose:compose-material", version.ref = "wearCompose" }
+androidx-wear-compose-foundation = { module = "androidx.wear.compose:compose-foundation", version.ref = "wearCompose" }
+androidx-wear-compose-navigation = { module = "androidx.wear.compose:compose-navigation", version.ref = "wearCompose" }
+
+# Wear Tiles & ProtoLayout
+androidx-wear-tiles = { module = "androidx.wear.tiles:tiles", version.ref = "wearTiles" }
+androidx-wear-tiles-material = { module = "androidx.wear.tiles:tiles-material", version.ref = "wearTiles" }
+androidx-wear-protolayout = { module = "androidx.wear.protolayout:protolayout", version.ref = "wearProtoLayout" }
+androidx-wear-protolayout-material = { module = "androidx.wear.protolayout:protolayout-material", version.ref = "wearProtoLayout" }
+androidx-wear-protolayout-expression = { module = "androidx.wear.protolayout:protolayout-expression", version.ref = "wearProtoLayout" }
+
+# Wear Watchface / Complications
+androidx-wear-watchface-complications-data-source = { module = "androidx.wear.watchface:watchface-complications-data-source-ktx", version.ref = "wearWatchface" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

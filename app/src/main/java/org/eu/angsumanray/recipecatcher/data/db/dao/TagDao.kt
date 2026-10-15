@@ -40,6 +40,9 @@ interface TagDao {
 
     @Query("SELECT * FROM tag WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): TagEntity?
+
+    @Query("SELECT * FROM tag WHERE LOWER(name) = LOWER(:name) AND kind = :kind LIMIT 1")
+    suspend fun getByNameAndKind(name: String, kind: String): TagEntity?
 }
 
 @Dao

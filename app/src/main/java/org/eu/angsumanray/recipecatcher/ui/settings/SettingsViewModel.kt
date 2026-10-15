@@ -102,6 +102,25 @@ class SettingsViewModel @Inject constructor(
     val cookingAlertsEnabled: StateFlow<Boolean> = settingsStore.cookingAlertsEnabledFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
+    val isInstagramLoggedIn: StateFlow<Boolean> = settingsStore.instagramLoggedInFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val fetchTopComment: StateFlow<Boolean> = settingsStore.fetchTopCommentFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setFetchTopComment(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsStore.setFetchTopComment(enabled)
+        }
+    }
+
+    fun logoutInstagram() {
+        viewModelScope.launch {
+            android.webkit.CookieManager.getInstance().removeAllCookies(null)
+            settingsStore.setInstagramLoggedIn(false)
+        }
+    }
+
     fun setWeekStartsOn(day: String) {
         viewModelScope.launch {
             settingsStore.setWeekStartsOn(day)

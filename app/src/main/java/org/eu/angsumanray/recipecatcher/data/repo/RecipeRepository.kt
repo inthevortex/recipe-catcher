@@ -107,6 +107,10 @@ class RecipeRepository @Inject constructor(
         recipeDao.updateCoverPhotoPath(id, coverPhotoPath)
     }
 
+    suspend fun updateCommentRaw(id: Long, commentRaw: String?) {
+        recipeDao.updateCommentRaw(id, commentRaw)
+    }
+
     /**
      * Dedupes [sharedText]'s link against the library and, when it is new, writes the
      * `pending_fetch` row. Check and insert run in one transaction, so two quick shares of the
