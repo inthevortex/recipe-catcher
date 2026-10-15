@@ -41,6 +41,23 @@ data class RecipeFilter(
             freezerFriendly != null ||
             toReview != null ||
             sortOrder != RecipeSortOrder.NEWEST_SAVED
+
+    val activeFilterCount: Int
+        get() {
+            var count = 0
+            if (tagIds.isNotEmpty()) count += tagIds.size
+            if (!dietType.isNullOrBlank()) count++
+            if (withoutDietTagIds.isNotEmpty()) count += withoutDietTagIds.size
+            if (isFavourite != null) count++
+            if (neverCooked) count++
+            if (!complexity.isNullOrBlank()) count++
+            if (equipmentTagIds.isNotEmpty()) count += equipmentTagIds.size
+            if (!spiceLevel.isNullOrBlank()) count++
+            if (makeAhead != null) count++
+            if (freezerFriendly != null) count++
+            if (toReview != null) count++
+            return count
+        }
 }
 
 object RecipeFilterQueryBuilder {

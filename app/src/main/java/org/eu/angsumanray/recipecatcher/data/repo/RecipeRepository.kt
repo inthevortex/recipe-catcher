@@ -62,6 +62,9 @@ class RecipeRepository @Inject constructor(
     fun observeTags(recipeId: Long): Flow<List<TagEntity>> =
         recipeTagDao.observeTagsForRecipe(recipeId)
 
+    fun observeAllRecipeTags(): Flow<List<RecipeTagEntity>> =
+        recipeTagDao.observeAll()
+
     suspend fun getIngredients(recipeId: Long): List<IngredientEntity> =
         ingredientDao.getByRecipeId(recipeId)
 

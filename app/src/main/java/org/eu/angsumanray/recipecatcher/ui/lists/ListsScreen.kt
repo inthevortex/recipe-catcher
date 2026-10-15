@@ -27,8 +27,13 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -448,26 +453,66 @@ fun InventoryTabContent(
             .fillMaxSize()
             .padding(16.dp)
     ) {
+        // Top Title and Primary Action Row
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "Pantry (${items.size} items)",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onOpenScanDialog) {
-                    Text("Scan Bill / Photo")
-                }
-                FilledTonalButton(onClick = onOpenAddDialog) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Add")
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Pantry",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        text = if (items.size == 1) "1 item" else "${items.size} items",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
                 }
             }
+
+            Button(
+                onClick = onOpenAddDialog,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Add Item")
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Secondary Action: Scan Bill / Photo
+        OutlinedButton(
+            onClick = onOpenScanDialog,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(
+                imageVector = Icons.Default.CameraAlt,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Scan Bill / Photo")
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -1051,3 +1096,48 @@ fun AddInventoryItemDialog(
         }
     )
 }
+
+private var _cameraAlt: ImageVector? = null
+
+val Icons.Filled.CameraAlt: ImageVector
+    get() {
+        if (_cameraAlt != null) {
+            return _cameraAlt!!
+        }
+        _cameraAlt = ImageVector.Builder(
+            name = "Filled.CameraAlt",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(fill = SolidColor(Color(0xFF000000))) {
+                moveTo(12.0f, 12.0f)
+                moveToRelative(-3.2f, 0.0f)
+                arcToRelative(3.2f, 3.2f, 0.0f, isMoreThanHalf = true, isPositiveArc = true, dx1 = 6.4f, dy1 = 0.0f)
+                arcToRelative(3.2f, 3.2f, 0.0f, isMoreThanHalf = true, isPositiveArc = true, dx1 = -6.4f, dy1 = 0.0f)
+                close()
+                moveTo(9.0f, 2.0f)
+                lineTo(7.17f, 4.0f)
+                horizontalLineTo(4.0f)
+                curveToRelative(-1.1f, 0.0f, -2.0f, 0.9f, -2.0f, 2.0f)
+                verticalLineToRelative(12.0f)
+                curveToRelative(0.0f, 1.1f, 0.9f, 2.0f, 2.0f, 2.0f)
+                horizontalLineToRelative(16.0f)
+                curveToRelative(1.1f, 0.0f, 2.0f, -0.9f, 2.0f, -2.0f)
+                verticalLineTo(6.0f)
+                curveToRelative(0.0f, -1.1f, -0.9f, -2.0f, -2.0f, -2.0f)
+                horizontalLineToRelative(-3.17f)
+                lineTo(15.0f, 2.0f)
+                horizontalLineTo(9.0f)
+                close()
+                moveTo(12.0f, 17.0f)
+                curveToRelative(-2.76f, 0.0f, -5.0f, -2.24f, -5.0f, -5.0f)
+                reflectiveCurveToRelative(2.24f, -5.0f, 5.0f, -5.0f)
+                reflectiveCurveToRelative(5.0f, 2.24f, 5.0f, 5.0f)
+                reflectiveCurveToRelative(-2.24f, 5.0f, -5.0f, 5.0f)
+                close()
+            }
+        }.build()
+        return _cameraAlt!!
+    }

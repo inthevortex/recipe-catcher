@@ -7,6 +7,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,12 +18,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
@@ -50,14 +56,19 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -98,9 +109,12 @@ fun LibraryScreen(
     val allTags by viewModel.allTags.collectAsState()
     val allDiet by viewModel.allDiet.collectAsState()
     val allEquipment by viewModel.allEquipment.collectAsState()
+    val viewMode by viewModel.viewMode.collectAsState()
+    val tagGroups by viewModel.tagGroups.collectAsState()
 
     val context = LocalContext.current
     var showFabMenu by remember { mutableStateOf(false) }
+    var showFilterSheet by remember { mutableStateOf(false) }
     var recipeToDelete by remember { mutableStateOf<RecipeEntity?>(null) }
     var recipeForPastingText by remember { mutableStateOf<RecipeEntity?>(null) }
     var pastedContentText by remember { mutableStateOf("") }
@@ -229,12 +243,13 @@ fun LibraryScreen(
                 onQueryChange = { viewModel.updateSearchQuery(it) }
             )
 
-            // Pinned Active & Available Filter Chips Row
+            // Minimal Active & Quick Filter Chips Row
             FilterChipsRow(
                 filter = filter,
                 allTags = allTags,
                 allDiet = allDiet,
                 allEquipment = allEquipment,
+                onOpenFilterSheet = { showFilterSheet = true },
                 onSortSelected = { viewModel.setSortOrder(it) },
                 onDietSelected = { viewModel.setDietTypeFilter(it) },
                 onWithoutDietToggled = { viewModel.toggleWithoutDietFilter(it) },
@@ -250,28 +265,81 @@ fun LibraryScreen(
                 onClearAll = { viewModel.clearAllFilters() }
             )
 
-            // Content Grid (Pending Section + 2-Column Saved Recipe Grid)
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            // View Mode Switcher (All Saved vs Group by Tags)
+            SingleChoiceSegmentedButtonRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
             ) {
-                // Pending Section
-                if (pendingRecipes.isNotEmpty()) {
-                    item(span = { GridItemSpan(2) }) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+                SegmentedButton(
+                    selected = viewMode == LibraryViewMode.ALL,
+                    onClick = { viewModel.setViewMode(LibraryViewMode.ALL) },
+                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)
+                ) {
+                    Text("All Saved (${savedRecipes.size})")
+                }
+                SegmentedButton(
+                    selected = viewMode == LibraryViewMode.BY_TAG,
+                    onClick = { viewModel.setViewMode(LibraryViewMode.BY_TAG) },
+                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)
+                ) {
+                    Text("Group by Tags (${tagGroups.size})")
+                }
+            }
+
+            if (viewMode == LibraryViewMode.BY_TAG) {
+                // Group by Tags View: Vertical list of tag groups with horizontal recipe carousels
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Pending Section
+                    if (pendingRecipes.isNotEmpty()) {
+                        item {
+                            PendingSectionCard(
+                                pendingRecipes = pendingRecipes,
+                                isPendingExpanded = isPendingExpanded,
+                                onToggleExpanded = { viewModel.togglePendingExpanded() },
+                                onReview = { onNavigateToReview(it) },
+                                onRetry = { viewModel.retryCapture(it) },
+                                onDelete = { viewModel.deleteRecipe(it) },
+                                onPastePageText = {
+                                    recipeForPastingText = it
+                                    pastedContentText = ""
+                                }
                             )
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
+                        }
+                    }
+
+                    if (tagGroups.isEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 48.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        text = if (filter.isActive) "No tagged recipes match filters" else "No tagged recipes yet",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    if (filter.isActive) {
+                                        OutlinedButton(onClick = { viewModel.clearAllFilters() }) {
+                                            Text("Clear Filters")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        items(tagGroups, key = { it.tagId ?: -1L }) { group ->
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp)),
+                                    modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -280,117 +348,154 @@ fun LibraryScreen(
                                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         Text(
-                                            text = "Pending Captures",
+                                            text = group.tagName,
                                             style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                                            fontWeight = FontWeight.Bold
                                         )
                                         Badge(
-                                            containerColor = MaterialTheme.colorScheme.primary,
-                                            contentColor = MaterialTheme.colorScheme.onPrimary
+                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
                                         ) {
-                                            Text("${pendingRecipes.size}")
+                                            Text("${group.recipes.size}")
                                         }
                                     }
 
-                                    IconButton(onClick = { viewModel.togglePendingExpanded() }) {
-                                        Icon(
-                                            imageVector = if (isPendingExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                            contentDescription = if (isPendingExpanded) "Collapse" else "Expand"
+                                    if (group.tagId != null) {
+                                        TextButton(
+                                            onClick = {
+                                                viewModel.clearAllFilters()
+                                                viewModel.toggleTagFilter(group.tagId)
+                                                viewModel.setViewMode(LibraryViewMode.ALL)
+                                            }
+                                        ) {
+                                            Text("View in Grid")
+                                        }
+                                    }
+                                }
+
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    items(group.recipes, key = { "${group.tagId ?: 0}_${it.id}" }) { recipe ->
+                                        RecipeCompactCard(
+                                            recipe = recipe,
+                                            onClick = { onNavigateToViewer(recipe.id) },
+                                            onToggleFavourite = { viewModel.toggleRecipeFavourite(recipe) },
+                                            onEdit = { onNavigateToEdit(recipe.id) },
+                                            onShare = {
+                                                if (!recipe.sourceUrl.isNullOrBlank()) {
+                                                    val sendIntent = Intent().apply {
+                                                        action = Intent.ACTION_SEND
+                                                        putExtra(Intent.EXTRA_TEXT, recipe.sourceUrl)
+                                                        type = "text/plain"
+                                                    }
+                                                    context.startActivity(Intent.createChooser(sendIntent, "Share recipe link"))
+                                                }
+                                            },
+                                            onDelete = { recipeToDelete = recipe }
                                         )
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Content Grid (Pending Section + 2-Column Saved Recipe Grid)
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Pending Section
+                    if (pendingRecipes.isNotEmpty()) {
+                        item(span = { GridItemSpan(2) }) {
+                            PendingSectionCard(
+                                pendingRecipes = pendingRecipes,
+                                isPendingExpanded = isPendingExpanded,
+                                onToggleExpanded = { viewModel.togglePendingExpanded() },
+                                onReview = { onNavigateToReview(it) },
+                                onRetry = { viewModel.retryCapture(it) },
+                                onDelete = { viewModel.deleteRecipe(it) },
+                                onPastePageText = {
+                                    recipeForPastingText = it
+                                    pastedContentText = ""
+                                }
+                            )
+                        }
+                    }
 
-                                if (isPendingExpanded) {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        pendingRecipes.forEach { pending ->
-                                            PendingCard(
-                                                recipe = pending,
-                                                onReview = { onNavigateToReview(pending.id) },
-                                                onRetry = { viewModel.retryCapture(pending) },
-                                                onDelete = { viewModel.deleteRecipe(pending.id) },
-                                                onPastePageText = {
-                                                    recipeForPastingText = pending
-                                                    pastedContentText = ""
-                                                }
-                                            )
+                    // Saved Recipes Header
+                    item(span = { GridItemSpan(2) }) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (filter.isActive) "Filtered Recipes (${savedRecipes.size})" else "All Saved Recipes (${savedRecipes.size})",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (filter.isActive) {
+                                TextButton(onClick = { viewModel.clearAllFilters() }) {
+                                    Text("Reset")
+                                }
+                            }
+                        }
+                    }
+
+                    // Empty State
+                    if (savedRecipes.isEmpty()) {
+                        item(span = { GridItemSpan(2) }) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 48.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        text = if (filter.isActive) "No recipes match the selected filters" else "No recipes saved yet",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    if (filter.isActive) {
+                                        OutlinedButton(onClick = { viewModel.clearAllFilters() }) {
+                                            Text("Clear Filters")
+                                        }
+                                    } else {
+                                        FilledTonalButton(onClick = onNavigateToPasteLink) {
+                                            Text("Paste Recipe Link (Instagram, YouTube, Web)")
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                }
-
-                // Saved Recipes Header
-                item(span = { GridItemSpan(2) }) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = if (filter.isActive) "Filtered Recipes (${savedRecipes.size})" else "All Saved Recipes (${savedRecipes.size})",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        if (filter.isActive) {
-                            TextButton(onClick = { viewModel.clearAllFilters() }) {
-                                Text("Reset")
-                            }
+                    } else {
+                        // 2-Column Saved Recipe Cards
+                        items(savedRecipes, key = { "saved_${it.id}" }) { recipe ->
+                            RecipeGridCard(
+                                recipe = recipe,
+                                onClick = { onNavigateToViewer(recipe.id) },
+                                onToggleFavourite = { viewModel.toggleRecipeFavourite(recipe) },
+                                onEdit = { onNavigateToEdit(recipe.id) },
+                                onShare = {
+                                    if (!recipe.sourceUrl.isNullOrBlank()) {
+                                        val sendIntent = Intent().apply {
+                                            action = Intent.ACTION_SEND
+                                            putExtra(Intent.EXTRA_TEXT, recipe.sourceUrl)
+                                            type = "text/plain"
+                                        }
+                                        context.startActivity(Intent.createChooser(sendIntent, "Share recipe link"))
+                                    }
+                                },
+                                onDelete = { recipeToDelete = recipe }
+                            )
                         }
-                    }
-                }
-
-                // Empty State
-                if (savedRecipes.isEmpty()) {
-                    item(span = { GridItemSpan(2) }) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 48.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    text = if (filter.isActive) "No recipes match the selected filters" else "No recipes saved yet",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                if (filter.isActive) {
-                                    OutlinedButton(onClick = { viewModel.clearAllFilters() }) {
-                                        Text("Clear Filters")
-                                    }
-                                } else {
-                                    FilledTonalButton(onClick = onNavigateToPasteLink) {
-                                        Text("Paste Recipe Link (Instagram, YouTube, Web)")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // 2-Column Saved Recipe Cards
-                    items(savedRecipes, key = { "saved_${it.id}" }) { recipe ->
-                        RecipeGridCard(
-                            recipe = recipe,
-                            onClick = { onNavigateToViewer(recipe.id) },
-                            onToggleFavourite = { viewModel.toggleRecipeFavourite(recipe) },
-                            onEdit = { onNavigateToEdit(recipe.id) },
-                            onShare = {
-                                if (!recipe.sourceUrl.isNullOrBlank()) {
-                                    val sendIntent = Intent().apply {
-                                        action = Intent.ACTION_SEND
-                                        putExtra(Intent.EXTRA_TEXT, recipe.sourceUrl)
-                                        type = "text/plain"
-                                    }
-                                    context.startActivity(Intent.createChooser(sendIntent, "Share recipe link"))
-                                }
-                            },
-                            onDelete = { recipeToDelete = recipe }
-                        )
                     }
                 }
             }
@@ -418,6 +523,26 @@ fun LibraryScreen(
                     Text("Cancel")
                 }
             }
+        )
+    }
+
+    if (showFilterSheet) {
+        FilterBottomSheet(
+            filter = filter,
+            allTags = allTags,
+            allDiet = allDiet,
+            allEquipment = allEquipment,
+            savedCount = savedRecipes.size,
+            onDismissRequest = { showFilterSheet = false },
+            onDietSelected = { viewModel.setDietTypeFilter(it) },
+            onWithoutDietToggled = { viewModel.toggleWithoutDietFilter(it) },
+            onComplexitySelected = { viewModel.setComplexityFilter(it) },
+            onEquipmentToggled = { viewModel.toggleEquipmentFilter(it) },
+            onSpiceSelected = { viewModel.setSpiceLevelFilter(it) },
+            onMakeAheadToggled = { viewModel.toggleMakeAheadFilter() },
+            onFreezerToggled = { viewModel.toggleFreezerFriendlyFilter() },
+            onTagToggled = { viewModel.toggleTagFilter(it) },
+            onClearAll = { viewModel.clearAllFilters() }
         )
     }
 }
@@ -453,6 +578,7 @@ private fun FilterChipsRow(
     allTags: List<TagEntity>,
     allDiet: List<TagEntity>,
     allEquipment: List<TagEntity>,
+    onOpenFilterSheet: () -> Unit,
     onSortSelected: (RecipeSortOrder) -> Unit,
     onDietSelected: (String?) -> Unit,
     onWithoutDietToggled: (Long) -> Unit,
@@ -486,7 +612,18 @@ private fun FilterChipsRow(
             )
         }
 
-        // Sort order chip
+        // 1. "Filters" Sheet Button
+        val activeCount = filter.activeFilterCount
+        FilterChip(
+            selected = activeCount > 0,
+            onClick = onOpenFilterSheet,
+            label = { Text(if (activeCount > 0) "Filters ($activeCount)" else "Filters") },
+            leadingIcon = {
+                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+            }
+        )
+
+        // 2. Sort order dropdown chip
         Box {
             FilterChip(
                 selected = filter.sortOrder != RecipeSortOrder.NEWEST_SAVED,
@@ -515,44 +652,530 @@ private fun FilterChipsRow(
             }
         }
 
-        val chips = buildList {
-            add(FilterChipSpec("Favourites", filter.isFavourite == true, onFavouriteToggled))
-            add(FilterChipSpec("Never cooked", filter.neverCooked, onNeverCookedToggled))
-            add(FilterChipSpec("To review", filter.toReview == true, onToReviewToggled))
-            listOf("vegan", "vegetarian", "eggetarian", "non-veg").forEach { diet ->
-                add(FilterChipSpec(diet.capitalize(), filter.dietType.equals(diet, ignoreCase = true)) { onDietSelected(diet) })
-            }
-            allDiet.forEach { dietTag ->
-                add(FilterChipSpec("Without ${dietTag.name}", dietTag.id in filter.withoutDietTagIds) { onWithoutDietToggled(dietTag.id) })
-            }
-            listOf("easy", "medium", "hard").forEach { level ->
-                add(FilterChipSpec(level.capitalize(), filter.complexity.equals(level, ignoreCase = true)) { onComplexitySelected(level) })
-            }
-            allEquipment.forEach { eqTag ->
-                add(FilterChipSpec(eqTag.name, eqTag.id in filter.equipmentTagIds) { onEquipmentToggled(eqTag.id) })
-            }
-            listOf("mild", "medium", "hot").forEach { spice ->
-                add(FilterChipSpec("${spice.capitalize()} spice", filter.spiceLevel.equals(spice, ignoreCase = true)) { onSpiceSelected(spice) })
-            }
-            add(FilterChipSpec("Make-ahead", filter.makeAhead == true, onMakeAheadToggled))
-            add(FilterChipSpec("Freezer-friendly", filter.freezerFriendly == true, onFreezerToggled))
-            allTags.forEach { tag ->
-                add(FilterChipSpec(tag.name, tag.id in filter.tagIds) { onTagToggled(tag.id) })
+        // 3. Quick 1-tap toggles
+        FilterChip(
+            selected = filter.isFavourite == true,
+            onClick = onFavouriteToggled,
+            label = { Text("Favourites") }
+        )
+        FilterChip(
+            selected = filter.neverCooked,
+            onClick = onNeverCookedToggled,
+            label = { Text("Never cooked") }
+        )
+        FilterChip(
+            selected = filter.toReview == true,
+            onClick = onToReviewToggled,
+            label = { Text("To review") }
+        )
+
+        // 4. Specifically active filters with dismiss 'X'
+        if (!filter.dietType.isNullOrBlank()) {
+            FilterChip(
+                selected = true,
+                onClick = { onDietSelected(filter.dietType) },
+                label = { Text(filter.dietType.replaceFirstChar { it.uppercase() }) },
+                trailingIcon = {
+                    Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
+                }
+            )
+        }
+
+        if (!filter.complexity.isNullOrBlank()) {
+            FilterChip(
+                selected = true,
+                onClick = { onComplexitySelected(filter.complexity) },
+                label = { Text(filter.complexity.replaceFirstChar { it.uppercase() }) },
+                trailingIcon = {
+                    Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
+                }
+            )
+        }
+
+        if (!filter.spiceLevel.isNullOrBlank()) {
+            FilterChip(
+                selected = true,
+                onClick = { onSpiceSelected(filter.spiceLevel) },
+                label = { Text("${filter.spiceLevel.replaceFirstChar { it.uppercase() }} spice") },
+                trailingIcon = {
+                    Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
+                }
+            )
+        }
+
+        if (filter.makeAhead == true) {
+            FilterChip(
+                selected = true,
+                onClick = onMakeAheadToggled,
+                label = { Text("Make-ahead") },
+                trailingIcon = {
+                    Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
+                }
+            )
+        }
+
+        if (filter.freezerFriendly == true) {
+            FilterChip(
+                selected = true,
+                onClick = onFreezerToggled,
+                label = { Text("Freezer-friendly") },
+                trailingIcon = {
+                    Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
+                }
+            )
+        }
+
+        filter.tagIds.forEach { tagId ->
+            val tag = allTags.firstOrNull { it.id == tagId }
+            if (tag != null) {
+                FilterChip(
+                    selected = true,
+                    onClick = { onTagToggled(tagId) },
+                    label = { Text(tag.name) },
+                    trailingIcon = {
+                        Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
+                    }
+                )
             }
         }
 
-        // Selected chips stay pinned at the start of the row.
-        chips.sortedByDescending { it.selected }.forEach { chip ->
-            FilterChip(
-                selected = chip.selected,
-                onClick = chip.onClick,
-                label = { Text(chip.label) }
-            )
+        filter.withoutDietTagIds.forEach { dietId ->
+            val dietTag = allDiet.firstOrNull { it.id == dietId }
+            if (dietTag != null) {
+                FilterChip(
+                    selected = true,
+                    onClick = { onWithoutDietToggled(dietId) },
+                    label = { Text("Without ${dietTag.name}") },
+                    trailingIcon = {
+                        Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
+                    }
+                )
+            }
+        }
+
+        filter.equipmentTagIds.forEach { eqId ->
+            val eqTag = allEquipment.firstOrNull { it.id == eqId }
+            if (eqTag != null) {
+                FilterChip(
+                    selected = true,
+                    onClick = { onEquipmentToggled(eqId) },
+                    label = { Text(eqTag.name) },
+                    trailingIcon = {
+                        Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
+                    }
+                )
+            }
         }
     }
 }
 
-private data class FilterChipSpec(val label: String, val selected: Boolean, val onClick: () -> Unit)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun FilterBottomSheet(
+    filter: RecipeFilter,
+    allTags: List<TagEntity>,
+    allDiet: List<TagEntity>,
+    allEquipment: List<TagEntity>,
+    savedCount: Int,
+    onDismissRequest: () -> Unit,
+    onDietSelected: (String?) -> Unit,
+    onWithoutDietToggled: (Long) -> Unit,
+    onComplexitySelected: (String?) -> Unit,
+    onEquipmentToggled: (Long) -> Unit,
+    onSpiceSelected: (String?) -> Unit,
+    onMakeAheadToggled: () -> Unit,
+    onFreezerToggled: () -> Unit,
+    onTagToggled: (Long) -> Unit,
+    onClearAll: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismissRequest,
+        sheetState = sheetState
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Filter Recipes",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                if (filter.isActive) {
+                    TextButton(onClick = onClearAll) {
+                        Text("Reset All")
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // 1. Diet Type
+            Text("Diet", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(6.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf("vegan", "vegetarian", "eggetarian", "non-veg").forEach { diet ->
+                    val isSelected = filter.dietType.equals(diet, ignoreCase = true)
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { onDietSelected(diet) },
+                        label = { Text(diet.replaceFirstChar { it.uppercase() }) }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // 2. Complexity
+            Text("Complexity", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(6.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf("easy", "medium", "hard").forEach { level ->
+                    val isSelected = filter.complexity.equals(level, ignoreCase = true)
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { onComplexitySelected(level) },
+                        label = { Text(level.replaceFirstChar { it.uppercase() }) }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // 3. Spice Level
+            Text("Spice Level", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(6.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf("mild", "medium", "hot").forEach { spice ->
+                    val isSelected = filter.spiceLevel.equals(spice, ignoreCase = true)
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { onSpiceSelected(spice) },
+                        label = { Text("${spice.replaceFirstChar { it.uppercase() }} spice") }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // 4. Special Properties
+            Text("Special", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(6.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = filter.makeAhead == true,
+                    onClick = onMakeAheadToggled,
+                    label = { Text("Make-ahead") }
+                )
+                FilterChip(
+                    selected = filter.freezerFriendly == true,
+                    onClick = onFreezerToggled,
+                    label = { Text("Freezer-friendly") }
+                )
+            }
+
+            // 5. Tags
+            if (allTags.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Tags", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(6.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    allTags.forEach { tag ->
+                        val isSelected = tag.id in filter.tagIds
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { onTagToggled(tag.id) },
+                            label = { Text(tag.name) }
+                        )
+                    }
+                }
+            }
+
+            // 6. Exclude Allergens / Diets
+            if (allDiet.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Exclude (Allergens & Diets)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(6.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    allDiet.forEach { dietTag ->
+                        val isSelected = dietTag.id in filter.withoutDietTagIds
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { onWithoutDietToggled(dietTag.id) },
+                            label = { Text("Without ${dietTag.name}") }
+                        )
+                    }
+                }
+            }
+
+            // 7. Equipment
+            if (allEquipment.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Equipment", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(6.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    allEquipment.forEach { eqTag ->
+                        val isSelected = eqTag.id in filter.equipmentTagIds
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { onEquipmentToggled(eqTag.id) },
+                            label = { Text(eqTag.name) }
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Button(
+                onClick = onDismissRequest,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 32.dp)
+            ) {
+                Text(if (filter.isActive) "Show $savedCount Recipes" else "Done")
+            }
+        }
+    }
+}
+
+@Composable
+private fun PendingSectionCard(
+    pendingRecipes: List<RecipeEntity>,
+    isPendingExpanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    onReview: (Long) -> Unit,
+    onRetry: (RecipeEntity) -> Unit,
+    onDelete: (Long) -> Unit,
+    onPastePageText: (RecipeEntity) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp)),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Pending Captures",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                    Badge(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ) {
+                        Text("${pendingRecipes.size}")
+                    }
+                }
+
+                IconButton(onClick = onToggleExpanded) {
+                    Icon(
+                        imageVector = if (isPendingExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (isPendingExpanded) "Collapse" else "Expand"
+                    )
+                }
+            }
+
+            if (isPendingExpanded) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    pendingRecipes.forEach { pending ->
+                        PendingCard(
+                            recipe = pending,
+                            onReview = { onReview(pending.id) },
+                            onRetry = { onRetry(pending) },
+                            onDelete = { onDelete(pending.id) },
+                            onPastePageText = { onPastePageText(pending) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun RecipeCompactCard(
+    recipe: RecipeEntity,
+    onClick: () -> Unit,
+    onToggleFavourite: () -> Unit,
+    onEdit: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val context = LocalContext.current
+    var showContextMenu by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier
+            .width(160.dp)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { showContextMenu = true }
+            ),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+    ) {
+        Column {
+            val imageRelPath = recipe.coverPhotoPath ?: recipe.imagePath
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(110.dp)
+            ) {
+                if (!imageRelPath.isNullOrBlank()) {
+                    val file = File(context.filesDir, imageRelPath)
+                    AsyncImage(
+                        model = file,
+                        contentDescription = recipe.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = recipe.cuisine ?: "Recipe",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onToggleFavourite,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(2.dp)
+                        .size(30.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Star,
+                        contentDescription = "Favourite",
+                        tint = if (recipe.isFavourite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+                    )
+                }
+            }
+
+            Column(modifier = Modifier.padding(8.dp)) {
+                Text(
+                    text = recipe.title ?: "Untitled",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                val time = recipe.totalMin ?: ((recipe.prepMin ?: 0) + (recipe.cookMin ?: 0))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (time > 0) "$time min" else "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (!recipe.complexity.isNullOrBlank()) {
+                        Text(
+                            text = recipe.complexity.replaceFirstChar { it.uppercase() },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        }
+
+        DropdownMenu(
+            expanded = showContextMenu,
+            onDismissRequest = { showContextMenu = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text(if (recipe.isFavourite) "Remove favourite" else "Add to favourites") },
+                onClick = {
+                    showContextMenu = false
+                    onToggleFavourite()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Edit recipe") },
+                onClick = {
+                    showContextMenu = false
+                    onEdit()
+                }
+            )
+            if (!recipe.sourceUrl.isNullOrBlank()) {
+                DropdownMenuItem(
+                    text = { Text("Share link") },
+                    onClick = {
+                        showContextMenu = false
+                        onShare()
+                    }
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                onClick = {
+                    showContextMenu = false
+                    onDelete()
+                }
+            )
+        }
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -650,7 +1273,7 @@ private fun RecipeGridCard(
 
                     if (!recipe.complexity.isNullOrBlank()) {
                         Text(
-                            text = recipe.complexity.capitalize(),
+                            text = recipe.complexity.replaceFirstChar { it.uppercase() },
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary

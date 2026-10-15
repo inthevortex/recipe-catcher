@@ -26,11 +26,24 @@ import org.eu.angsumanray.recipecatcher.data.repo.RecipeFilter
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeSortOrder
 import org.eu.angsumanray.recipecatcher.data.repo.TagRepository
+import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeTagEntity
 import javax.inject.Inject
+
+enum class LibraryViewMode {
+    ALL,
+    BY_TAG
+}
+
+data class TagGroup(
+    val tagId: Long?,
+    val tagName: String,
+    val recipes: List<RecipeEntity>
+)
 
 data class LibraryUiState(
     val filter: RecipeFilter = RecipeFilter(),
     val isPendingExpanded: Boolean = true,
+    val viewMode: LibraryViewMode = LibraryViewMode.ALL,
     val allTags: List<TagEntity> = emptyList(),
     val allDiet: List<TagEntity> = emptyList(),
     val allEquipment: List<TagEntity> = emptyList()
@@ -76,6 +89,45 @@ class LibraryViewModel @Inject constructor(
 
     val allEquipment: StateFlow<List<TagEntity>> = tagRepository.observeTagsByKind(TagEntity.KIND_EQUIPMENT)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _viewMode = MutableStateFlow(LibraryViewMode.ALL)
+    val viewMode: StateFlow<LibraryViewMode> = _viewMode.asStateFlow()
+
+    fun setViewMode(mode: LibraryViewMode) {
+        _viewMode.value = mode
+    }
+
+    val allRecipeTags: StateFlow<List<RecipeTagEntity>> = recipeRepository.observeAllRecipeTags()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val tagGroups: StateFlow<List<TagGroup>> = combine(
+        savedRecipes,
+        allTags,
+        allRecipeTags
+    ) { recipes, tags, links ->
+        if (recipes.isEmpty()) return@combine emptyList()
+        val recipeIdsByTagId = links.groupBy({ it.tagId }, { it.recipeId })
+        val recipeMap = recipes.associateBy { it.id }
+
+        val groups = mutableListOf<TagGroup>()
+        val taggedRecipeIds = mutableSetOf<Long>()
+
+        for (tag in tags) {
+            val recipeIds = recipeIdsByTagId[tag.id]?.distinct().orEmpty()
+            val matchingRecipes = recipeIds.mapNotNull { recipeMap[it] }
+            if (matchingRecipes.isNotEmpty()) {
+                groups.add(TagGroup(tagId = tag.id, tagName = tag.name, recipes = matchingRecipes))
+                taggedRecipeIds.addAll(recipeIds)
+            }
+        }
+
+        val untagged = recipes.filter { it.id !in taggedRecipeIds }
+        if (untagged.isNotEmpty()) {
+            groups.add(TagGroup(tagId = null, tagName = "Untagged", recipes = untagged))
+        }
+
+        groups
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun updateSearchQuery(query: String) {
         _filter.value = _filter.value.copy(query = query)

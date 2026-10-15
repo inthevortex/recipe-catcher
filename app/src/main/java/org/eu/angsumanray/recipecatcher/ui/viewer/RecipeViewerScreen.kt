@@ -165,57 +165,59 @@ fun RecipeViewerScreen(
                                 tint = if (recipe.isFavourite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
                             )
                         }
-                        IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More")
-                        }
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Add to plan") },
-                                onClick = {
-                                    showMenu = false
-                                    showAddToPlanSheet = true
-                                }
-                            )
-                            if (!recipe.sourceUrl.isNullOrBlank()) {
+                        Box(contentAlignment = Alignment.TopEnd) {
+                            IconButton(onClick = { showMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "More")
+                            }
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
                                 DropdownMenuItem(
-                                    text = { Text("Open source") },
+                                    text = { Text("Add to plan") },
                                     onClick = {
                                         showMenu = false
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(recipe.sourceUrl))
-                                        try {
-                                            context.startActivity(intent)
-                                        } catch (e: ActivityNotFoundException) {
-                                            scope.launch { snackbarHostState.showSnackbar("No app can open this link") }
+                                        showAddToPlanSheet = true
+                                    }
+                                )
+                                if (!recipe.sourceUrl.isNullOrBlank()) {
+                                    DropdownMenuItem(
+                                        text = { Text("Open source") },
+                                        onClick = {
+                                            showMenu = false
+                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(recipe.sourceUrl))
+                                            try {
+                                                context.startActivity(intent)
+                                            } catch (e: ActivityNotFoundException) {
+                                                scope.launch { snackbarHostState.showSnackbar("No app can open this link") }
+                                            }
                                         }
-                                    }
-                                )
-                            }
-                            if (!recipe.captionRaw.isNullOrBlank()) {
+                                    )
+                                }
+                                if (!recipe.captionRaw.isNullOrBlank()) {
+                                    DropdownMenuItem(
+                                        text = { Text("Re-extract") },
+                                        onClick = {
+                                            showMenu = false
+                                            showReExtractDialog = true
+                                        }
+                                    )
+                                }
                                 DropdownMenuItem(
-                                    text = { Text("Re-extract") },
+                                    text = { Text("Edit recipe") },
                                     onClick = {
                                         showMenu = false
-                                        showReExtractDialog = true
+                                        onNavigateToEdit(recipe.id)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete recipe") },
+                                    onClick = {
+                                        showMenu = false
+                                        showDeleteDialog = true
                                     }
                                 )
                             }
-                            DropdownMenuItem(
-                                text = { Text("Edit recipe") },
-                                onClick = {
-                                    showMenu = false
-                                    onNavigateToEdit(recipe.id)
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Delete recipe") },
-                                onClick = {
-                                    showMenu = false
-                                    showDeleteDialog = true
-                                }
-                            )
                         }
                     }
                 }
@@ -318,68 +320,65 @@ fun RecipeViewerScreen(
                 }
             }
 
-            // Metadata Row & Badges
+            // Metadata Summary Row & Attributes
             item {
-                FlowRow(
+                Column(
                     modifier = Modifier.padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    val totalTime = recipe.totalMin ?: ((recipe.prepMin ?: 0) + (recipe.cookMin ?: 0))
-                    if (totalTime > 0) {
-                        SuggestionChip(
-                            onClick = {},
-                            label = { Text("$totalTime min") }
+                    val primaryMeta = buildList {
+                        if (recipe.prepMin != null && recipe.prepMin > 0) add("Prep ${recipe.prepMin}m")
+                        if (recipe.cookMin != null && recipe.cookMin > 0) add("Cook ${recipe.cookMin}m")
+                        if (isEmpty()) {
+                            val totalTime = recipe.totalMin ?: ((recipe.prepMin ?: 0) + (recipe.cookMin ?: 0))
+                            if (totalTime > 0) add("Total ${totalTime}m")
+                        }
+                        val baseServings = recipe.servings ?: state.currentServings
+                        if (baseServings > 0) add("Serves $baseServings")
+                        if (recipe.kcalPerServing != null && recipe.kcalPerServing > 0) add("${recipe.kcalPerServing} kcal")
+                    }
+
+                    if (primaryMeta.isNotEmpty()) {
+                        Text(
+                            text = primaryMeta.joinToString(" • "),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    if (recipe.prepMin != null && recipe.prepMin > 0) {
-                        SuggestionChip(onClick = {}, label = { Text("Prep: ${recipe.prepMin}m") })
-                    }
-                    if (recipe.cookMin != null && recipe.cookMin > 0) {
-                        SuggestionChip(onClick = {}, label = { Text("Cook: ${recipe.cookMin}m") })
-                    }
-                    if (recipe.kcalPerServing != null && recipe.kcalPerServing > 0) {
-                        SuggestionChip(
-                            onClick = {},
-                            label = { Text("~${recipe.kcalPerServing} kcal (estimate)") }
-                        )
-                    }
-                    if (!recipe.complexity.isNullOrBlank()) {
-                        SuggestionChip(
-                            onClick = {},
-                            label = {
-                                Text(
-                                    if (!recipe.complexityReason.isNullOrBlank()) {
-                                        "${recipe.complexity.capitalize()} • ${recipe.complexityReason}"
-                                    } else {
-                                        recipe.complexity.capitalize()
-                                    }
-                                )
+
+                    val secondaryMeta = buildList {
+                        if (!recipe.spiceLevel.isNullOrBlank()) {
+                            val spice = recipe.spiceLevel.replaceFirstChar { it.uppercase() }
+                            add(if (spice.contains("spice", ignoreCase = true)) spice else "$spice Spice")
+                        }
+                        if (!recipe.complexity.isNullOrBlank()) {
+                            val comp = recipe.complexity.replaceFirstChar { it.uppercase() }
+                            if (!recipe.complexityReason.isNullOrBlank()) {
+                                add("$comp (${recipe.complexityReason})")
+                            } else {
+                                add(comp)
                             }
-                        )
+                        }
+                        if (!recipe.dietType.isNullOrBlank()) {
+                            add(recipe.dietType.replaceFirstChar { it.uppercase() })
+                        }
+                        if (recipe.makeAhead) {
+                            add("Make-ahead")
+                        }
+                        if (recipe.freezerFriendly) {
+                            add("Freezer-friendly")
+                        }
+                        if (state.dietTags.isNotEmpty()) {
+                            add("Contains: ${state.dietTags.joinToString(", ") { it.name }}")
+                        }
                     }
-                    if (!recipe.spiceLevel.isNullOrBlank()) {
-                        SuggestionChip(
-                            onClick = {},
-                            label = { Text("Spice: ${recipe.spiceLevel.capitalize()}") }
-                        )
-                    }
-                    if (!recipe.dietType.isNullOrBlank()) {
-                        SuggestionChip(
-                            onClick = {},
-                            label = { Text(recipe.dietType.capitalize()) }
-                        )
-                    }
-                    if (recipe.makeAhead) {
-                        SuggestionChip(onClick = {}, label = { Text("Make-ahead") })
-                    }
-                    if (recipe.freezerFriendly) {
-                        SuggestionChip(onClick = {}, label = { Text("Freezer-friendly") })
-                    }
-                    state.dietTags.forEach { dietTag ->
-                        SuggestionChip(
-                            onClick = {},
-                            label = { Text("Contains: ${dietTag.name}") }
+
+                    if (secondaryMeta.isNotEmpty()) {
+                        Text(
+                            text = secondaryMeta.joinToString(" • "),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
                         )
                     }
                 }
@@ -397,12 +396,12 @@ fun RecipeViewerScreen(
                         Spacer(modifier = Modifier.height(4.dp))
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             state.tags.forEach { tag ->
                                 AssistChip(
                                     onClick = {},
-                                    label = { Text(tag.name) }
+                                    label = { Text(tag.name, style = MaterialTheme.typography.labelMedium) }
                                 )
                             }
                         }
@@ -425,10 +424,13 @@ fun RecipeViewerScreen(
                             )
                             FlowRow(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 state.equipmentTags.forEach { eq ->
-                                    AssistChip(onClick = {}, label = { Text(eq.name) })
+                                    AssistChip(
+                                        onClick = {},
+                                        label = { Text(eq.name, style = MaterialTheme.typography.labelMedium) }
+                                    )
                                 }
                             }
                         }
@@ -441,10 +443,13 @@ fun RecipeViewerScreen(
                             )
                             FlowRow(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 state.consumableTags.forEach { cons ->
-                                    AssistChip(onClick = {}, label = { Text(cons.name) })
+                                    AssistChip(
+                                        onClick = {},
+                                        label = { Text(cons.name, style = MaterialTheme.typography.labelMedium) }
+                                    )
                                 }
                             }
                         }
@@ -547,50 +552,70 @@ fun RecipeViewerScreen(
             // Ingredients List with Groups
             val groupedIngredients = state.scaledIngredients.groupBy { it.groupName }
             groupedIngredients.forEach { (groupName, items) ->
-                if (!groupName.isNullOrBlank()) {
-                    item {
-                        Text(
-                            text = groupName,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-
-                items(items, key = { "ing_${it.id}" }) { ingredient ->
-                    val isChecked = state.checkedIngredientIds.contains(ingredient.id)
-                    Row(
+                item(key = "group_${groupName ?: "default"}") {
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { viewModel.toggleIngredientCheck(ingredient.id) }
-                            .padding(horizontal = 16.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(horizontal = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Checkbox(
-                            checked = isChecked,
-                            onCheckedChange = { viewModel.toggleIngredientCheck(ingredient.id) }
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        val quantityText = formatIngredientQuantity(ingredient)
-                        Column(modifier = Modifier.weight(1f)) {
+                        if (!groupName.isNullOrBlank()) {
                             Text(
-                                text = buildString {
-                                    if (quantityText.isNotBlank()) append("$quantityText ")
-                                    append(ingredient.name)
-                                },
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    textDecoration = if (isChecked) TextDecoration.LineThrough else TextDecoration.None
-                                ),
-                                color = if (isChecked) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f) else MaterialTheme.colorScheme.onSurface
+                                text = groupName,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(bottom = 2.dp)
                             )
-                            if (!ingredient.note.isNullOrBlank()) {
-                                Text(
-                                    text = ingredient.note,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                        }
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                items.forEach { ingredient ->
+                                    val isChecked = state.checkedIngredientIds.contains(ingredient.id)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { viewModel.toggleIngredientCheck(ingredient.id) }
+                                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Checkbox(
+                                            checked = isChecked,
+                                            onCheckedChange = { viewModel.toggleIngredientCheck(ingredient.id) }
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        val quantityText = formatIngredientQuantity(ingredient)
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = buildString {
+                                                    if (quantityText.isNotBlank()) append("$quantityText ")
+                                                    append(ingredient.name)
+                                                },
+                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                    textDecoration = if (isChecked) TextDecoration.LineThrough else TextDecoration.None
+                                                ),
+                                                color = if (isChecked) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f) else MaterialTheme.colorScheme.onSurface
+                                            )
+                                            if (!ingredient.note.isNullOrBlank()) {
+                                                Text(
+                                                    text = ingredient.note,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -599,48 +624,52 @@ fun RecipeViewerScreen(
 
             // Steps Section
             item {
-                Text(
-                    text = "Steps",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                )
-            }
-
-            items(state.steps, key = { "step_${it.id}" }) { step ->
-                Card(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        .padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
+                    Text(
+                        text = "Steps",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    state.steps.forEach { step ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                         ) {
-                            Text(
-                                text = "Step ${step.position + 1}",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            if (step.timerSeconds != null && step.timerSeconds > 0) {
-                                val minutes = step.timerSeconds / 60
-                                val seconds = step.timerSeconds % 60
-                                val timerLabel = if (seconds == 0) "${minutes}m" else "${minutes}m ${seconds}s"
-                                SuggestionChip(
-                                    onClick = {},
-                                    label = { Text("Timer: $timerLabel") }
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "Step ${step.position + 1}",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    if (step.timerSeconds != null && step.timerSeconds > 0) {
+                                        val minutes = step.timerSeconds / 60
+                                        val seconds = step.timerSeconds % 60
+                                        val timerLabel = if (seconds == 0) "${minutes}m" else "${minutes}m ${seconds}s"
+                                        SuggestionChip(
+                                            onClick = {},
+                                            label = { Text("Timer: $timerLabel") }
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = step.text,
+                                    style = MaterialTheme.typography.bodyMedium
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = step.text,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
                     }
                 }
             }
