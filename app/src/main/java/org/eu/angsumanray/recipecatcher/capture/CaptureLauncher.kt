@@ -1,16 +1,12 @@
 package org.eu.angsumanray.recipecatcher.capture
 
 import android.content.Context
-import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
-import org.eu.angsumanray.recipecatcher.core.insta.InstagramComments
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
@@ -18,46 +14,26 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Starts and retries captures without holding up the screen that asked: slow page and comment
- * reads run in the background, outliving that screen, and extraction is queued once they finish.
+ * Starts and retries captures without holding up the screen that asked. The slow work, including
+ * reading an Instagram recipe comment, runs in [CaptureWorker], which survives the app being closed.
  */
 @Singleton
 class CaptureLauncher @Inject constructor(
     @ApplicationContext private val context: Context,
     private val recipeRepository: RecipeRepository,
-    private val commentFetcher: CommentFetcher,
     private val foregroundPageFetcher: ForegroundPageFetcher
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    /** Each comment read loads the post in its own WebView; more at once time out or crash the renderer. */
-    private val commentSlots = Semaphore(MAX_PARALLEL_COMMENT_READS)
-
     /** [sharedText] is what the user shared or pasted; it may hold a comment link. */
     fun start(recipeId: Long, sourceType: SourceType, sharedText: String) {
-        if (sourceType != SourceType.INSTAGRAM) {
-            CaptureWorker.enqueue(context, recipeId)
-            return
-        }
-        // Runs the capture anyway if the process dies before the comment is read.
-        CaptureWorker.enqueue(context, recipeId, initialDelayMillis = QUEUED_FALLBACK_DELAY_MILLIS)
-        scope.launch {
-            try {
-                readCommentInTurn(recipeId) {
-                    commentFetcher.fetchTopComment(sharedText)?.let { recipeRepository.updateCommentRaw(recipeId, it) }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Comment fetch failed for recipe $recipeId", e)
-            } finally {
-                CaptureWorker.enqueue(context, recipeId)
-            }
-        }
+        CaptureWorker.enqueue(context, recipeId, commentSource = sharedText.takeIf { sourceType == SourceType.INSTAGRAM })
     }
 
     /**
-     * Retries a failed capture. The row is marked in progress at once, so the UI shows a loader
-     * while a blocked web page is reloaded or the Instagram comment is read again.
+     * Retries or restarts a capture. The row is marked in progress at once, so the UI shows a
+     * loader while a blocked web page is reloaded or the capture is queued again.
      */
     fun retry(recipeId: Long) {
         scope.launch {
@@ -68,10 +44,6 @@ class CaptureLauncher @Inject constructor(
             if (recipe.sourceType == SourceType.WEB.value && stored.errorMessage == CaptureWorker.BLOCKED_MESSAGE) {
                 if (foregroundPageFetcher.retryInWebView(recipeId).isSuccess) return@launch
             }
-            if (recipe.sourceType == SourceType.INSTAGRAM.value) {
-                CaptureWorker.enqueue(context, recipeId, initialDelayMillis = QUEUED_FALLBACK_DELAY_MILLIS)
-                readCommentInTurn(recipeId) { refreshComment(recipe) }
-            }
 
             val nextStatus = if (recipe.captionRaw.isNullOrBlank()) {
                 RecipeEntity.STATUS_PENDING_FETCH
@@ -79,34 +51,12 @@ class CaptureLauncher @Inject constructor(
                 RecipeEntity.STATUS_PENDING_EXTRACT
             }
             recipeRepository.updateRecipeStatus(recipeId, nextStatus, null)
-            CaptureWorker.enqueue(context, recipeId)
-        }
-    }
-
-    /**
-     * Runs [read] once a comment-read slot is free. The fallback capture is pushed back while
-     * waiting, so it never starts before the comment has had its chance.
-     */
-    private suspend fun readCommentInTurn(recipeId: Long, read: suspend () -> Unit) {
-        commentSlots.withPermit {
-            CaptureWorker.enqueue(context, recipeId, initialDelayMillis = FALLBACK_DELAY_MILLIS)
-            read()
-        }
-    }
-
-    /** Rereads the recipe comment; a stored comment that is only a username is dropped if none is found. */
-    private suspend fun refreshComment(recipe: RecipeEntity) {
-        val url = recipe.sourceUrl ?: recipe.sourceKey?.let { UrlNormalizer.canonicalizeInstagramUrl(it) } ?: return
-        val fetched = try {
-            commentFetcher.fetchTopComment(url, recipe.captionRaw)
-        } catch (e: Exception) {
-            Log.w(TAG, "Comment fetch failed for recipe ${recipe.id}", e)
-            null
-        }
-        when {
-            fetched != null -> recipeRepository.updateCommentRaw(recipe.id, fetched)
-            recipe.commentRaw != null && !InstagramComments.looksLikeCommentText(recipe.commentRaw) ->
-                recipeRepository.updateCommentRaw(recipe.id, null)
+            val commentSource = if (recipe.sourceType == SourceType.INSTAGRAM.value) {
+                recipe.sourceUrl ?: recipe.sourceKey?.let { UrlNormalizer.canonicalizeInstagramUrl(it) }
+            } else {
+                null
+            }
+            CaptureWorker.enqueue(context, recipeId, commentSource)
         }
     }
 
@@ -116,17 +66,5 @@ class CaptureLauncher @Inject constructor(
         val cleared = recipe.copy(captionRaw = null, updatedAt = System.currentTimeMillis())
         recipeRepository.updateRecipe(cleared)
         return cleared
-    }
-
-    private companion object {
-        const val TAG = "CaptureLauncher"
-
-        const val MAX_PARALLEL_COMMENT_READS = 2
-
-        /** Longer than [CommentFetcher]'s whole page-load and reading budget. */
-        const val FALLBACK_DELAY_MILLIS = 60_000L
-
-        /** Generous enough for a long queue of shares waiting for a comment-read slot. */
-        const val QUEUED_FALLBACK_DELAY_MILLIS = 15 * 60_000L
     }
 }

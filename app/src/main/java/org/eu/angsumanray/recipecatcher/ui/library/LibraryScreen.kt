@@ -119,6 +119,7 @@ fun LibraryScreen(
     val allEquipment by viewModel.allEquipment.collectAsState()
     val viewMode by viewModel.viewMode.collectAsState()
     val tagGroups by viewModel.tagGroups.collectAsState()
+    val captureProgress by viewModel.captureProgress.collectAsState()
 
     val context = LocalContext.current
     var showFabMenu by remember { mutableStateOf(false) }
@@ -301,6 +302,8 @@ fun LibraryScreen(
                                 onToggleExpanded = { viewModel.togglePendingExpanded() },
                                 onReview = { onNavigateToReview(it) },
                                 onRetry = { viewModel.retryCapture(it) },
+                                captureProgress = captureProgress,
+                                onStop = { viewModel.stopCapture(it) },
                                 onDelete = { viewModel.deleteRecipe(it) },
                                 onPastePageText = {
                                     recipeForPastingText = it
@@ -422,6 +425,8 @@ fun LibraryScreen(
                                 onToggleExpanded = { viewModel.togglePendingExpanded() },
                                 onReview = { onNavigateToReview(it) },
                                 onRetry = { viewModel.retryCapture(it) },
+                                captureProgress = captureProgress,
+                                onStop = { viewModel.stopCapture(it) },
                                 onDelete = { viewModel.deleteRecipe(it) },
                                 onPastePageText = {
                                     recipeForPastingText = it
@@ -936,6 +941,8 @@ private fun PendingSectionCard(
     onToggleExpanded: () -> Unit,
     onReview: (Long) -> Unit,
     onRetry: (RecipeEntity) -> Unit,
+    captureProgress: Map<Long, CaptureProgress>,
+    onStop: (RecipeEntity) -> Unit,
     onDelete: (Long) -> Unit,
     onPastePageText: (RecipeEntity) -> Unit,
     onBrowsePost: ((RecipeEntity) -> Unit)? = null
@@ -988,6 +995,8 @@ private fun PendingSectionCard(
                             recipe = pending,
                             onReview = { onReview(pending.id) },
                             onRetry = { onRetry(pending) },
+                            progress = captureProgress[pending.id],
+                            onStop = { onStop(pending) },
                             onDelete = { onDelete(pending.id) },
                             onPastePageText = { onPastePageText(pending) },
                             onBrowsePost = if (onBrowsePost != null) { { onBrowsePost(pending) } } else null
@@ -1290,6 +1299,8 @@ private fun PendingCard(
     recipe: RecipeEntity,
     onReview: () -> Unit,
     onRetry: () -> Unit,
+    progress: CaptureProgress?,
+    onStop: () -> Unit,
     onDelete: () -> Unit,
     onPastePageText: (() -> Unit)? = null,
     onBrowsePost: (() -> Unit)? = null
@@ -1311,20 +1322,23 @@ private fun PendingCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val statusText = when (recipe.status) {
-                    RecipeEntity.STATUS_PENDING_FETCH -> "Fetching post..."
-                    RecipeEntity.STATUS_PENDING_EXTRACT -> "Reading recipe..."
-                    RecipeEntity.STATUS_NEEDS_REVIEW -> "Needs review"
-                    RecipeEntity.STATUS_FAILED_FETCH -> "Fetch failed"
-                    RecipeEntity.STATUS_FAILED_EXTRACT -> "Extraction failed"
-                    RecipeEntity.STATUS_NO_RECIPE_FOUND -> "No recipe found"
+                val stalled = progress == CaptureProgress.STALLED
+                val statusText = when {
+                    stalled -> "Stalled"
+                    progress == CaptureProgress.QUEUED -> "Queued..."
+                    recipe.status == RecipeEntity.STATUS_PENDING_FETCH -> "Fetching post..."
+                    recipe.status == RecipeEntity.STATUS_PENDING_EXTRACT -> "Reading recipe..."
+                    recipe.status == RecipeEntity.STATUS_NEEDS_REVIEW -> "Needs review"
+                    recipe.status == RecipeEntity.STATUS_FAILED_FETCH -> "Fetch failed"
+                    recipe.status == RecipeEntity.STATUS_FAILED_EXTRACT -> "Extraction failed"
+                    recipe.status == RecipeEntity.STATUS_NO_RECIPE_FOUND -> "No recipe found"
                     else -> recipe.status
                 }
                 Text(
                     text = statusText,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
-                    color = when (recipe.status) {
+                    color = if (stalled) MaterialTheme.colorScheme.error else when (recipe.status) {
                         RecipeEntity.STATUS_FAILED_FETCH,
                         RecipeEntity.STATUS_FAILED_EXTRACT,
                         RecipeEntity.STATUS_NO_RECIPE_FOUND -> MaterialTheme.colorScheme.error
@@ -1351,10 +1365,15 @@ private fun PendingCard(
                 overflow = TextOverflow.Ellipsis
             )
 
-            if (!recipe.errorMessage.isNullOrBlank()) {
+            val note = if (progress == CaptureProgress.STALLED) {
+                "This capture stopped making progress. Tap Restart to run it again."
+            } else {
+                recipe.errorMessage
+            }
+            if (!note.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = recipe.errorMessage,
+                    text = note,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )
@@ -1398,10 +1417,19 @@ private fun PendingCard(
                 // Nothing to review until the capture job has fetched and read the post.
                 val isCapturing = recipe.status == RecipeEntity.STATUS_PENDING_FETCH ||
                     recipe.status == RecipeEntity.STATUS_PENDING_EXTRACT
-                Button(onClick = onReview, enabled = !isCapturing) {
-                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Review")
+                if (isCapturing) {
+                    OutlinedButton(onClick = onRetry) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Restart")
+                    }
+                    TextButton(onClick = onStop) { Text("Stop") }
+                } else {
+                    Button(onClick = onReview) {
+                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Review")
+                    }
                 }
             }
         }

@@ -123,7 +123,8 @@ class CaptureWorkerTest {
                     imageStorageManager,
                     imagePreprocessor,
                     extractor,
-                    settingsStore
+                    settingsStore,
+                    CommentFetcher(appContext, settingsStore)
                 )
             }
         }

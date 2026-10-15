@@ -97,8 +97,8 @@ class CommentFetcher @Inject constructor(
      * otherwise the author's or another recipe-like comment.
      *
      * [userRequested] skips the "fetch top comment" setting, for when the user asked for this
-     * post's comments directly. Call it only from a foreground capture, never from a worker or the
-     * bulk import. It returns null on any failure, including a timeout, a changed DOM or a crashed
+     * post's comments directly. Each call loads a page in a WebView, so it is not for the bulk
+     * import. It returns null on any failure, including a timeout, a changed DOM or a crashed
      * renderer.
      */
     suspend fun fetchTopComment(

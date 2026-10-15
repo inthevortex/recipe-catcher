@@ -15,7 +15,11 @@ import androidx.work.workDataOf
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.Json
@@ -59,11 +63,16 @@ class CaptureWorker @AssistedInject constructor(
     private val imageStorageManager: ImageStorageManager,
     private val imagePreprocessor: ImagePreprocessor,
     private val recipeExtractor: RecipeExtractor,
-    private val settingsStore: SettingsStore
+    private val settingsStore: SettingsStore,
+    private val commentFetcher: CommentFetcher
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
         const val KEY_RECIPE_ID = "key_recipe_id"
+        /** Shared text or post link to read the Instagram recipe comment from before extracting. */
+        const val KEY_COMMENT_SOURCE = "key_comment_source"
+        const val TAG_CAPTURE = "capture"
+        private const val TAG_RECIPE_PREFIX = "recipe_id:"
         const val BLOCKED_MESSAGE = "Blocked by site. Tap Retry to load in browser or paste page text."
         private const val TAG = "CaptureWorker"
         private const val MAX_ATTEMPTS = 3
@@ -78,20 +87,36 @@ class CaptureWorker @AssistedInject constructor(
         private const val MAX_PARALLEL_CAPTURES = 2
         private val captureSlots = Semaphore(MAX_PARALLEL_CAPTURES)
 
-        fun enqueue(context: Context, recipeId: Long, initialDelayMillis: Long = 0) {
+        private val waiting = MutableStateFlow<Set<Long>>(emptySet())
+
+        /** Captures started but waiting for a free slot. */
+        val waitingRecipeIds: StateFlow<Set<Long>> = waiting.asStateFlow()
+
+        /** The recipe a capture job belongs to, from its tags. */
+        fun recipeIdOf(tags: Set<String>): Long? =
+            tags.firstOrNull { it.startsWith(TAG_RECIPE_PREFIX) }?.removePrefix(TAG_RECIPE_PREFIX)?.toLongOrNull()
+
+        fun uniqueWorkName(recipeId: Long) = "capture_recipe_$recipeId"
+
+        /**
+         * Queues the capture of [recipeId], replacing any queued or running one. With
+         * [commentSource], the Instagram recipe comment is read first.
+         */
+        fun enqueue(context: Context, recipeId: Long, commentSource: String? = null) {
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
 
             val request = OneTimeWorkRequestBuilder<CaptureWorker>()
                 .setConstraints(constraints)
-                .setInputData(workDataOf(KEY_RECIPE_ID to recipeId))
+                .setInputData(workDataOf(KEY_RECIPE_ID to recipeId, KEY_COMMENT_SOURCE to commentSource))
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
-                .setInitialDelay(initialDelayMillis, TimeUnit.MILLISECONDS)
+                .addTag(TAG_CAPTURE)
+                .addTag("$TAG_RECIPE_PREFIX$recipeId")
                 .build()
 
             WorkManager.getInstance(context).enqueueUniqueWork(
-                "capture_recipe_$recipeId",
+                uniqueWorkName(recipeId),
                 ExistingWorkPolicy.REPLACE,
                 request
             )
@@ -102,9 +127,42 @@ class CaptureWorker @AssistedInject constructor(
         val recipeId = inputData.getLong(KEY_RECIPE_ID, -1L)
         if (recipeId == -1L) return Result.failure()
 
-        val result = captureSlots.withPermit { capture(recipeId) }
+        waiting.update { it + recipeId }
+        val result = try {
+            captureSlots.withPermit {
+                waiting.update { it - recipeId }
+                readComment(recipeId, inputData.getString(KEY_COMMENT_SOURCE))
+                capture(recipeId)
+            }
+        } finally {
+            waiting.update { it - recipeId }
+        }
         if (result is Result.Success) deleteCachedCaptureImages(recipeId)
         return result
+    }
+
+    /**
+     * Reads the Instagram recipe comment from [source] into the recipe. A retry keeps a comment
+     * already read; a stored comment that is only a username is dropped when none is found.
+     */
+    private suspend fun readComment(recipeId: Long, source: String?) {
+        if (source.isNullOrBlank()) return
+        val recipe = recipeRepository.getRecipe(recipeId) ?: return
+        if (recipe.sourceType != SourceType.INSTAGRAM.value) return
+        if (runAttemptCount > 0 && InstagramComments.looksLikeCommentText(recipe.commentRaw)) return
+        val fetched = try {
+            commentFetcher.fetchTopComment(source, recipe.captionRaw)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Comment fetch failed for recipe $recipeId", e)
+            null
+        }
+        when {
+            fetched != null -> recipeRepository.updateCommentRaw(recipeId, fetched)
+            recipe.commentRaw != null && !InstagramComments.looksLikeCommentText(recipe.commentRaw) ->
+                recipeRepository.updateCommentRaw(recipeId, null)
+        }
     }
 
     private suspend fun capture(recipeId: Long): Result {

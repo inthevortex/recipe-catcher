@@ -14,7 +14,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -31,6 +33,15 @@ import org.eu.angsumanray.recipecatcher.data.repo.RecipeSortOrder
 import org.eu.angsumanray.recipecatcher.data.repo.TagRepository
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeTagEntity
 import javax.inject.Inject
+
+/** Where an in-progress capture stands, beyond its stored status. */
+enum class CaptureProgress {
+    RUNNING,
+    /** Waiting for one of the capture slots to free up. */
+    QUEUED,
+    /** Marked in progress, but no capture job exists for it any more. */
+    STALLED
+}
 
 enum class LibraryViewMode {
     ALL,
@@ -215,6 +226,36 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Progress of each pending recipe that is fetching or extracting. Re-evaluated every few
+     * seconds so a capture whose job vanished shows as stalled.
+     */
+    val captureProgress: StateFlow<Map<Long, CaptureProgress>> = combine(
+        pendingRecipes,
+        WorkManager.getInstance(context).getWorkInfosByTagFlow(CaptureWorker.TAG_CAPTURE),
+        CaptureWorker.waitingRecipeIds,
+        flow { while (true) { emit(System.currentTimeMillis()); delay(STALL_CHECK_INTERVAL_MILLIS) } }
+    ) { pending, infos, waiting, now ->
+        val active = infos.filter { !it.state.isFinished }.mapNotNull { CaptureWorker.recipeIdOf(it.tags) }.toSet()
+        pending.filter { it.status == RecipeEntity.STATUS_PENDING_FETCH || it.status == RecipeEntity.STATUS_PENDING_EXTRACT }
+            .associate { recipe ->
+                recipe.id to when {
+                    recipe.id in waiting -> CaptureProgress.QUEUED
+                    recipe.id in active -> CaptureProgress.RUNNING
+                    now - recipe.updatedAt < STALL_GRACE_MILLIS -> CaptureProgress.RUNNING
+                    else -> CaptureProgress.STALLED
+                }
+            }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    /** Cancels an in-progress capture and leaves it failed, so it can be retried or filled in by hand. */
+    fun stopCapture(recipe: RecipeEntity) {
+        viewModelScope.launch {
+            WorkManager.getInstance(context).cancelUniqueWork(CaptureWorker.uniqueWorkName(recipe.id))
+            recipeRepository.updateRecipeStatus(recipe.id, RecipeEntity.STATUS_FAILED_FETCH, STOPPED_MESSAGE)
+        }
+    }
+
     fun retryCapture(recipe: RecipeEntity) {
         if (captureLauncher != null) {
             captureLauncher.retry(recipe.id)
@@ -277,12 +318,17 @@ class LibraryViewModel @Inject constructor(
     fun deleteRecipe(recipeId: Long) {
         viewModelScope.launch {
             // Stop an in-flight capture so it can't write a thumbnail or extraction for the deleted row.
-            WorkManager.getInstance(context).cancelUniqueWork("capture_recipe_$recipeId")
+            WorkManager.getInstance(context).cancelUniqueWork(CaptureWorker.uniqueWorkName(recipeId))
             recipeRepository.deleteRecipe(recipeId)
         }
     }
 
     private companion object {
+        const val STOPPED_MESSAGE = "Stopped. Tap Retry to try again."
+        const val STALL_CHECK_INTERVAL_MILLIS = 5_000L
+        /** A capture just started may not have its job registered yet. */
+        const val STALL_GRACE_MILLIS = 30_000L
+
         val HTML_MARKERS = Regex("<(html|head|body|script|div|article)[\\s>]", RegexOption.IGNORE_CASE)
     }
 }
