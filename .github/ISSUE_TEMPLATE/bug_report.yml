@@ -1,11 +1,33 @@
 name: Bug Report
-description: Create a report to help us reproduce and fix a bug
+description: Create a report to help us reproduce and fix a bug in Recipe Catcher
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thank you for reporting an issue! Please provide as much detail as possible.
+        Thank you for reporting an issue! Please provide as much detail as possible to help us troubleshoot.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Area / Recipe Source
+      description: What part of the app or source type is affected?
+      options:
+        - Instagram Link Capture
+        - Recipe Website URL Capture
+        - YouTube Link / Caption Capture
+        - Photo / Screenshot / Carousel Scan (Claude Vision)
+        - Manual Entry / Write Recipe
+        - Recipe Viewer / Cooking Mode
+        - Meal Planner & Today Screen
+        - Inventory / Cooked Food / Grocery Scanner
+        - Recipe Chat / Find with AI / Plan Suggester
+        - Wear OS Companion (Watch List / Tile / Sync)
+        - Backup & Restore
+        - In-App Update Checker
+        - Settings & API Key
+        - Other
+    validations:
+      required: true
   - type: textarea
     id: description
     attributes:
@@ -47,15 +69,20 @@ body:
     validations:
       required: true
   - type: input
+    id: watch_model
+    attributes:
+      label: Watch Model & Wear OS Version (if applicable)
+      placeholder: "e.g. Pixel Watch 2 (Wear OS 4 / Android 13)"
+  - type: input
     id: app_version
     attributes:
       label: App Version
-      placeholder: "e.g. v1.2.0 or commit hash"
+      placeholder: "e.g. v1.2.0 or git commit SHA"
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
       label: Relevant Logs or Crash Output
-      description: Paste any crash logs or logcat output (please sanitize personal data).
+      description: Paste any crash logs or logcat output (please sanitize personal data or private URLs).
       render: shell

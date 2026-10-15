@@ -571,7 +571,7 @@ flowchart LR
 
 ## Contributing
 
-Contributions are warmly welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on code style, architectural invariants (`:core` module isolation), and testing requirements.
+Contributions are warmly welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for details on setting up your environment, code style, architectural invariants (`:core` module isolation), and testing requirements. All participants are expected to adhere to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ---
 
@@ -588,6 +588,7 @@ Recipe Catcher is open-source software licensed under the [Apache License, Versi
 | [PRD](docs/PRD.md) | Problem, goals, user stories, scope, success criteria and risks |
 | [App spec](docs/App%20spec.md) | Screen-by-screen behaviour, capture flows, settings, chat, import and planning |
 | [Tech spec](docs/Tech%20spec.md) | Stack, data model, fetchers, LLM calls, planner internals, backup format, build and testing |
+| [Developer Guide](docs/DEVELOPMENT.md) | Local build setup, emulator/device debugging, Wear OS pairing, testing, and verification |
 | [Waves](docs/Waves.md) | Build order and live task tracker |
 | [AGENTS.md](AGENTS.md) | Agent guidelines, module invariants and the multi-agent lifecycle |
 

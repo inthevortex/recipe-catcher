@@ -1,6 +1,6 @@
 ## Description
 
-Please include a summary of the change and the relevant problem or motivation.
+Please include a summary of the change, motivation, and any relevant context.
 
 Fixes #(issue)
 
@@ -12,11 +12,12 @@ Fixes #(issue)
 - [ ] Documentation update
 - [ ] Refactoring / performance improvement
 
-## Checklist
+## Pre-Merge Checklist
 
 - [ ] My code follows the code style and guidelines of this project.
-- [ ] I have verified that `:core` has zero Android dependencies by running `./gradlew verifyCoreIsolation`.
-- [ ] All unit and Robolectric tests pass cleanly via `./gradlew test`.
-- [ ] If changing database schema, I have incremented `RecipeDatabase.VERSION`, added a migration and migration test, and verified `app/schemas/`.
-- [ ] I have added tests that prove my fix is effective or that my feature works.
-- [ ] My commit messages follow the guidelines in [CONTRIBUTING.md](CONTRIBUTING.md).
+- [ ] **Core Isolation**: I have verified that `:core` has zero Android dependencies by running `./gradlew verifyCoreIsolation`.
+- [ ] **Test Suite**: All unit and Robolectric tests pass cleanly via `./gradlew test`.
+- [ ] **Device Validation**: Tested on physical device or emulator (and Wear OS companion if applicable).
+- [ ] **Database**: If modifying schema, I have incremented `RecipeDatabase.VERSION`, added a migration and migration test, and verified `app/schemas/`.
+- [ ] **Security**: No hardcoded API keys, secrets, personal URLs, or sensitive logs.
+- [ ] **Commit Guidelines**: Commits follow clean conventional commit formatting without wave/task IDs or co-author trailers.
