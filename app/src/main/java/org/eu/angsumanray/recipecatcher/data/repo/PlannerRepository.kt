@@ -2,6 +2,7 @@ package org.eu.angsumanray.recipecatcher.data.repo
 
 import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import org.eu.angsumanray.recipecatcher.core.model.PlanEntry
 import org.eu.angsumanray.recipecatcher.core.model.PlanSlot
 import org.eu.angsumanray.recipecatcher.core.planner.AvailableLeftover
@@ -14,6 +15,7 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.CookLogEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.PlanEntryEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.PlanSlotEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
+import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -26,8 +28,24 @@ class PlannerRepository @Inject constructor(
     private val database: RecipeDatabase,
     private val plannerDao: PlannerDao,
     private val cookLogDao: CookLogDao,
-    private val recipeDao: RecipeDao
+    private val recipeDao: RecipeDao,
+    private val settingsStore: SettingsStore? = null
 ) {
+
+    private fun parseLocalTimeOrDefault(raw: String?, fallback: LocalTime): LocalTime {
+        if (raw.isNullOrBlank()) return fallback
+        return try {
+            val trimmed = raw.trim()
+            val parts = trimmed.split(":")
+            if (parts.size >= 2) {
+                LocalTime.of(parts[0].toInt(), parts[1].toInt())
+            } else {
+                LocalTime.parse(trimmed)
+            }
+        } catch (_: Exception) {
+            fallback
+        }
+    }
 
     fun observeSlotsForDate(date: LocalDate): Flow<List<PlanSlotEntity>> =
         plannerDao.observeSlotsForDate(date)
@@ -48,10 +66,22 @@ class PlannerRepository @Inject constructor(
         val existing = plannerDao.getSlotsForDate(date)
         if (existing.isNotEmpty()) return existing
 
+        val breakfastTime = settingsStore?.let {
+            parseLocalTimeOrDefault(it.breakfastTimeFlow.first(), LocalTime.of(8, 30))
+        } ?: LocalTime.of(8, 30)
+
+        val lunchTime = settingsStore?.let {
+            parseLocalTimeOrDefault(it.lunchTimeFlow.first(), LocalTime.of(13, 0))
+        } ?: LocalTime.of(13, 0)
+
+        val dinnerTime = settingsStore?.let {
+            parseLocalTimeOrDefault(it.dinnerTimeFlow.first(), LocalTime.of(19, 30))
+        } ?: LocalTime.of(19, 30)
+
         val defaults = listOf(
-            PlanSlotEntity(date = date, name = "Breakfast", time = LocalTime.of(8, 30), position = 0),
-            PlanSlotEntity(date = date, name = "Lunch", time = LocalTime.of(13, 0), position = 1),
-            PlanSlotEntity(date = date, name = "Dinner", time = LocalTime.of(19, 30), position = 2)
+            PlanSlotEntity(date = date, name = "Breakfast", time = breakfastTime, position = 0),
+            PlanSlotEntity(date = date, name = "Lunch", time = lunchTime, position = 1),
+            PlanSlotEntity(date = date, name = "Dinner", time = dinnerTime, position = 2)
         )
         database.withTransaction {
             plannerDao.insertSlots(defaults)

@@ -30,6 +30,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -97,6 +98,9 @@ fun SettingsScreen(
     val prepAlertEnabled by viewModel.prepAlertEnabled.collectAsState()
     val prepAlertTime by viewModel.prepAlertTime.collectAsState()
     val cookingAlertsEnabled by viewModel.cookingAlertsEnabled.collectAsState()
+    val breakfastTime by viewModel.breakfastTime.collectAsState()
+    val lunchTime by viewModel.lunchTime.collectAsState()
+    val dinnerTime by viewModel.dinnerTime.collectAsState()
 
     var showPassword by remember { mutableStateOf(false) }
 
@@ -492,6 +496,50 @@ fun SettingsScreen(
                             checked = cookingAlertsEnabled,
                             onCheckedChange = { viewModel.setCookingAlertsEnabled(it) }
                         )
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Default Meal Times",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Default times when generating new daily meal slots.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = breakfastTime,
+                                onValueChange = { viewModel.setBreakfastTime(it) },
+                                label = { Text("Breakfast", maxLines = 1) },
+                                placeholder = { Text("08:30") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = lunchTime,
+                                onValueChange = { viewModel.setLunchTime(it) },
+                                label = { Text("Lunch", maxLines = 1) },
+                                placeholder = { Text("13:00") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true
+                            )
+                            OutlinedTextField(
+                                value = dinnerTime,
+                                onValueChange = { viewModel.setDinnerTime(it) },
+                                label = { Text("Dinner", maxLines = 1) },
+                                placeholder = { Text("19:30") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true
+                            )
+                        }
                     }
                 }
             }

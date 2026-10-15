@@ -100,4 +100,23 @@ class SettingsStoreTest {
         )
         assertEquals(0.000605, cost, 0.000001)
     }
+
+    @Test
+    fun `SettingsStore manages meal times`() = runBlocking {
+        settingsStore.setBreakfastTime("09:00")
+        settingsStore.setLunchTime("12:30")
+        settingsStore.setDinnerTime("20:00")
+
+        assertEquals("09:00", settingsStore.getBreakfastTime())
+        assertEquals("12:30", settingsStore.getLunchTime())
+        assertEquals("20:00", settingsStore.getDinnerTime())
+
+        settingsStore.setBreakfastTime(SettingsStore.DEFAULT_BREAKFAST_TIME)
+        settingsStore.setLunchTime(SettingsStore.DEFAULT_LUNCH_TIME)
+        settingsStore.setDinnerTime(SettingsStore.DEFAULT_DINNER_TIME)
+
+        assertEquals("08:30", settingsStore.breakfastTimeFlow.first())
+        assertEquals("13:00", settingsStore.lunchTimeFlow.first())
+        assertEquals("19:30", settingsStore.dinnerTimeFlow.first())
+    }
 }

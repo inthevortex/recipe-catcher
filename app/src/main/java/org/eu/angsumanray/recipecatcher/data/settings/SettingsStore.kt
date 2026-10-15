@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
@@ -42,6 +43,13 @@ class SettingsStore @Inject constructor(
         const val DEFAULT_WEB_SEARCH_PRICE = 0.01
         const val DEFAULT_WEEK_STARTS_ON = "Monday"
         const val DEFAULT_PREP_ALERT_TIME = "21:00"
+        const val DEFAULT_BREAKFAST_TIME = "08:30"
+        const val DEFAULT_LUNCH_TIME = "13:00"
+        const val DEFAULT_DINNER_TIME = "19:30"
+
+        val MEAL_TIME_BREAKFAST = stringPreferencesKey("meal_time_breakfast")
+        val MEAL_TIME_LUNCH = stringPreferencesKey("meal_time_lunch")
+        val MEAL_TIME_DINNER = stringPreferencesKey("meal_time_dinner")
 
         private val KEY_THEME = stringPreferencesKey("app_theme")
         private val KEY_PRICE_INPUT_M = doublePreferencesKey("price_input_m")
@@ -119,6 +127,40 @@ class SettingsStore @Inject constructor(
             prefs[KEY_COOKING_ALERTS_ENABLED] = enabled
         }
     }
+
+    val breakfastTimeFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
+        prefs[MEAL_TIME_BREAKFAST] ?: DEFAULT_BREAKFAST_TIME
+    }
+
+    val lunchTimeFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
+        prefs[MEAL_TIME_LUNCH] ?: DEFAULT_LUNCH_TIME
+    }
+
+    val dinnerTimeFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
+        prefs[MEAL_TIME_DINNER] ?: DEFAULT_DINNER_TIME
+    }
+
+    suspend fun setBreakfastTime(time: String) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[MEAL_TIME_BREAKFAST] = time
+        }
+    }
+
+    suspend fun setLunchTime(time: String) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[MEAL_TIME_LUNCH] = time
+        }
+    }
+
+    suspend fun setDinnerTime(time: String) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[MEAL_TIME_DINNER] = time
+        }
+    }
+
+    suspend fun getBreakfastTime(): String = breakfastTimeFlow.first()
+    suspend fun getLunchTime(): String = lunchTimeFlow.first()
+    suspend fun getDinnerTime(): String = dinnerTimeFlow.first()
 
     val lastBackupAtFlow: Flow<String?> = context.settingsDataStore.data.map { prefs ->
         prefs[KEY_LAST_BACKUP_AT]

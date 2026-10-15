@@ -11,6 +11,8 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.InventoryItemEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.PlanEntryEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.PlanSlotEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
+import org.eu.angsumanray.recipecatcher.data.settings.SecretStore
+import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -67,6 +69,38 @@ class PlannerAndListsTest {
 
         assertEquals(3, slots.size)
         assertEquals(listOf("Breakfast", "Lunch", "Dinner"), slots.map { it.name })
+    }
+
+    @Test
+    fun `ensureDefaultSlotsForDate uses configured meal times from settingsStore`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val secretStore = SecretStore(context)
+        val settingsStore = SettingsStore(context, secretStore)
+        settingsStore.setBreakfastTime("07:45")
+        settingsStore.setLunchTime("12:15")
+        settingsStore.setDinnerTime("20:30")
+
+        try {
+            val customPlannerRepo = PlannerRepository(
+                database = database,
+                plannerDao = database.plannerDao(),
+                cookLogDao = database.cookLogDao(),
+                recipeDao = database.recipeDao(),
+                settingsStore = settingsStore
+            )
+
+            val date = LocalDate.of(2026, 10, 20)
+            val slots = customPlannerRepo.ensureDefaultSlotsForDate(date)
+
+            assertEquals(3, slots.size)
+            assertEquals(LocalTime.of(7, 45), slots[0].time)
+            assertEquals(LocalTime.of(12, 15), slots[1].time)
+            assertEquals(LocalTime.of(20, 30), slots[2].time)
+        } finally {
+            settingsStore.setBreakfastTime(SettingsStore.DEFAULT_BREAKFAST_TIME)
+            settingsStore.setLunchTime(SettingsStore.DEFAULT_LUNCH_TIME)
+            settingsStore.setDinnerTime(SettingsStore.DEFAULT_DINNER_TIME)
+        }
     }
 
     @Test

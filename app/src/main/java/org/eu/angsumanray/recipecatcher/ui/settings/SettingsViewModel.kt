@@ -129,6 +129,15 @@ class SettingsViewModel @Inject constructor(
     val cookingAlertsEnabled: StateFlow<Boolean> = settingsStore.cookingAlertsEnabledFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
+    val breakfastTime: StateFlow<String> = settingsStore.breakfastTimeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsStore.DEFAULT_BREAKFAST_TIME)
+
+    val lunchTime: StateFlow<String> = settingsStore.lunchTimeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsStore.DEFAULT_LUNCH_TIME)
+
+    val dinnerTime: StateFlow<String> = settingsStore.dinnerTimeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsStore.DEFAULT_DINNER_TIME)
+
     val isInstagramLoggedIn: StateFlow<Boolean> = settingsStore.instagramLoggedInFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
@@ -172,6 +181,24 @@ class SettingsViewModel @Inject constructor(
     fun setCookingAlertsEnabled(enabled: Boolean) {
         viewModelScope.launch {
             settingsStore.setCookingAlertsEnabled(enabled)
+        }
+    }
+
+    fun setBreakfastTime(time: String) {
+        viewModelScope.launch {
+            settingsStore.setBreakfastTime(time)
+        }
+    }
+
+    fun setLunchTime(time: String) {
+        viewModelScope.launch {
+            settingsStore.setLunchTime(time)
+        }
+    }
+
+    fun setDinnerTime(time: String) {
+        viewModelScope.launch {
+            settingsStore.setDinnerTime(time)
         }
     }
 
