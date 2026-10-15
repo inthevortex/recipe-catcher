@@ -365,7 +365,7 @@ fun LibraryScreen(
                                     }
                                 } else {
                                     FilledTonalButton(onClick = onNavigateToPasteLink) {
-                                        Text("Paste Instagram or Web Link")
+                                        Text("Paste Recipe Link (Instagram, YouTube, Web)")
                                     }
                                 }
                             }
