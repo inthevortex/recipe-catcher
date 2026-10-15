@@ -47,18 +47,49 @@ git clone https://github.com/inthevortex/recipe-catcher.git
 cd recipe-catcher
 ```
 
-### Build APKs
-```bash
-# Build phone debug APK (application ID: org.eu.angsumanray.recipecatcher.debug)
-./gradlew :app:assembleDebug
+### Environment Configuration (`.env`)
+For building signed release APKs locally or deploying to physical devices, configure your release keystore credentials:
 
-# Build watch debug APK
-./gradlew :wear:assembleDebug
+```bash
+# Copy the example environment file
+cp .env.example .env
+# or run: make setup-env
 ```
 
-Debug APKs are output to:
-- Phone: `app/build/outputs/apk/debug/app-debug.apk`
-- Watch: `wear/build/outputs/apk/debug/wear-debug.apk`
+Edit `.env` with your keystore path and passwords:
+```env
+KEYSTORE_PATH=/path/to/release.keystore
+KEYSTORE_PASSWORD=your_keystore_password
+KEY_ALIAS=recipecatcher
+KEY_PASSWORD=your_key_password
+```
+
+> [!NOTE]
+> `.env` is ignored by git and never committed. The `Makefile` automatically imports and exports variables from `.env` to all Gradle and adb tasks.
+
+### Build Commands (Makefile & Gradle)
+The repository includes a `Makefile` that wraps common Gradle and deployment tasks:
+
+```bash
+# View all available make targets
+make help
+
+# Build phone debug APK
+make build
+# or: ./gradlew :app:assembleDebug
+
+# Build signed phone release APK (automatically loads .env)
+make build-release
+# or: ./gradlew :app:assembleRelease
+
+# Build watch debug or release APK
+make build-wear-debug
+make build-wear-release
+```
+
+Debug and release APKs are output to:
+- Phone: `app/build/outputs/apk/debug/app-debug.apk` and `app/build/outputs/apk/release/app-release.apk`
+- Watch: `wear/build/outputs/apk/debug/wear-debug.apk` and `wear/build/outputs/apk/release/wear-release.apk`
 
 ---
 
@@ -67,11 +98,17 @@ Debug APKs are output to:
 Before submitting any code, both verification commands must pass with zero failures:
 
 ```bash
+# Run both checks via Makefile
+make check
+
+# Or individually:
 # 1. Verify pure JVM core isolation
-./gradlew verifyCoreIsolation
+make verify
+# or: ./gradlew verifyCoreIsolation
 
 # 2. Run all unit and Robolectric test suites (:core, :app, :wear)
-./gradlew test
+make test
+# or: ./gradlew test
 ```
 
 ### Writing Tests
@@ -84,17 +121,23 @@ Before submitting any code, both verification commands must pass with zero failu
 ## 5. Device & Emulator Testing
 
 ### Phone Testing
-You can install and run the debug build on a connected phone or Android emulator:
+You can install and run debug or release builds on a connected phone or Android emulator:
 
 ```bash
-# Install phone debug APK
-./gradlew :app:installDebug
+# Install debug build via make or adb
+make install-debug
+# or: ./gradlew :app:installDebug
+# or: adb install -r app/build/outputs/apk/debug/app-debug.apk
 
-# Or via adb
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+# Install signed release build (overwrites previous release without data loss)
+make install-release
+# or: adb install -r app/build/outputs/apk/release/app-release.apk
+
+# Target a specific device serial if multiple devices are attached
+make install-release SERIAL=RZCY40K03JR
 
 # Launch the main activity
-adb shell am start -n org.eu.angsumanray.recipecatcher.debug/org.eu.angsumanray.recipecatcher.MainActivity
+adb shell am start -n org.eu.angsumanray.recipecatcher/org.eu.angsumanray.recipecatcher.MainActivity
 ```
 
 ### Headless Emulator (`Medium_Phone_API_37.0`)

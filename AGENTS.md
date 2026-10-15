@@ -91,12 +91,21 @@ When testing Android UI or device behavior:
 ## 6. Task Management & Workflow Rules
 
 - **Task Manager**: Use [docs/Waves.md](docs/Waves.md) to track tasks. Mark completed checkboxes (`[x]`). If a task is cancelled or superseded, strike it through (`~~task~~`), do not delete it.
-- **Verification**: Before completing any wave or task, ensure:
+- **Environment & Keystore Configuration**:
+  - The repository provides `.env.example` as a template for release signing credentials (`KEYSTORE_PATH`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`).
+  - Local credentials reside in `.env`, which is strictly git-ignored.
+  - The project `Makefile` automatically loads and exports `.env` variables for release builds and device deployment.
+- **Verification**: Before completing any task or wave, ensure:
   ```bash
-  ./gradlew verifyCoreIsolation
-  ./gradlew test
+  make check
+  # or: ./gradlew verifyCoreIsolation && ./gradlew test
   ```
   Both must execute cleanly with zero test failures.
+- **Common Make Commands**:
+  - `make check`: Run isolation check and all unit/Robolectric tests.
+  - `make build`: Build phone debug APK.
+  - `make build-release`: Build signed phone release APK using `.env` credentials.
+  - `make install-release`: Sideload release APK to connected phone preserving database (`adb install -r`).
 
 ---
 

@@ -517,7 +517,11 @@ $DROID emu-stop
 - **CI on every push and pull request:** `verifyCoreIsolation` and `test` on JDK 21 (`.github/workflows/ci.yml`).
 - **Releases:** pushing a tag such as `v1.2.3` builds `:app:assembleRelease` with R8, signs it, fails if the APK is unsigned, and attaches it to a GitHub Release. `versionName` comes from the tag and `versionCode` from the workflow run number.
 - **Signing key:** generated once with `scripts/generate-keystore.sh`, stored base64-encoded as Actions secrets (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`) and kept offline in a password manager. Android only installs updates signed with the same key, so every release installs over the previous one with all data intact.
-- **Local release builds** can point at a keystore with `KEYSTORE_PATH` plus the same password and alias variables.
+- **Local release builds & Makefile:** Copy `.env.example` to `.env` and fill in your keystore credentials (`KEYSTORE_PATH`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`). The project `Makefile` automatically loads `.env` and provides convenient automation:
+  - `make check`: verify `:core` isolation and run all test suites
+  - `make build-release`: build signed release APK with R8 and keystore credentials
+  - `make install-release`: install signed release APK over adb preserving database
+  - Run `make help` to inspect all available targets.
 - **Distribution:** sideloaded from the GitHub Release. There is no Play Store listing. See the [Setup Guide](docs/SETUP.md) for full sideloading instructions for phone and Wear OS.
 
 ---
