@@ -10,7 +10,11 @@ import io.ktor.http.contentType
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -141,6 +145,80 @@ You MUST respond strictly with a valid JSON array in a ```json ... ``` code fenc
             }
             return picks
         }
+
+        /**
+         * Robustly parses Claude's plan suggestions, accepting:
+         * - A top-level JSON array
+         * - A JSON object containing an array under "suggestions", "plan", "meals", "recipes", or any key
+         * - Numeric or string slot_id and recipe_id
+         * - snake_case (slot_id) or camelCase (slotId) or shorthand (slot)
+         * - Numeric, string, or decimal portions
+         * - Reason under "reason", "explanation", or "note"
+         */
+        fun parseSuggestions(rawText: String, json: Json): List<ProposedSlotAssignment> {
+            val jsonText = AnthropicSupport.extractJsonBlock(rawText)
+            val root = try {
+                json.parseToJsonElement(jsonText)
+            } catch (e: Exception) {
+                val firstArr = rawText.indexOf('[')
+                val lastArr = rawText.lastIndexOf(']')
+                if (firstArr != -1 && lastArr > firstArr) {
+                    json.parseToJsonElement(rawText.substring(firstArr, lastArr + 1))
+                } else {
+                    val firstObj = rawText.indexOf('{')
+                    val lastObj = rawText.lastIndexOf('}')
+                    if (firstObj != -1 && lastObj > firstObj) {
+                        json.parseToJsonElement(rawText.substring(firstObj, lastObj + 1))
+                    } else {
+                        throw e
+                    }
+                }
+            }
+
+            val array: JsonArray = when (root) {
+                is JsonArray -> root
+                is JsonObject -> {
+                    (root["suggestions"] as? JsonArray)
+                        ?: (root["plan"] as? JsonArray)
+                        ?: (root["meals"] as? JsonArray)
+                        ?: (root["recipes"] as? JsonArray)
+                        ?: (root["slots"] as? JsonArray)
+                        ?: root.values.firstOrNull { it is JsonArray } as? JsonArray
+                        ?: throw SerializationException("Expected a JSON array or object containing suggestions array")
+                }
+                else -> throw SerializationException("Unexpected JSON root: $root")
+            }
+
+            return array.mapNotNull { element ->
+                if (element !is JsonObject) return@mapNotNull null
+
+                val slotIdPrimitive = (element["slot_id"] as? JsonPrimitive)
+                    ?: (element["slotId"] as? JsonPrimitive)
+                    ?: (element["slot"] as? JsonPrimitive)
+                val slotId = slotIdPrimitive?.content?.toLongOrNull() ?: return@mapNotNull null
+
+                val recipeIdPrimitive = (element["recipe_id"] as? JsonPrimitive)
+                    ?: (element["recipeId"] as? JsonPrimitive)
+                    ?: (element["recipe"] as? JsonPrimitive)
+                val recipeId = recipeIdPrimitive?.content?.toLongOrNull() ?: return@mapNotNull null
+
+                val portionsPrimitive = (element["portions"] as? JsonPrimitive)
+                    ?: (element["portion"] as? JsonPrimitive)
+                val portions = portionsPrimitive?.content?.toDoubleOrNull()?.toInt() ?: 4
+
+                val reasonPrimitive = (element["reason"] as? JsonPrimitive)
+                    ?: (element["explanation"] as? JsonPrimitive)
+                    ?: (element["note"] as? JsonPrimitive)
+                val reason = reasonPrimitive?.content ?: ""
+
+                ProposedSlotAssignment(
+                    slotId = slotId,
+                    recipeId = recipeId,
+                    portions = portions,
+                    reason = reason
+                )
+            }
+        }
     }
 
     suspend fun suggestMeals(input: PlanSuggesterInput): Result<PlanSuggesterResult> {
@@ -204,7 +282,7 @@ You MUST respond strictly with a valid JSON array in a ```json ... ``` code fenc
 
         val requestPayload = buildJsonObject {
             put("model", modelId)
-            put("max_tokens", 2000)
+            put("max_tokens", 4096)
             putJsonArray("system") {
                 add(buildJsonObject {
                     put("type", "text")
@@ -239,7 +317,7 @@ You MUST respond strictly with a valid JSON array in a ```json ... ``` code fenc
                 return Result.failure(RuntimeException("No text content returned from Claude"))
             }
 
-            val rawSuggestions = json.decodeFromString<List<ProposedSlotAssignment>>(AnthropicSupport.extractJsonBlock(textContent))
+            val rawSuggestions = parseSuggestions(textContent, json)
 
             val usage = LlmUsage(
                 inputTokens = anthropicResponse.usage?.inputTokens ?: 0,

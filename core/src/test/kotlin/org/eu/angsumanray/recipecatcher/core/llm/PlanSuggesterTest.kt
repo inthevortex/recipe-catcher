@@ -192,4 +192,69 @@ class PlanSuggesterTest {
         assertTrue(result.isSuccess)
         assertTrue(result.getOrThrow().suggestions.isEmpty())
     }
+
+    @Test
+    fun testParseSuggestionsHandlesObjectWrappingAndStringIds() {
+        val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+        // Object with "suggestions" and string IDs
+        val wrappedInObject = """
+            Here are your recommendations:
+            ```json
+            {
+              "suggestions": [
+                {
+                  "slot_id": "1",
+                  "recipe_id": "10",
+                  "portions": "4",
+                  "reason": "great dinner"
+                }
+              ]
+            }
+            ```
+        """.trimIndent()
+        val parsed1 = PlanSuggester.parseSuggestions(wrappedInObject, json)
+        assertEquals(1, parsed1.size)
+        assertEquals(1L, parsed1[0].slotId)
+        assertEquals(10L, parsed1[0].recipeId)
+        assertEquals(4, parsed1[0].portions)
+        assertEquals("great dinner", parsed1[0].reason)
+
+        // Object with "plan" and camelCase
+        val wrappedInPlan = """
+            {
+              "plan": [
+                {
+                  "slotId": 2,
+                  "recipeId": 20,
+                  "portions": 2,
+                  "reason": "quick lunch"
+                }
+              ]
+            }
+        """.trimIndent()
+        val parsed2 = PlanSuggester.parseSuggestions(wrappedInPlan, json)
+        assertEquals(1, parsed2.size)
+        assertEquals(2L, parsed2[0].slotId)
+        assertEquals(20L, parsed2[0].recipeId)
+        assertEquals(2, parsed2[0].portions)
+
+        // Top level array with decimal portions
+        val topLevelArray = """
+            [
+              {
+                "slot_id": 3,
+                "recipe_id": 30,
+                "portions": 4.0,
+                "explanation": "uses leftover veggies"
+              }
+            ]
+        """.trimIndent()
+        val parsed3 = PlanSuggester.parseSuggestions(topLevelArray, json)
+        assertEquals(1, parsed3.size)
+        assertEquals(3L, parsed3[0].slotId)
+        assertEquals(30L, parsed3[0].recipeId)
+        assertEquals(4, parsed3[0].portions)
+        assertEquals("uses leftover veggies", parsed3[0].reason)
+    }
 }
