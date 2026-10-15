@@ -12,6 +12,7 @@ import okhttp3.OkHttpClient
 import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -75,7 +76,7 @@ class ImagePreprocessorTest {
         assertEquals(800, processed!!.width)
         assertEquals(600, processed.height)
         assertTrue(processed.base64.isNotBlank())
-        assertTrue(processed.jpegBytes.size < ImagePreprocessor.MAX_BYTE_SIZE)
+        assertTrue(processed.base64.length <= ImagePreprocessor.MAX_BASE64_BYTES)
     }
 
     @Test
@@ -89,7 +90,7 @@ class ImagePreprocessorTest {
         assertEquals(ImagePreprocessor.MAX_LONG_EDGE, processed.width)
         val expectedHeight = (2000f * ImagePreprocessor.MAX_LONG_EDGE / 3000f).toInt()
         assertEquals(expectedHeight, processed.height)
-        assertTrue(processed.jpegBytes.size < ImagePreprocessor.MAX_BYTE_SIZE)
+        assertTrue(processed.base64.length <= ImagePreprocessor.MAX_BASE64_BYTES)
     }
 
     @Test
@@ -130,5 +131,17 @@ class ImagePreprocessorTest {
         assertEquals(processed.jpegBytes.size.toLong(), savedFile.length())
         file.delete()
         Unit
+    }
+
+    @Test
+    fun `processBytes returns null for empty input`() = runBlocking {
+        assertNull(imagePreprocessor.processBytes(ByteArray(0)))
+    }
+
+    @Test
+    fun `base64Length matches encoded payload size`() = runBlocking {
+        val processed = imagePreprocessor.processBytes(createTestJpegBytes(640, 480))
+        assertNotNull(processed)
+        assertEquals(ImagePreprocessor.base64Length(processed!!.jpegBytes.size), processed.base64.length)
     }
 }

@@ -9,8 +9,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractedRecipe
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractionInput
 import org.eu.angsumanray.recipecatcher.core.llm.LlmUsage
@@ -72,6 +74,7 @@ data class EditRecipeUiState(
     val allConsumables: List<TagEntity> = emptyList(),
     val selectedTagIds: Set<Long> = emptySet(),
     val isExtractingText: Boolean = false,
+    val isExtractingPhotos: Boolean = false,
     val extractError: String? = null,
     val isSaved: Boolean = false,
     val isSearchingAi: Boolean = false,
@@ -390,7 +393,7 @@ class EditRecipeViewModel @Inject constructor(
         if (imageUris.isEmpty()) return
 
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isExtractingText = true, extractError = null)
+            _uiState.value = _uiState.value.copy(isExtractingText = true, isExtractingPhotos = true, extractError = null)
             try {
                 val processedImages = mutableListOf<ProcessedImage>()
                 for (uri in imageUris) {
@@ -403,18 +406,17 @@ class EditRecipeViewModel @Inject constructor(
                 if (processedImages.isEmpty()) {
                     _uiState.value = _uiState.value.copy(
                         isExtractingText = false,
+                        isExtractingPhotos = false,
                         extractError = "Could not process selected photos"
                     )
                     return@launch
                 }
 
-                val primaryProcessed = processedImages.first()
-                val coverPath = if (recipeId > 0) {
-                    imagePreprocessor.saveAsRecipeCover(primaryProcessed, recipeId)
-                } else {
-                    val tempFile = File(imageStorageManager.imagesDir, "temp_${UUID.randomUUID()}.jpg")
-                    tempFile.writeBytes(primaryProcessed.jpegBytes)
-                    "images/${tempFile.name}"
+                // A new file rather than images/<id>.jpg, so the recipe's current image survives a discarded edit.
+                val coverPath = withContext(Dispatchers.IO) {
+                    val coverFile = File(imageStorageManager.imagesDir, "scan_${UUID.randomUUID()}.jpg")
+                    coverFile.writeBytes(processedImages.first().jpegBytes)
+                    "images/${coverFile.name}"
                 }
 
                 val tags = tagRepository.getTagsByKind(TagEntity.KIND_TAG).map { it.name }
@@ -489,6 +491,7 @@ class EditRecipeViewModel @Inject constructor(
 
                         _uiState.value = _uiState.value.copy(
                             isExtractingText = false,
+                            isExtractingPhotos = false,
                             title = extracted.title?.ifBlank { _uiState.value.title } ?: _uiState.value.title,
                             description = extracted.description?.ifBlank { _uiState.value.description } ?: _uiState.value.description,
                             servingsText = (extracted.servings ?: _uiState.value.servingsText.toIntOrNull() ?: 4).toString(),
@@ -520,13 +523,17 @@ class EditRecipeViewModel @Inject constructor(
                         }
                         _uiState.value = _uiState.value.copy(
                             isExtractingText = false,
+                            isExtractingPhotos = false,
                             extractError = err.message ?: "Failed to extract recipe from photos"
                         )
                     }
                 )
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isExtractingText = false,
+                    isExtractingPhotos = false,
                     extractError = e.message ?: "Error extracting recipe from photos"
                 )
             }

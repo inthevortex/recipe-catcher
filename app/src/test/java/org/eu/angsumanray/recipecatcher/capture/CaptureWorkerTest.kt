@@ -30,6 +30,7 @@ import org.eu.angsumanray.recipecatcher.core.llm.ExtractedRecipe
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractedStep
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractionInput
 import org.eu.angsumanray.recipecatcher.core.llm.LlmUsage
+import org.eu.angsumanray.recipecatcher.core.llm.ImageRejectedException
 import org.eu.angsumanray.recipecatcher.core.llm.NoRecipeFoundException
 import org.eu.angsumanray.recipecatcher.core.llm.NewListSuggestion
 import org.eu.angsumanray.recipecatcher.core.llm.RecipeExtractor
@@ -939,5 +940,90 @@ class CaptureWorkerTest {
 
         slidesDir.deleteRecursively()
         Unit
+    }
+
+    @Test
+    fun `CaptureWorker sends at most five shared photos and clears the capture cache on success`() = runBlocking {
+        val sourceKey = "image_cap_test"
+        val dir = File(context.cacheDir, "image_captures/$sourceKey").apply { mkdirs() }
+        repeat(7) { File(dir, "img_${it + 1}.jpg").writeBytes(createSampleJpeg(200, 200)) }
+        val recipeId = recipeRepository.insertPendingImageRecipe(sourceKey, dir.absolutePath)
+
+        var imageCount = 0
+        val mockExtractor = object : RecipeExtractor {
+            override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> {
+                imageCount = input.sourceImages.size
+                return Result.success(createExtractedRecipe(title = "Scanned Dish"))
+            }
+        }
+
+        val result = createWorker(recipeId, extractor = mockExtractor).doWork()
+
+        assertEquals(ListenableWorker.Result.success(), result)
+        assertEquals(5, imageCount)
+        assertFalse(dir.exists())
+    }
+
+    @Test
+    fun `CaptureWorker fails without retry when the API rejects the image`() = runBlocking {
+        val dir = File(context.cacheDir, "image_captures/image_rejected").apply { mkdirs() }
+        File(dir, "img_1.jpg").writeBytes(createSampleJpeg(200, 200))
+        val recipeId = recipeRepository.insertPendingImageRecipe("image_rejected", dir.absolutePath)
+
+        val rejectingExtractor = object : RecipeExtractor {
+            override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> =
+                Result.failure(ImageRejectedException("Image rejected: HTTP 413"))
+        }
+
+        val result = createWorker(recipeId, extractor = rejectingExtractor).doWork()
+
+        assertEquals(ListenableWorker.Result.failure(), result)
+        val updated = recipeRepository.getRecipe(recipeId)
+        assertEquals(RecipeEntity.STATUS_FAILED_EXTRACT, updated?.status)
+        assertEquals("Image processing failed or file too large", updated?.errorMessage)
+        assertTrue(dir.exists())
+        dir.deleteRecursively()
+        Unit
+    }
+
+    @Test
+    fun `CaptureWorker does not re-extract a transcript already used as the source text`() = runBlocking {
+        val recipeId = recipeRepository.insertPendingRecipe("youtube", "yt_transcript_once")
+        val transcript = "Today we talk about knives and kitchen tours."
+
+        val fakeYtFetcher = object : org.eu.angsumanray.recipecatcher.core.youtube.YouTubeFetcher(
+            object : org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher {
+                override suspend fun get(url: String, headers: Map<String, String>) =
+                    org.eu.angsumanray.recipecatcher.core.ports.HttpResponseData(404, "")
+            }
+        ) {
+            override suspend fun fetch(urlOrId: String) = org.eu.angsumanray.recipecatcher.core.youtube.YouTubeData(
+                videoId = urlOrId,
+                title = "Kitchen Tour",
+                author = "Chef",
+                description = "",
+                thumbnailUrl = "",
+                isPlayerResponse = true,
+                preferredCaptionTrackUrl = "https://www.youtube.com/api/timedtext?v=789"
+            )
+
+            override suspend fun fetchCaptionTranscript(trackUrl: String): String = transcript
+        }
+
+        var calls = 0
+        val mockExtractor = object : RecipeExtractor {
+            override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> {
+                calls++
+                return Result.failure(NoRecipeFoundException("No recipe"))
+            }
+        }
+
+        val result = createWorker(recipeId, ytFetcher = fakeYtFetcher, extractor = mockExtractor).doWork()
+
+        assertEquals(ListenableWorker.Result.failure(), result)
+        assertEquals(1, calls)
+        val updated = recipeRepository.getRecipe(recipeId)
+        assertEquals(RecipeEntity.STATUS_NO_RECIPE_FOUND, updated?.status)
+        assertEquals("No recipe in description or captions", updated?.errorMessage)
     }
 }

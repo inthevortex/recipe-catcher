@@ -418,4 +418,22 @@ class ClaudeExtractorTest {
         assertTrue(capturedBody.contains(dummyBase64))
         assertTrue(capturedBody.contains("Recipe content is present in the attached image(s)"))
     }
+
+    @Test
+    fun `image request rejected with 400 or 413 maps to ImageRejectedException`() = runBlocking {
+        val imageInput = ExtractionInput(sourceType = SourceType.IMAGE, sourceText = "", sourceImages = listOf("AQIDBA=="))
+        val cases = listOf(
+            400 to """{"type":"error","error":{"type":"invalid_request_error","message":"image exceeds 5 MB maximum"}}""",
+            413 to """{"type":"error","error":{"type":"request_too_large"}}"""
+        )
+        for ((code, body) in cases) {
+            val client = createClient { _, _ -> HttpStatusCode.fromValue(code) to body }
+            val result = ClaudeExtractor(client, { "k" }).extract(imageInput)
+            assertTrue("HTTP $code", result.exceptionOrNull() is ImageRejectedException)
+        }
+
+        val textOnly = createClient { _, _ -> HttpStatusCode.BadRequest to """{"error":{"message":"bad image field"}}""" }
+        val textResult = ClaudeExtractor(textOnly, { "k" }).extract(imageInput.copy(sourceImages = emptyList(), sourceText = "x"))
+        assertFalse(textResult.exceptionOrNull() is ImageRejectedException)
+    }
 }

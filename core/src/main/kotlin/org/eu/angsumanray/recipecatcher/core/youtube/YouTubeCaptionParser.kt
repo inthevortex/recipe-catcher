@@ -23,6 +23,8 @@ object YouTubeCaptionParser {
     }
 
     private val NOISE_TAG_REGEX = Regex("""\[(?:music|applause|laughter|cheering|ambient noise|silence|sound)\]|\((?:music|applause|laughter|cheering)\)""", RegexOption.IGNORE_CASE)
+    private val MUSIC_NOTES_REGEX = Regex("""♪[^♪]*♪|♪""")
+    private val WHITESPACE_REGEX = Regex("""\s+""")
 
     /**
      * Extracts available caption tracks from YouTube's ytInitialPlayerResponse JSON.
@@ -87,14 +89,14 @@ object YouTubeCaptionParser {
         if (xml.isBlank()) return ""
 
         val doc = Jsoup.parse(xml, "", Parser.xmlParser())
-        val textElements = doc.select("text")
+        // srv1 tracks use <text> cues; srv3 tracks use <p> cues with <s> word segments.
+        val textElements = doc.select("text, p")
 
         val cleanLines = mutableListOf<String>()
         var previousLine = ""
 
         for (el in textElements) {
-            val raw = el.text()
-            val cleaned = cleanText(raw)
+            val cleaned = cleanText(decodeCueMarkup(el.text()))
             if (cleaned.isNotBlank() && !cleaned.equals(previousLine, ignoreCase = true)) {
                 cleanLines.add(cleaned)
                 previousLine = cleaned
@@ -121,10 +123,8 @@ object YouTubeCaptionParser {
                 val segs = event.jsonObject["segs"]?.jsonArray ?: continue
                 val textBuilder = StringBuilder()
                 for (seg in segs) {
-                    val utf8 = seg.jsonObject["utf8"]?.jsonPrimitive?.contentOrNull
-                    if (!utf8.isNullOrBlank()) {
-                        textBuilder.append(utf8)
-                    }
+                    // Whitespace-only segments (e.g. "\n") separate words, so they are kept.
+                    seg.jsonObject["utf8"]?.jsonPrimitive?.contentOrNull?.let { textBuilder.append(it) }
                 }
                 val cleaned = cleanText(textBuilder.toString())
                 if (cleaned.isNotBlank() && !cleaned.equals(previousLine, ignoreCase = true)) {
@@ -139,11 +139,15 @@ object YouTubeCaptionParser {
         return cleanLines.joinToString(" ")
     }
 
+    /**
+     * Cue text is escaped twice by YouTube (`&amp;#39;`, `&lt;font&gt;`), so after the XML parser's
+     * pass the text still carries entities and formatting tags; an HTML parse decodes and strips both.
+     */
+    private fun decodeCueMarkup(text: String): String =
+        if (text.contains('&') || text.contains('<')) Jsoup.parse(text).text() else text
+
     private fun cleanText(text: String): String {
-        val withoutNoise = NOISE_TAG_REGEX.replace(text, " ")
-        return withoutNoise
-            .replace("\n", " ")
-            .replace(Regex("""\s+"""), " ")
-            .trim()
+        val withoutNoise = MUSIC_NOTES_REGEX.replace(NOISE_TAG_REGEX.replace(text, " "), " ")
+        return WHITESPACE_REGEX.replace(withoutNoise, " ").trim()
     }
 }

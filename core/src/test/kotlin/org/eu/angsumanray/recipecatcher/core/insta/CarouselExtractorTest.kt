@@ -81,4 +81,45 @@ class CarouselExtractorTest {
         """.trimIndent()
         assertFalse(InstagramPostFetcher.hasFewerThan3QuantityLines(captionWithQuantities))
     }
+
+    @Test
+    fun `extractSlideUrls reads every sidecar child when nodes contain nested edges arrays`() {
+        val sampleHtml = """
+            <script type="application/json">
+            {"shortcode_media": {"display_url": "https://cdn.example.com/cover.jpg",
+              "edge_sidecar_to_children": {"edges": [
+                {"node": {"edge_media_to_tagged_user": {"edges": []}, "display_url": "https://cdn.example.com/s1.jpg"}},
+                {"node": {"edge_media_to_tagged_user": {"edges": [{"node": {"x": "a]b}"}}]}, "display_url": "https://cdn.example.com/s2.jpg"}},
+                {"node": {"display_url": "https://cdn.example.com/s3.jpg"}}
+              ]},
+              "edge_related_profiles": {"edges": [{"node": {"display_url": "https://cdn.example.com/unrelated.jpg"}}]}
+            }}
+            </script>
+        """.trimIndent()
+
+        val urls = CarouselExtractor.extractSlideUrls(sampleHtml)
+        assertEquals(
+            listOf("https://cdn.example.com/s1.jpg", "https://cdn.example.com/s2.jpg", "https://cdn.example.com/s3.jpg"),
+            urls
+        )
+    }
+
+    @Test
+    fun `hasFewerThan3QuantityLines ignores handles, years and list numbering`() {
+        val caption = """
+            Follow @chef123 for more!
+            Best of 2024
+            1. Swipe for the recipe
+            2. Save this post
+            3. Share with a friend
+        """.trimIndent()
+        assertTrue(InstagramPostFetcher.hasFewerThan3QuantityLines(caption))
+
+        val bareCounts = """
+            2 onions
+            3 eggs
+            ½ lemon, juiced
+        """.trimIndent()
+        assertFalse(InstagramPostFetcher.hasFewerThan3QuantityLines(bareCounts))
+    }
 }

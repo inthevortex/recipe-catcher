@@ -85,4 +85,6 @@ interface RecipeExtractor {
 class ApiKeyInvalidException(message: String) : Exception(message)
 class ModelNotFoundException(message: String) : Exception(message)
 class TransientApiException(message: String, val statusCode: Int) : Exception(message)
+/** The API rejected an attached image (too large, unreadable or unsupported); retrying the same payload cannot succeed. */
+class ImageRejectedException(message: String) : Exception(message)
 class NoRecipeFoundException(message: String, val usage: LlmUsage? = null) : Exception(message)

@@ -82,15 +82,23 @@ class InstagramPostFetcher(
             return tokens.isNotEmpty() && tokens.all { it.startsWith("#") }
         }
 
-        /**
-         * Quick recipe heuristic: checks whether the caption has fewer than 3 lines that look like ingredient quantities.
-         */
+        private const val QUANTITY = """(?:\d+(?:[.,/]\d+)?|[½¼¾⅓⅔⅛])"""
+
+        // A number followed by a unit anywhere in the line ("add 2 tbsp butter").
+        private val UNIT_QUANTITY_REGEX = Regex(
+            """$QUANTITY\s*(?:g|gm|gms|grams?|kg|ml|l|litres?|liters?|tsp|tbsp|teaspoons?|tablespoons?|cups?|oz|lbs?|pinch(?:es)?|pieces?|pcs?|cloves?|cans?|slices?|tb|ts)\b""",
+            RegexOption.IGNORE_CASE
+        )
+
+        // A bare count opening an ingredient line ("2 onions", "- 3 eggs"), but not list numbering ("1. Swipe").
+        private val LEADING_COUNT_REGEX = Regex("""^[-•*]?\s*$QUANTITY\s+\p{L}""")
+
+        /** Quick recipe heuristic: whether the caption has fewer than 3 lines that look like ingredient quantities. */
         fun hasFewerThan3QuantityLines(caption: String?): Boolean {
             if (caption.isNullOrBlank()) return true
-            val quantityRegex = Regex("""(?:\d+|[½¼¾⅓⅔⅛])\s*(?:g|kg|ml|l|tsp|tbsp|cup|cups|oz|lb|pinch|pinches|piece|pieces|pc|pcs|clove|cloves|can|cans|slice|slices|tb|ts)?\b""", RegexOption.IGNORE_CASE)
             val count = caption.lines().count { line ->
                 val trimmed = line.trim()
-                trimmed.isNotEmpty() && quantityRegex.containsMatchIn(trimmed)
+                UNIT_QUANTITY_REGEX.containsMatchIn(trimmed) || LEADING_COUNT_REGEX.containsMatchIn(trimmed)
             }
             return count < 3
         }

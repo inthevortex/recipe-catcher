@@ -8,13 +8,13 @@ import android.net.Uri
 import android.util.Base64
 import android.media.ExifInterface
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.InputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.max
@@ -54,8 +54,13 @@ class ImagePreprocessor @Inject constructor(
 ) {
     companion object {
         const val MAX_LONG_EDGE = 1568
-        const val MAX_BYTE_SIZE = 4_500_000 // 4.5 MB safety margin under Claude's 5 MB limit
+        /** Claude rejects images whose base64 payload exceeds 5 MB; this leaves a safety margin. */
+        const val MAX_BASE64_BYTES = 4_500_000
         const val INITIAL_JPEG_QUALITY = 85
+        private const val MIN_JPEG_QUALITY = 25
+        private const val QUALITY_STEP = 15
+
+        fun base64Length(byteCount: Int): Int = (byteCount + 2) / 3 * 4
     }
 
     suspend fun processUri(uri: Uri): ProcessedImage? = withContext(Dispatchers.IO) {
@@ -63,6 +68,8 @@ class ImagePreprocessor @Inject constructor(
             val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: return@withContext null
             processBytes(bytes)
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
@@ -72,14 +79,18 @@ class ImagePreprocessor @Inject constructor(
         try {
             if (!file.exists()) return@withContext null
             processBytes(file.readBytes())
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
     }
 
-    suspend fun processBytes(rawBytes: ByteArray): ProcessedImage? = withContext(Dispatchers.IO) {
+    /** Returns null when the bytes cannot be decoded or no JPEG quality fits under [MAX_BASE64_BYTES]. */
+    suspend fun processBytes(rawBytes: ByteArray): ProcessedImage? = withContext(Dispatchers.Default) {
         if (rawBytes.isEmpty()) return@withContext null
 
+        var bitmap: Bitmap? = null
         try {
             val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, boundsOptions)
@@ -95,56 +106,50 @@ class ImagePreprocessor @Inject constructor(
             }
 
             val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-            val decodedBitmap = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOptions)
+            bitmap = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOptions)
                 ?: return@withContext null
 
-            val orientedBitmap = applyExifOrientation(decodedBitmap, rawBytes)
-            val currentLongEdge = max(orientedBitmap.width, orientedBitmap.height)
+            // Each step recycles its input when it returns a new bitmap, so only the latest needs recycling.
+            bitmap = applyExifOrientation(bitmap, rawBytes)
+            bitmap = scaleToMaxLongEdge(bitmap)
 
-            val scaledBitmap = if (currentLongEdge > MAX_LONG_EDGE) {
-                val scale = MAX_LONG_EDGE.toFloat() / currentLongEdge
-                val newWidth = (orientedBitmap.width * scale).toInt().coerceAtLeast(1)
-                val newHeight = (orientedBitmap.height * scale).toInt().coerceAtLeast(1)
-                val scaled = Bitmap.createScaledBitmap(orientedBitmap, newWidth, newHeight, true)
-                if (scaled != orientedBitmap && orientedBitmap != decodedBitmap) {
-                    orientedBitmap.recycle()
-                }
-                scaled
-            } else {
-                orientedBitmap
-            }
-
-            // Compress to JPEG ensuring < 4.5 MB
-            var quality = INITIAL_JPEG_QUALITY
-            var compressedBytes: ByteArray
-            while (true) {
-                val bos = ByteArrayOutputStream()
-                scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, bos)
-                compressedBytes = bos.toByteArray()
-                if (compressedBytes.size <= MAX_BYTE_SIZE || quality <= 30) {
-                    break
-                }
-                quality -= 15
-            }
-
-            val finalWidth = scaledBitmap.width
-            val finalHeight = scaledBitmap.height
-
-            if (scaledBitmap != decodedBitmap) {
-                scaledBitmap.recycle()
-            }
-            decodedBitmap.recycle()
-
-            val base64 = Base64.encodeToString(compressedBytes, Base64.NO_WRAP)
+            val compressedBytes = compressWithinLimit(bitmap) ?: return@withContext null
             ProcessedImage(
-                base64 = base64,
+                base64 = Base64.encodeToString(compressedBytes, Base64.NO_WRAP),
                 jpegBytes = compressedBytes,
-                width = finalWidth,
-                height = finalHeight
+                width = bitmap.width,
+                height = bitmap.height
             )
         } catch (_: Exception) {
             null
+        } catch (_: OutOfMemoryError) {
+            null
+        } finally {
+            bitmap?.recycle()
         }
+    }
+
+    private fun scaleToMaxLongEdge(bitmap: Bitmap): Bitmap {
+        val longEdge = max(bitmap.width, bitmap.height)
+        if (longEdge <= MAX_LONG_EDGE) return bitmap
+        val scale = MAX_LONG_EDGE.toFloat() / longEdge
+        val newWidth = (bitmap.width * scale).toInt().coerceAtLeast(1)
+        val newHeight = (bitmap.height * scale).toInt().coerceAtLeast(1)
+        val scaled = Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+        if (scaled != bitmap) bitmap.recycle()
+        return scaled
+    }
+
+    private fun compressWithinLimit(bitmap: Bitmap): ByteArray? {
+        var quality = INITIAL_JPEG_QUALITY
+        while (quality >= MIN_JPEG_QUALITY) {
+            val bos = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, bos)
+            val bytes = bos.toByteArray()
+            if (base64Length(bytes.size) <= MAX_BASE64_BYTES) return bytes
+            quality -= QUALITY_STEP
+        }
+        return null
     }
 
     private fun applyExifOrientation(bitmap: Bitmap, bytes: ByteArray): Bitmap {

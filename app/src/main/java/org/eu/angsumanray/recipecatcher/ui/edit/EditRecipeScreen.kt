@@ -81,7 +81,8 @@ fun EditRecipeScreen(
     var pasteInput by remember { mutableStateOf("") }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var showPhotoSourceDialog by remember { mutableStateOf(false) }
-    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    // Saveable: the camera app often recreates this activity before the result arrives.
+    var pendingCameraUri by rememberSaveable { mutableStateOf<Uri?>(null) }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 5)
@@ -94,10 +95,10 @@ fun EditRecipeScreen(
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
-        if (success) {
-            pendingCameraUri?.let { uri ->
-                viewModel.fillFromPhotos(listOf(uri)) {}
-            }
+        val uri = pendingCameraUri
+        pendingCameraUri = null
+        if (success && uri != null) {
+            viewModel.fillFromPhotos(listOf(uri)) {}
         }
     }
 
@@ -662,7 +663,7 @@ fun EditRecipeScreen(
         )
     }
 
-    if (state.isExtractingText && !showPasteDialog && !showFindWithAiDialog) {
+    if (state.isExtractingPhotos) {
         AlertDialog(
             onDismissRequest = {},
             title = { Text("Analyzing Photos") },

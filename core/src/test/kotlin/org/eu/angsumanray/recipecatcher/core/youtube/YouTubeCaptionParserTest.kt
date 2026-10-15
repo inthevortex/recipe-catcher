@@ -128,4 +128,45 @@ class YouTubeCaptionParserTest {
         assertEquals("", YouTubeCaptionParser.parseTimedTextXml(""))
         assertNull(YouTubeCaptionParser.pickPreferredCaptionTrack(emptyList()))
     }
+
+    @Test
+    fun `decodes double-escaped entities and strips formatting tags in timedtext xml`() {
+        val xml = """
+            <?xml version="1.0" encoding="utf-8" ?>
+            <transcript>
+                <text start="0.0" dur="2.0">it&amp;#39;s &amp;quot;easy&amp;quot;</text>
+                <text start="2.0" dur="2.0">&lt;font color=&quot;#E5E5E5&quot;&gt;salt &amp;amp; pepper&lt;/font&gt;</text>
+                <text start="4.0" dur="2.0">♪ la la la ♪ stir well</text>
+            </transcript>
+        """.trimIndent()
+
+        val transcript = YouTubeCaptionParser.parseTimedTextXml(xml)
+        assertEquals("it's \"easy\" salt & pepper stir well", transcript)
+    }
+
+    @Test
+    fun `parses srv3 timedtext paragraphs with word segments`() {
+        val xml = """
+            <?xml version="1.0" encoding="utf-8" ?>
+            <timedtext format="3">
+                <body>
+                    <p t="0" d="2000"><s>Add</s><s t="300"> 2</s><s t="600"> cups</s><s t="900"> flour</s></p>
+                    <p t="2000" d="1500">[Music]</p>
+                    <p t="3500" d="2000"><s>Mix</s><s t="200"> gently</s></p>
+                </body>
+            </timedtext>
+        """.trimIndent()
+
+        val transcript = YouTubeCaptionParser.parseTimedTextXml(xml)
+        assertEquals("Add 2 cups flour Mix gently", transcript)
+    }
+
+    @Test
+    fun `json3 newline segments keep words apart`() {
+        val json3 = """
+        {"events": [{"segs": [{"utf8": "chop"}, {"utf8": "\n"}, {"utf8": "onions"}]}]}
+        """.trimIndent()
+
+        assertEquals("chop onions", YouTubeCaptionParser.parseTimedTextJson(json3))
+    }
 }

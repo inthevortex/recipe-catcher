@@ -1,14 +1,11 @@
 package org.eu.angsumanray.recipecatcher.core.insta
 
 import org.jsoup.Jsoup
-import org.jsoup.parser.Parser
 
 object CarouselExtractor {
 
-    // Regex to match JSON strings containing display_url or image candidate URLs
     private val DISPLAY_URL_REGEX = Regex(""""display_url"\s*:\s*"([^"]+)"""")
-    private val DISPLAY_SRC_REGEX = Regex(""""display_resources"\s*:\s*\[.*?"src"\s*:\s*"([^"]+)"""")
-    private val SIDECAR_CHILDREN_REGEX = Regex(""""edge_sidecar_to_children"\s*:\s*\{\s*"edges"\s*:\s*\[(.*?)\]\s*\}""", RegexOption.DOT_MATCHES_ALL)
+    private val SIDECAR_EDGES_START_REGEX = Regex(""""edge_sidecar_to_children"\s*:\s*\{\s*"edges"\s*:\s*\[""")
 
     /**
      * Extracts all slide image URLs from Instagram post HTML or embed HTML.
@@ -20,9 +17,8 @@ object CarouselExtractor {
         val results = mutableListOf<String>()
 
         // 1. Check for edge_sidecar_to_children block in scripts
-        val sidecarMatch = SIDECAR_CHILDREN_REGEX.find(html)
-        if (sidecarMatch != null) {
-            val edgesBlock = sidecarMatch.groupValues[1]
+        val edgesBlock = sidecarEdgesBlock(html)
+        if (edgesBlock != null) {
             for (match in DISPLAY_URL_REGEX.findAll(edgesBlock)) {
                 val rawUrl = unescapeJsonUrl(match.groupValues[1])
                 if (isValidImageUrl(rawUrl)) {
@@ -59,6 +55,34 @@ object CarouselExtractor {
         }
 
         return results.distinct()
+    }
+
+    /**
+     * Returns the body of the `edge_sidecar_to_children.edges` array. Child nodes carry their own nested
+     * `edges` arrays (tagged users, captions), so the array end is found by bracket depth, not by regex.
+     */
+    private fun sidecarEdgesBlock(html: String): String? {
+        val start = SIDECAR_EDGES_START_REGEX.find(html)?.range?.last?.plus(1) ?: return null
+        var depth = 1
+        var inString = false
+        var i = start
+        while (i < html.length) {
+            val c = html[i]
+            if (inString) {
+                when (c) {
+                    '\\' -> i++
+                    '"' -> inString = false
+                }
+            } else {
+                when (c) {
+                    '"' -> inString = true
+                    '[', '{' -> depth++
+                    ']', '}' -> if (--depth == 0) return html.substring(start, i)
+                }
+            }
+            i++
+        }
+        return null
     }
 
     private fun isValidImageUrl(url: String): Boolean {

@@ -89,6 +89,11 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
             404 -> return Result.failure(ModelNotFoundException("Model not found: HTTP 404 for model $modelId"))
             429, 529 -> return Result.failure(TransientApiException("Transient API error: HTTP $statusCode", statusCode))
             in 500..599 -> return Result.failure(TransientApiException("Server error: HTTP $statusCode", statusCode))
+            400, 413 -> if (input.sourceImages.isNotEmpty() && (statusCode == 413 || responseBody.contains("image", ignoreCase = true))) {
+                return Result.failure(ImageRejectedException("Image rejected: HTTP $statusCode $responseBody"))
+            } else {
+                return Result.failure(RuntimeException("Anthropic API error: HTTP $statusCode $responseBody"))
+            }
             else -> return Result.failure(RuntimeException("Anthropic API error: HTTP $statusCode $responseBody"))
         }
 

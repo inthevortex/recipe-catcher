@@ -83,13 +83,14 @@ class ShareReceiverActivity : ComponentActivity() {
 
     private suspend fun handleSharedImages(uris: List<Uri>) = withContext(Dispatchers.IO) {
         val sourceKey = "image_${UUID.randomUUID()}"
-        val cacheDir = File(cacheDir, "image_captures/$sourceKey").apply { mkdirs() }
+        val captureDir = File(cacheDir, "image_captures/$sourceKey").apply { mkdirs() }
         val savedFiles = mutableListOf<File>()
 
-        for ((index, uri) in uris.withIndex()) {
+        // Vision extraction reads at most MAX_SHARED_IMAGES photos, so extra ones are not copied.
+        for ((index, uri) in uris.take(MAX_SHARED_IMAGES).withIndex()) {
             try {
                 contentResolver.openInputStream(uri)?.use { input ->
-                    val file = File(cacheDir, "img_${index + 1}.jpg")
+                    val file = File(captureDir, "img_${index + 1}.jpg")
                     FileOutputStream(file).use { output -> input.copyTo(output) }
                     if (file.length() > 0) savedFiles.add(file)
                 }
@@ -98,6 +99,7 @@ class ShareReceiverActivity : ComponentActivity() {
         }
 
         if (savedFiles.isEmpty()) {
+            captureDir.deleteRecursively()
             withContext(Dispatchers.Main) {
                 Toast.makeText(this@ShareReceiverActivity, "Could not read shared photo", Toast.LENGTH_SHORT).show()
                 finish()
@@ -107,7 +109,7 @@ class ShareReceiverActivity : ComponentActivity() {
 
         val recipeId = recipeRepository.insertPendingImageRecipe(
             sourceKey = sourceKey,
-            imageDirectoryOrPaths = cacheDir.absolutePath
+            imageDirectoryOrPaths = captureDir.absolutePath
         )
 
         CaptureWorker.enqueue(applicationContext, recipeId)
@@ -151,5 +153,9 @@ class ShareReceiverActivity : ComponentActivity() {
             }
         }
         finish()
+    }
+
+    private companion object {
+        const val MAX_SHARED_IMAGES = 5
     }
 }
