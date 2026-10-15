@@ -16,6 +16,8 @@ import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.eu.angsumanray.recipecatcher.core.insta.InstagramComments
@@ -69,6 +71,13 @@ class CaptureWorker @AssistedInject constructor(
         private const val MAX_CAROUSEL_SLIDES = 4
         private const val IMAGE_FAILED_MESSAGE = "Image processing failed or file too large"
 
+        /**
+         * Captures run at most this many at a time; the rest wait their turn. Many parallel post
+         * fetches and Claude calls get connections dropped or throttled and fail together.
+         */
+        private const val MAX_PARALLEL_CAPTURES = 2
+        private val captureSlots = Semaphore(MAX_PARALLEL_CAPTURES)
+
         fun enqueue(context: Context, recipeId: Long, initialDelayMillis: Long = 0) {
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -93,7 +102,7 @@ class CaptureWorker @AssistedInject constructor(
         val recipeId = inputData.getLong(KEY_RECIPE_ID, -1L)
         if (recipeId == -1L) return Result.failure()
 
-        val result = capture(recipeId)
+        val result = captureSlots.withPermit { capture(recipeId) }
         if (result is Result.Success) deleteCachedCaptureImages(recipeId)
         return result
     }

@@ -7,6 +7,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
 import org.eu.angsumanray.recipecatcher.core.insta.InstagramComments
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
@@ -29,6 +31,9 @@ class CaptureLauncher @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    /** Each comment read loads the post in its own WebView; more at once time out or crash the renderer. */
+    private val commentSlots = Semaphore(MAX_PARALLEL_COMMENT_READS)
+
     /** [sharedText] is what the user shared or pasted; it may hold a comment link. */
     fun start(recipeId: Long, sourceType: SourceType, sharedText: String) {
         if (sourceType != SourceType.INSTAGRAM) {
@@ -36,10 +41,12 @@ class CaptureLauncher @Inject constructor(
             return
         }
         // Runs the capture anyway if the process dies before the comment is read.
-        CaptureWorker.enqueue(context, recipeId, initialDelayMillis = FALLBACK_DELAY_MILLIS)
+        CaptureWorker.enqueue(context, recipeId, initialDelayMillis = QUEUED_FALLBACK_DELAY_MILLIS)
         scope.launch {
             try {
-                commentFetcher.fetchTopComment(sharedText)?.let { recipeRepository.updateCommentRaw(recipeId, it) }
+                readCommentInTurn(recipeId) {
+                    commentFetcher.fetchTopComment(sharedText)?.let { recipeRepository.updateCommentRaw(recipeId, it) }
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "Comment fetch failed for recipe $recipeId", e)
             } finally {
@@ -62,8 +69,8 @@ class CaptureLauncher @Inject constructor(
                 if (foregroundPageFetcher.retryInWebView(recipeId).isSuccess) return@launch
             }
             if (recipe.sourceType == SourceType.INSTAGRAM.value) {
-                CaptureWorker.enqueue(context, recipeId, initialDelayMillis = FALLBACK_DELAY_MILLIS)
-                refreshComment(recipe)
+                CaptureWorker.enqueue(context, recipeId, initialDelayMillis = QUEUED_FALLBACK_DELAY_MILLIS)
+                readCommentInTurn(recipeId) { refreshComment(recipe) }
             }
 
             val nextStatus = if (recipe.captionRaw.isNullOrBlank()) {
@@ -73,6 +80,17 @@ class CaptureLauncher @Inject constructor(
             }
             recipeRepository.updateRecipeStatus(recipeId, nextStatus, null)
             CaptureWorker.enqueue(context, recipeId)
+        }
+    }
+
+    /**
+     * Runs [read] once a comment-read slot is free. The fallback capture is pushed back while
+     * waiting, so it never starts before the comment has had its chance.
+     */
+    private suspend fun readCommentInTurn(recipeId: Long, read: suspend () -> Unit) {
+        commentSlots.withPermit {
+            CaptureWorker.enqueue(context, recipeId, initialDelayMillis = FALLBACK_DELAY_MILLIS)
+            read()
         }
     }
 
@@ -103,7 +121,12 @@ class CaptureLauncher @Inject constructor(
     private companion object {
         const val TAG = "CaptureLauncher"
 
+        const val MAX_PARALLEL_COMMENT_READS = 2
+
         /** Longer than [CommentFetcher]'s whole page-load and reading budget. */
         const val FALLBACK_DELAY_MILLIS = 60_000L
+
+        /** Generous enough for a long queue of shares waiting for a comment-read slot. */
+        const val QUEUED_FALLBACK_DELAY_MILLIS = 15 * 60_000L
     }
 }
