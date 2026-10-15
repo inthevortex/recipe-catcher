@@ -14,6 +14,7 @@ A personal, offline-first Android app that turns Instagram posts, recipe website
 ![Claude Haiku 5.5](https://img.shields.io/badge/LLM-Claude%20Haiku%205.5-D97757?logo=anthropic&logoColor=white)
 ![Offline-first](https://img.shields.io/badge/Offline--first-100%25%20local%20data-2E7D32)
 ![Clean Architecture](https://img.shields.io/badge/Architecture-Clean%20%2B%20modular-455A64)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
 
 </div>
 
@@ -31,6 +32,8 @@ A personal, offline-first Android app that turns Instagram posts, recipe website
 - [Build, signing and releases](#build-signing-and-releases)
 - [Development workflow](#development-workflow)
 - [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
 - [Documentation](#documentation)
 
 ---
@@ -563,6 +566,18 @@ flowchart LR
   classDef done fill:#2e7d32,color:#fff,stroke:#1b5e20
   classDef wip fill:#f9a825,color:#000,stroke:#f57f17
 ```
+
+---
+
+## Contributing
+
+Contributions are warmly welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on code style, architectural invariants (`:core` module isolation), and testing requirements.
+
+---
+
+## License
+
+Recipe Catcher is open-source software licensed under the [Apache License, Version 2.0](LICENSE).
 
 ---
 
