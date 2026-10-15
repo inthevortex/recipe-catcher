@@ -5,7 +5,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
@@ -20,7 +19,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.json.Json
 import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import javax.inject.Inject
@@ -36,9 +34,8 @@ class CommentFetcher @Inject constructor(
     companion object {
         private const val TAG = "CommentFetcher"
         private const val PAGE_LOAD_TIMEOUT_MILLIS = 15_000L
-        /** After the page loads, comments get up to this long to render. */
+        /** After the page loads, the comments endpoint and rendered comments get up to this long. */
         private const val SETTLE_MAX_MILLIS = 12_000L
-        private const val POLL_INTERVAL_MILLIS = 500L
         private const val MAX_COMMENT_CHARS = 5_000
 
         private const val CSS_FIX_SCRIPT = """
@@ -55,6 +52,11 @@ class CommentFetcher @Inject constructor(
               }
             })()
         """
+
+        const val LINK_NEEDS_LOGIN_MESSAGE =
+            "Log in to Instagram in Settings so the app can read comments, or paste the comment text itself."
+        const val LINK_NO_COMMENT_MESSAGE =
+            "Couldn't find the recipe comment from that link. Open the post in the app browser and select the recipe, or paste the comment text itself."
 
         /** The canonical post URL (preserving comment ID if present) for the first Instagram post link in [sharedText], if any. */
         fun postUrlFrom(sharedText: String): String? {
@@ -74,26 +76,40 @@ class CommentFetcher @Inject constructor(
         }
     }
 
+    suspend fun isInstagramLoggedIn(): Boolean = settingsStore.instagramLoggedInFlow.first()
+
+    /** Why reading comments from a pasted link failed, worded for the user. */
+    suspend fun linkFailureMessage(): String =
+        if (isInstagramLoggedIn()) LINK_NO_COMMENT_MESSAGE else LINK_NEEDS_LOGIN_MESSAGE
+
     /**
      * Loads the Instagram post linked in [sharedText] in an off-screen WebView with the saved login
-     * cookies, waits for page load plus up to 12 s, and reads the first comment.
+     * cookies and reads the recipe comment: the linked comment when [sharedText] is a comment link,
+     * otherwise the author's or another recipe-like comment.
      *
-     * Call it only from a foreground capture, never from a worker or the bulk import. It returns
-     * null on any failure, including a timeout, a changed DOM or a crashed renderer.
+     * [userRequested] skips the "fetch top comment" setting, for when the user asked for this
+     * post's comments directly. Call it only from a foreground capture, never from a worker or the
+     * bulk import. It returns null on any failure, including a timeout, a changed DOM or a crashed
+     * renderer.
      */
-    suspend fun fetchTopComment(sharedText: String, knownCaption: String? = null): String? {
-        if (!settingsStore.instagramLoggedInFlow.first() || !settingsStore.fetchTopCommentFlow.first()) {
+    suspend fun fetchTopComment(
+        sharedText: String,
+        knownCaption: String? = null,
+        userRequested: Boolean = false
+    ): String? {
+        if (!isInstagramLoggedIn() || (!userRequested && !settingsStore.fetchTopCommentFlow.first())) {
             Log.d(TAG, "Instagram login or fetchTopComment disabled")
             return null
         }
         val url = postUrlFrom(sharedText) ?: return null
+        val shortcode = UrlNormalizer.extractInstagramShortcode(url)
         val targetCommentId = commentIdFrom(sharedText)
         Log.d(TAG, "Fetching comment for url=$url, targetCommentId=$targetCommentId")
 
         return try {
             withContext(Dispatchers.Main) {
                 withTimeoutOrNull(PAGE_LOAD_TIMEOUT_MILLIS + SETTLE_MAX_MILLIS) {
-                    fetchViaWebView(url, targetCommentId, knownCaption)
+                    fetchViaWebView(url, shortcode, targetCommentId, knownCaption)
                 }
             }?.take(MAX_COMMENT_CHARS)
         } catch (e: CancellationException) {
@@ -107,8 +123,9 @@ class CommentFetcher @Inject constructor(
     @SuppressLint("SetJavaScriptEnabled")
     private suspend fun fetchViaWebView(
         url: String,
-        targetCommentId: String? = null,
-        knownCaption: String? = null
+        shortcode: String?,
+        targetCommentId: String?,
+        knownCaption: String?
     ): String? = suspendCancellableCoroutine { cont ->
         val webView = WebView(context)
         webView.layout(0, 0, 1080, 1920)
@@ -128,36 +145,18 @@ class CommentFetcher @Inject constructor(
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
 
-        val handler = Handler(Looper.getMainLooper())
         var finished = false
-        var settleDeadline = 0L
+        var reader: InstagramCommentReader? = null
 
         fun finish(result: String?) {
             if (finished) return
             finished = true
-            handler.removeCallbacksAndMessages(null)
+            reader?.cancel()
             try {
                 webView.stopLoading()
                 webView.destroy()
             } catch (_: Exception) {}
             if (cont.isActive) cont.resume(result)
-        }
-
-        fun poll() {
-            if (finished) return
-            val js = InstaSelectors.buildExtractionJs(targetCommentId, knownCaption)
-            webView.evaluateJavascript(js) { raw ->
-                val comment = decodeJsString(raw)
-                if (comment.isNotBlank()) {
-                    Log.d(TAG, "Found comment: ${comment.take(60)}...")
-                    finish(comment)
-                } else if (SystemClock.uptimeMillis() >= settleDeadline) {
-                    Log.d(TAG, "Settle deadline reached without comment")
-                    finish(null)
-                } else {
-                    handler.postDelayed({ poll() }, POLL_INTERVAL_MILLIS)
-                }
-            }
         }
 
         webView.webViewClient = object : WebViewClient() {
@@ -168,9 +167,11 @@ class CommentFetcher @Inject constructor(
 
             override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                 view?.evaluateJavascript(CSS_FIX_SCRIPT, null)
-                if (finished || settleDeadline != 0L) return
-                settleDeadline = SystemClock.uptimeMillis() + SETTLE_MAX_MILLIS
-                poll()
+                if (finished || reader != null) return
+                reader = InstagramCommentReader(webView, shortcode, targetCommentId, knownCaption, SETTLE_MAX_MILLIS) { comment ->
+                    if (comment != null) Log.d(TAG, "Found comment (${comment.length} chars)")
+                    finish(comment)
+                }.also { it.start() }
             }
 
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
@@ -188,19 +189,10 @@ class CommentFetcher @Inject constructor(
         }
 
         cont.invokeOnCancellation {
-            handler.post { finish(null) }
+            Handler(Looper.getMainLooper()).post { finish(null) }
         }
 
         Log.d(TAG, "Loading URL in offscreen WebView: $url")
         webView.loadUrl(url)
-    }
-
-    private fun decodeJsString(raw: String?): String {
-        if (raw.isNullOrBlank() || raw == "null") return ""
-        return try {
-            Json.decodeFromString<String>(raw)
-        } catch (_: Exception) {
-            raw.removeSurrounding("\"")
-        }.trim()
     }
 }

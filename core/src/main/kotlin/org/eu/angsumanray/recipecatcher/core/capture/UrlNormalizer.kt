@@ -112,6 +112,12 @@ object UrlNormalizer {
         } else null
     }
 
+    /** True when [text] is nothing but a link to an Instagram post, reel or comment. */
+    fun isInstagramPostLink(text: String): Boolean {
+        val trimmed = text.trim()
+        return trimmed.none { it.isWhitespace() } && extractInstagramShortcode(trimmed) != null
+    }
+
     /**
      * Canonicalizes an Instagram URL to https://www.instagram.com/p/<code>/
      */

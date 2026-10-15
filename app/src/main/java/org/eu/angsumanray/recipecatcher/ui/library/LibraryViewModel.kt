@@ -6,8 +6,10 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.WorkManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -18,6 +20,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.eu.angsumanray.recipecatcher.capture.CaptureWorker
+import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
+import org.eu.angsumanray.recipecatcher.core.insta.InstagramComments
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.eu.angsumanray.recipecatcher.core.web.WebRecipeFetcher
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
@@ -212,24 +216,28 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    fun retryCapture(recipe: RecipeEntity) {
+    fun retryCapture(stored: RecipeEntity) {
         viewModelScope.launch {
+            val recipe = withoutLinkCaption(stored)
             if (recipe.sourceType == SourceType.WEB.value &&
                 recipe.errorMessage == CaptureWorker.BLOCKED_MESSAGE
             ) {
                 val result = foregroundPageFetcher.retryInWebView(recipe.id)
                 if (result.isSuccess) return@launch
             }
-            if (recipe.sourceType == SourceType.INSTAGRAM.value &&
-                recipe.commentRaw.isNullOrBlank() &&
-                commentFetcher != null
-            ) {
-                val url = recipe.sourceUrl ?: "https://www.instagram.com/p/${recipe.sourceKey}/"
-                try {
-                    commentFetcher.fetchTopComment(url, recipe.captionRaw)?.let {
-                        recipeRepository.updateCommentRaw(recipe.id, it)
-                    }
-                } catch (e: Exception) {
+            if (recipe.sourceType == SourceType.INSTAGRAM.value && commentFetcher != null) {
+                val url = recipe.sourceUrl ?: recipe.sourceKey?.let { UrlNormalizer.canonicalizeInstagramUrl(it) }.orEmpty()
+                val fetched = try {
+                    commentFetcher.fetchTopComment(url, recipe.captionRaw)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+                when {
+                    fetched != null -> recipeRepository.updateCommentRaw(recipe.id, fetched)
+                    recipe.commentRaw != null && !InstagramComments.looksLikeCommentText(recipe.commentRaw) ->
+                        recipeRepository.updateCommentRaw(recipe.id, null)
                 }
             }
             val nextStatus = if (recipe.captionRaw.isNullOrBlank()) {
@@ -247,13 +255,17 @@ class LibraryViewModel @Inject constructor(
             val recipe = recipeRepository.getRecipe(recipeId) ?: return@launch
             val trimmed = text.trim()
 
-            // If the user pasted an Instagram post or comment URL:
-            val isInstaUrl = (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) &&
-                (trimmed.contains("instagram.com", ignoreCase = true) || trimmed.contains("instagr.am", ignoreCase = true))
-
-            if (isInstaUrl && commentFetcher != null) {
+            // A pasted post or comment link is read for its comments; the link itself is never sent to Claude.
+            if (commentFetcher != null && UrlNormalizer.isInstagramPostLink(trimmed)) {
+                val previousStatus = recipe.status
+                recipeRepository.updateRecipeStatus(recipe.id, RecipeEntity.STATUS_PENDING_FETCH, null)
                 val comment = try {
-                    commentFetcher.fetchTopComment(trimmed, recipe.captionRaw)
+                    commentFetcher.fetchTopComment(trimmed, recipe.captionRaw, userRequested = true)
+                } catch (e: CancellationException) {
+                    withContext(NonCancellable) {
+                        recipeRepository.updateRecipeStatus(recipe.id, previousStatus, recipe.errorMessage)
+                    }
+                    throw e
                 } catch (_: Exception) {
                     null
                 }
@@ -261,8 +273,10 @@ class LibraryViewModel @Inject constructor(
                     recipeRepository.updateCommentRaw(recipe.id, comment)
                     recipeRepository.updateRecipeStatus(recipe.id, RecipeEntity.STATUS_PENDING_EXTRACT, null)
                     CaptureWorker.enqueue(context, recipe.id)
-                    return@launch
+                } else {
+                    recipeRepository.updateRecipeStatus(recipe.id, previousStatus, commentFetcher.linkFailureMessage())
                 }
+                return@launch
             }
 
             // Pasted page source goes through the same JSON-LD / readable-text pass as a fetch.
@@ -290,6 +304,14 @@ class LibraryViewModel @Inject constructor(
             WorkManager.getInstance(context).cancelUniqueWork("capture_recipe_$recipeId")
             recipeRepository.deleteRecipe(recipeId)
         }
+    }
+
+    /** An earlier paste could store a bare Instagram link as the caption; clear it so the post is fetched again. */
+    private suspend fun withoutLinkCaption(recipe: RecipeEntity): RecipeEntity {
+        if (recipe.captionRaw == null || !UrlNormalizer.isInstagramPostLink(recipe.captionRaw)) return recipe
+        val cleared = recipe.copy(captionRaw = null, updatedAt = System.currentTimeMillis())
+        recipeRepository.updateRecipe(cleared)
+        return cleared
     }
 
     private companion object {

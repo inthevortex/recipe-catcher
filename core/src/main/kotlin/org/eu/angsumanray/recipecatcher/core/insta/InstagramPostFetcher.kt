@@ -94,13 +94,15 @@ class InstagramPostFetcher(
         private val LEADING_COUNT_REGEX = Regex("""^[-•*]?\s*$QUANTITY\s+\p{L}""")
 
         /** Quick recipe heuristic: whether the caption has fewer than 3 lines that look like ingredient quantities. */
-        fun hasFewerThan3QuantityLines(caption: String?): Boolean {
-            if (caption.isNullOrBlank()) return true
-            val count = caption.lines().count { line ->
+        fun hasFewerThan3QuantityLines(caption: String?): Boolean = quantityLineCount(caption) < 3
+
+        /** Number of lines in [text] that look like ingredient quantities. */
+        fun quantityLineCount(text: String?): Int {
+            if (text.isNullOrBlank()) return 0
+            return text.lines().count { line ->
                 val trimmed = line.trim()
                 UNIT_QUANTITY_REGEX.containsMatchIn(trimmed) || LEADING_COUNT_REGEX.containsMatchIn(trimmed)
             }
-            return count < 3
         }
     }
 }

@@ -1,10 +1,16 @@
 package org.eu.angsumanray.recipecatcher.capture
 
+import org.eu.angsumanray.recipecatcher.core.insta.InstagramComments
+
 /**
- * DOM selectors and extraction logic for Instagram comments. [buildExtractionJs] is generated from
- * these lists, so they are the only place to change when Instagram's markup moves.
+ * Scripts and DOM selectors for reading Instagram comments inside a WebView that has the saved
+ * login cookies.
  *
- * To refresh them:
+ * Comments are read first through Instagram's own comments endpoint ([buildCommentsApiJs]), which
+ * returns structured JSON. The rendered DOM ([buildExtractionJs]) is the fallback, generated from
+ * the selector lists below, so they are the only place to change when Instagram's markup moves.
+ *
+ * To refresh the selectors:
  * 1. Log in with the app's WebView user agent (a mobile Chrome UA) and open a post that has comments.
  * 2. In remote DevTools (chrome://inspect), find the first comment below the caption.
  * 3. Put a selector matching each comment row in [COMMENT_CONTAINER_SELECTORS] and one matching
@@ -34,8 +40,18 @@ object InstaSelectors {
         "h1"
     )
 
-    /** Shorter texts are usually emoji reactions or usernames. */
-    const val MIN_COMMENT_LENGTH = 15
+    /** Buttons that open the comment list: text links on posts, the speech-bubble icon on reels. */
+    val COMMENT_OPENER_SELECTORS = listOf(
+        "svg[aria-label='Comment']",
+        "svg[aria-label='Comments']"
+    )
+
+    /** Mobile web App ID, used when the page doesn't expose its own. */
+    private const val FALLBACK_IG_APP_ID = "1217981644879628"
+
+    /** Comment pages read when looking for a specific comment; one page is read otherwise. */
+    private const val MAX_TARGET_PAGES = 5
+    private const val MAX_UNTARGETED_PAGES = 2
 
     val RECIPE_CUES = listOf(
         "recipe in comment",
@@ -56,97 +72,189 @@ object InstaSelectors {
     }
 
     /**
-     * JavaScript run inside the post's WebView. Returns the text of the first comment row that
-     * isn't the caption, or null when the comments haven't rendered (or the markup changed).
+     * Instagram's stylesheet turns off text selection everywhere; this re-enables it so the user can
+     * long-press and select a comment in the in-app viewer.
+     */
+    const val SELECTABLE_TEXT_CSS =
+        "* { -webkit-user-select: text !important; user-select: text !important; }"
+
+    /** Reads the state [buildCommentsApiJs] left behind, as a JSON string, or null before it starts. */
+    const val READ_COMMENTS_API_JS =
+        "(function() { return window.__rcApi ? JSON.stringify(window.__rcApi) : null; })();"
+
+    /**
+     * Starts fetching the comments of [mediaId] from the page's own origin, with the session cookies.
+     * The outcome lands in `window.__rcApi` as `{state: 'pending'|'done'|'error', body?, error?}`,
+     * where `body` is the endpoint's JSON with every fetched page's comments merged.
+     */
+    fun buildCommentsApiJs(mediaId: String, targetCommentId: String? = null): String {
+        val targetJs = jsString(targetCommentId)
+        val maxPages = if (targetCommentId.isNullOrBlank()) MAX_UNTARGETED_PAGES else MAX_TARGET_PAGES
+        return """
+            (function() {
+                if (window.__rcApi) return;
+                window.__rcApi = { state: 'pending' };
+                var mediaId = '$mediaId';
+                var target = $targetJs;
+
+                function cookie(name) {
+                    var m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+                    return m ? decodeURIComponent(m[1]) : '';
+                }
+
+                function appId() {
+                    var html = document.documentElement.innerHTML;
+                    var m = html.match(/"X-IG-App-ID":"(\d+)"/) || html.match(/"appId":"(\d+)"/);
+                    return m ? m[1] : '$FALLBACK_IG_APP_ID';
+                }
+
+                async function run() {
+                    var headers = {
+                        'Accept': 'application/json',
+                        'X-IG-App-ID': appId(),
+                        'X-CSRFToken': cookie('csrftoken'),
+                        'X-Requested-With': 'XMLHttpRequest'
+                    };
+                    var merged = null;
+                    var minId = null;
+                    for (var page = 0; page < $maxPages; page++) {
+                        var url = '/api/v1/media/' + mediaId + '/comments/?can_support_threading=true&permalink_enabled=false' +
+                                  (minId ? '&min_id=' + encodeURIComponent(minId) : '');
+                        var res = await fetch(url, { credentials: 'include', headers: headers });
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
+                        var body = await res.json();
+                        var comments = body.comments || [];
+                        if (!merged) {
+                            merged = body;
+                            merged.comments = comments.slice();
+                        } else {
+                            merged.comments = merged.comments.concat(comments);
+                        }
+                        if (target && comments.some(function(c) { return String(c.pk) === target; })) break;
+                        if (!body.has_more_comments || !body.next_min_id) break;
+                        minId = body.next_min_id;
+                    }
+                    window.__rcApi = { state: 'done', body: JSON.stringify(merged) };
+                }
+
+                run().catch(function(e) {
+                    window.__rcApi = { state: 'error', error: String(e) };
+                });
+            })();
+        """.trimIndent()
+    }
+
+    /**
+     * Reads rendered comment rows. Opens the comment list once (the drawer on reels), then returns
+     * a JSON string `{target, pinned, texts}`: the targeted comment's text, a pinned comment's
+     * text, and every other comment-like text in page order. Usernames, which sit in links next to
+     * the comment, are never returned.
      */
     fun buildExtractionJs(targetCommentId: String? = null, knownCaption: String? = null): String {
-        fun jsArray(items: List<String>) = items.joinToString(prefix = "[", postfix = "]") { "'" + it.replace("'", "\\'") + "'" }
-        val targetIdJs = if (!targetCommentId.isNullOrBlank()) "'$targetCommentId'" else "null"
-        val knownCapJs = if (!knownCaption.isNullOrBlank()) {
-            "'" + knownCaption.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ").replace("\r", "") + "'"
-        } else {
-            "null"
-        }
+        fun jsArray(items: List<String>) = items.joinToString(prefix = "[", postfix = "]") { jsString(it) }
+        val knownCapJs = jsString(knownCaption?.replace("\n", " ")?.replace("\r", ""))
 
         return """
             (function() {
+                var result = { target: null, pinned: null, texts: [] };
                 try {
-                    var targetCommentId = $targetIdJs;
+                    var targetCommentId = ${jsString(targetCommentId)};
                     var knownCaption = $knownCapJs;
+                    var textSelector = ${jsString(COMMENT_TEXT_SELECTORS.joinToString(", "))};
 
-                    // Try expanding collapsed comments on mobile web layout
-                    var clickable = document.querySelectorAll('button, div[role="button"], a, span');
-                    for (var b = 0; b < clickable.length; b++) {
-                        var txt = (clickable[b].innerText || clickable[b].textContent || '').toLowerCase().trim();
-                        if ((txt.indexOf('view all') >= 0 || txt.indexOf('view') >= 0) && txt.indexOf('comment') >= 0) {
-                            clickable[b].click();
-                            break;
+                    if (!window.__rcOpened) {
+                        window.__rcOpened = true;
+                        var opened = false;
+                        var openers = ${jsArray(COMMENT_OPENER_SELECTORS)};
+                        for (var o = 0; o < openers.length && !opened; o++) {
+                            var icon = document.querySelector(openers[o]);
+                            var button = icon && (icon.closest('button, [role="button"], a') || icon.parentElement);
+                            if (button) { button.click(); opened = true; }
+                        }
+                        if (!opened) {
+                            var clickable = document.querySelectorAll('button, div[role="button"], a, span');
+                            for (var b = 0; b < clickable.length; b++) {
+                                var txt = (clickable[b].innerText || clickable[b].textContent || '').toLowerCase().trim();
+                                if (txt.length < 40 && txt.indexOf('view') >= 0 && txt.indexOf('comment') >= 0) {
+                                    clickable[b].click();
+                                    break;
+                                }
+                            }
                         }
                     }
 
+                    function normalise(t) { return (t || '').replace(/\s+/g, ' ').trim(); }
+
+                    var captions = [];
+                    if (knownCaption) captions.push(normalise(knownCaption));
+                    var caps = document.querySelectorAll(${jsString(CAPTION_SELECTORS.joinToString(", "))});
+                    for (var c = 0; c < caps.length; c++) {
+                        var capText = normalise(caps[c].innerText || caps[c].textContent);
+                        if (capText) captions.push(capText);
+                    }
+
                     function isCaption(t) {
-                        if (!t) return true;
-                        if (knownCaption && (t === knownCaption || knownCaption.indexOf(t) >= 0 || t.indexOf(knownCaption) >= 0)) return true;
-                        var h1 = document.querySelector('h1');
-                        if (h1) {
-                            var h1Text = (h1.innerText || h1.textContent || '').trim();
-                            if (h1Text && (t === h1Text || h1Text.indexOf(t) >= 0 || t.indexOf(h1Text) >= 0)) return true;
+                        var n = normalise(t);
+                        for (var i = 0; i < captions.length; i++) {
+                            if (n === captions[i] || captions[i].indexOf(n) >= 0 || n.indexOf(captions[i]) >= 0) return true;
                         }
                         return false;
                     }
 
-                    // 1. If a specific comment ID was targeted, search for elements referencing it
+                    function looksLikeComment(t) {
+                        return t.length >= ${InstagramComments.MIN_COMMENT_LENGTH} && /\s/.test(t) && !isCaption(t);
+                    }
+
+                    // Longest comment-like text in a row, skipping the author's username link.
+                    function rowText(row) {
+                        var best = '';
+                        var els = row.querySelectorAll(textSelector);
+                        for (var i = 0; i < els.length; i++) {
+                            if (els[i].closest('a, h2, h3')) continue;
+                            var t = (els[i].innerText || els[i].textContent || '').trim();
+                            if (looksLikeComment(t) && t.length > best.length) best = t;
+                        }
+                        return best;
+                    }
+
                     if (targetCommentId) {
                         var targetEl = document.querySelector('[data-comment-id="' + targetCommentId + '"]') ||
                                        document.querySelector('a[href*="' + targetCommentId + '"]');
                         if (targetEl) {
-                            var row = targetEl.closest('li') || targetEl.closest('div.x1lliihq') || targetEl.closest('div[role="presentation"]') || targetEl;
-                            var textEl = row.querySelector('span[dir="auto"], span._a9zs, span._aacl, span.x193iq5w') || row;
-                            var targetText = (textEl.innerText || textEl.textContent || '').trim();
-                            if (targetText.length >= 10 && !isCaption(targetText)) return targetText;
+                            var row = targetEl.closest('li') || targetEl.closest('div.x1lliihq') || targetEl.closest('div[role="presentation"]');
+                            if (row) result.target = rowText(row) || null;
                         }
                     }
 
-                    // 2. Look for pinned comments
-                    var svgs = document.querySelectorAll('svg[aria-label*="Pin"], svg[aria-label*="pin"], [aria-label*="Pinned"], [aria-label*="pinned"]');
-                    for (var p = 0; p < svgs.length; p++) {
-                        var pinRow = svgs[p].closest('li') || svgs[p].closest('div.x1lliihq');
-                        if (pinRow) {
-                            var pinTextEl = pinRow.querySelector('span[dir="auto"], span._a9zs, span._aacl, span.x193iq5w');
-                            if (pinTextEl) {
-                                var pt = (pinTextEl.innerText || pinTextEl.textContent || '').trim();
-                                if (pt.length >= $MIN_COMMENT_LENGTH && !isCaption(pt)) return pt;
-                            }
-                        }
+                    var pins = document.querySelectorAll('svg[aria-label*="Pin"], svg[aria-label*="pin"], [aria-label*="Pinned"], [aria-label*="pinned"]');
+                    for (var p = 0; p < pins.length && !result.pinned; p++) {
+                        var pinRow = pins[p].closest('li') || pins[p].closest('div.x1lliihq');
+                        if (pinRow) result.pinned = rowText(pinRow) || null;
                     }
 
-                    // 3. Search structured comment rows
                     var containers = ${jsArray(COMMENT_CONTAINER_SELECTORS)};
-                    var texts = ${jsArray(COMMENT_TEXT_SELECTORS)};
-                    for (var i = 0; i < containers.length; i++) {
-                        var rows = document.querySelectorAll(containers[i]);
+                    for (var k = 0; k < containers.length; k++) {
+                        var rows = document.querySelectorAll(containers[k]);
                         for (var r = 0; r < rows.length; r++) {
-                            for (var j = 0; j < texts.length; j++) {
-                                var el = rows[r].querySelector(texts[j]);
-                                if (!el) continue;
-                                var text = (el.innerText || el.textContent || '').trim();
-                                if (text.length >= $MIN_COMMENT_LENGTH && !isCaption(text)) return text;
-                            }
-                        }
-                    }
-
-                    // 4. Fallback: all list items in article or dialog
-                    var allLis = document.querySelectorAll('article ul li, div[role="dialog"] ul li, ul li');
-                    for (var k = 0; k < allLis.length; k++) {
-                        var span = allLis[k].querySelector('span[dir="auto"], span._a9zs, span._aacl');
-                        if (span) {
-                            var st = (span.innerText || span.textContent || '').trim();
-                            if (st.length >= $MIN_COMMENT_LENGTH && !isCaption(st)) return st;
+                            var text = rowText(rows[r]);
+                            if (text && result.texts.indexOf(text) < 0) result.texts.push(text);
                         }
                     }
                 } catch (e) {}
-                return null;
+                return JSON.stringify(result);
             })();
         """.trimIndent()
+    }
+
+    private fun jsString(value: String?): String {
+        if (value == null) return "null"
+        val escaped = value
+            .replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\n", "\\n")
+            .replace("\r", "")
+            .replace(" ", "\\u2028")
+            .replace(" ", "\\u2029")
+        return "'$escaped'"
     }
 }

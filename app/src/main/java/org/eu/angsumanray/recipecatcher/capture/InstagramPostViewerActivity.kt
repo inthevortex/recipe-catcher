@@ -15,7 +15,6 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -46,7 +45,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
+import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.ui.theme.RecipeCatcherTheme
@@ -73,7 +72,9 @@ class InstagramPostViewerActivity : ComponentActivity() {
     private var recipeId: Long = 0
     private var postUrl: String = ""
     private var webView: WebView? = null
-    private var isExtracting = false
+    private var knownCaption: String? = null
+    private var reader: InstagramCommentReader? = null
+    private var isExtracting by mutableStateOf(false)
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,6 +88,9 @@ class InstagramPostViewerActivity : ComponentActivity() {
             Toast.makeText(this, "No URL provided", Toast.LENGTH_SHORT).show()
             finish()
             return
+        }
+        if (recipeId > 0) {
+            lifecycleScope.launch { knownCaption = recipeRepository.getRecipe(recipeId)?.captionRaw }
         }
 
         setContent {
@@ -123,12 +127,18 @@ class InstagramPostViewerActivity : ComponentActivity() {
                             shadowElevation = 8.dp,
                             color = MaterialTheme.colorScheme.surface
                         ) {
-                            Box(
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(16.dp),
-                                contentAlignment = Alignment.Center
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
+                                Text(
+                                    text = "Long-press to select the recipe text, or open the comments and let the app find it.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
                                 Button(
                                     onClick = { extractCommentsAndProceed() },
                                     enabled = !isExtracting,
@@ -155,49 +165,42 @@ class InstagramPostViewerActivity : ComponentActivity() {
 
     private fun extractCommentsAndProceed() {
         val wv = webView ?: return
+        if (isExtracting) return
         isExtracting = true
 
-        // First check if user highlighted / selected text in the WebView
-        val jsGetSelection = "(function() { return window.getSelection().toString(); })();"
-        wv.evaluateJavascript(jsGetSelection) { selectionRaw ->
-            val selection = decodeJsString(selectionRaw)
-            if (selection.length >= 20) {
+        wv.evaluateJavascript(READ_SELECTION_JS) { selectionRaw ->
+            val selection = InstagramCommentReader.decodeJsString(selectionRaw)
+            if (selection.length >= MIN_SELECTION_LENGTH) {
                 applyExtractedComment(selection)
                 return@evaluateJavascript
             }
 
-            // Otherwise, try extracting using InstaSelectors
-            val jsExtraction = InstaSelectors.buildExtractionJs()
-            wv.evaluateJavascript(jsExtraction) { extractionRaw ->
-                val comment = decodeJsString(extractionRaw)
-                if (comment.isNotBlank()) {
+            reader = InstagramCommentReader(
+                webView = wv,
+                shortcode = UrlNormalizer.extractInstagramShortcode(postUrl),
+                targetCommentId = UrlNormalizer.extractInstagramCommentId(postUrl),
+                knownCaption = knownCaption,
+                timeoutMillis = READ_TIMEOUT_MILLIS
+            ) { comment ->
+                reader = null
+                if (!comment.isNullOrBlank()) {
                     applyExtractedComment(comment)
-                    return@evaluateJavascript
+                } else {
+                    readVisibleText(wv)
                 }
+            }.also { it.start() }
+        }
+    }
 
-                // Fallback: extract all visible comment list text from page
-                val jsFallback = """
-                    (function() {
-                        var texts = [];
-                        var spans = document.querySelectorAll('span[dir="auto"], span._a9zs, span._aacl, article ul li');
-                        for (var i = 0; i < spans.length; i++) {
-                            var t = (spans[i].innerText || spans[i].textContent || '').trim();
-                            if (t.length > 20 && texts.indexOf(t) === -1) {
-                                texts.push(t);
-                            }
-                        }
-                        return texts.join('\n\n');
-                    })();
-                """.trimIndent()
-                wv.evaluateJavascript(jsFallback) { fallbackRaw ->
-                    val fallbackText = decodeJsString(fallbackRaw)
-                    if (fallbackText.isNotBlank()) {
-                        applyExtractedComment(fallbackText)
-                    } else {
-                        isExtracting = false
-                        Toast.makeText(this, "Could not find comments. Scroll down to comments or select text and try again.", Toast.LENGTH_LONG).show()
-                    }
-                }
+    /** Last resort: every visible comment-like text on the page, for Claude to sort through. */
+    private fun readVisibleText(wv: WebView) {
+        wv.evaluateJavascript(READ_VISIBLE_TEXT_JS) { fallbackRaw ->
+            val fallbackText = InstagramCommentReader.decodeJsString(fallbackRaw)
+            if (fallbackText.isNotBlank()) {
+                applyExtractedComment(fallbackText)
+            } else {
+                isExtracting = false
+                Toast.makeText(this, "Could not find the recipe. Open the comments, or long-press to select the recipe text, and try again.", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -214,15 +217,31 @@ class InstagramPostViewerActivity : ComponentActivity() {
         }
     }
 
-    private fun decodeJsString(raw: String?): String {
-        if (raw.isNullOrBlank() || raw == "null") return ""
-        return try {
-            Json.decodeFromString<String>(raw)
-        } catch (_: Exception) {
-            raw.removeSurrounding("\"")
-        }.trim()
+    override fun onDestroy() {
+        reader?.cancel()
+        super.onDestroy()
     }
 }
+
+private const val MIN_SELECTION_LENGTH = 20
+private const val READ_TIMEOUT_MILLIS = 10_000L
+
+private const val READ_SELECTION_JS = "(function() { return window.getSelection().toString(); })();"
+
+private const val READ_VISIBLE_TEXT_JS = """
+    (function() {
+        var texts = [];
+        var spans = document.querySelectorAll('span[dir="auto"], span._a9zs, span._aacl, article ul li');
+        for (var i = 0; i < spans.length; i++) {
+            if (spans[i].closest('a, h2, h3')) continue;
+            var t = (spans[i].innerText || spans[i].textContent || '').trim();
+            if (t.length > 20 && /\s/.test(t) && texts.indexOf(t) === -1) {
+                texts.push(t);
+            }
+        }
+        return texts.join('\n\n');
+    })();
+"""
 
 private const val CSS_FIX_SCRIPT = """
     (function() {
@@ -230,7 +249,7 @@ private const val CSS_FIX_SCRIPT = """
       if (!style) {
         style = document.createElement('style');
         style.id = 'rc-wv-fix';
-        style.textContent = 'html, body, #mount_0_0_0, div[id^="mount_"] { min-height: 100vh !important; height: auto !important; display: flex !important; flex-direction: column !important; }';
+        style.textContent = 'html, body, #mount_0_0_0, div[id^="mount_"] { min-height: 100vh !important; height: auto !important; display: flex !important; flex-direction: column !important; } ${InstaSelectors.SELECTABLE_TEXT_CSS}';
         var target = document.head || document.documentElement;
         if (target) {
           target.appendChild(style);

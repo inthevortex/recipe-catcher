@@ -1,7 +1,9 @@
 package org.eu.angsumanray.recipecatcher.core.capture
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UrlNormalizerTest {
@@ -47,6 +49,14 @@ class UrlNormalizerTest {
     fun canonicalizeInstagramUrl_returnsStandardUrl() {
         assertEquals("https://www.instagram.com/p/C123abc/", UrlNormalizer.canonicalizeInstagramUrl("C123abc"))
         assertEquals("https://www.instagram.com/p/C123abc/c/18012345678901234/", UrlNormalizer.canonicalizeInstagramUrl("C123abc", "18012345678901234"))
+    }
+
+    @Test
+    fun isInstagramPostLink_acceptsOnlyBareInstagramLinks() {
+        assertTrue(UrlNormalizer.isInstagramPostLink(" https://www.instagram.com/reel/DcnveOzi-eO/?exln=cHZjcjcwYngzcWQ5 "))
+        assertTrue(UrlNormalizer.isInstagramPostLink("https://www.instagram.com/p/Deb32BxCglN/c/18035225489906097/"))
+        assertFalse(UrlNormalizer.isInstagramPostLink("Recipe: https://www.instagram.com/p/Deb32BxCglN/"))
+        assertFalse(UrlNormalizer.isInstagramPostLink("https://example.com/p/Deb32BxCglN/"))
     }
 
     @Test

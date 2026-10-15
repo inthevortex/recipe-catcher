@@ -18,6 +18,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import org.eu.angsumanray.recipecatcher.core.insta.InstagramComments
 import org.eu.angsumanray.recipecatcher.core.insta.InstagramPostFetcher
 import org.eu.angsumanray.recipecatcher.core.llm.ApiKeyInvalidException
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractedRecipe
@@ -308,7 +309,7 @@ class CaptureWorker @AssistedInject constructor(
                 captionRaw
             },
             sourceImages = sourceImages,
-            topComment = currentRecipe.commentRaw,
+            topComment = currentRecipe.commentRaw?.takeIf { InstagramComments.looksLikeCommentText(it) },
             author = currentRecipe.authorHandle,
             allowedTags = tagsByKind[TagEntity.KIND_TAG].orEmpty().map { it.name },
             allowedDiet = tagsByKind[TagEntity.KIND_DIET].orEmpty().map { it.name },
