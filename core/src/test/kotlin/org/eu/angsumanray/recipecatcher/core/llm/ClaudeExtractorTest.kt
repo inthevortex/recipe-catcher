@@ -225,7 +225,7 @@ class ClaudeExtractorTest {
 
         val root = Json.parseToJsonElement(capturedBody).jsonObject
         assertEquals("claude-haiku-5-5", root["model"]!!.jsonPrimitive.content)
-        assertEquals(2000, root["max_tokens"]!!.jsonPrimitive.content.toInt())
+        assertEquals(8192, root["max_tokens"]!!.jsonPrimitive.content.toInt())
         listOf("temperature", "top_p", "top_k", "effort", "thinking").forEach { assertFalse(it, root.containsKey(it)) }
 
         val outputConfig = root["output_config"]!!.jsonObject

@@ -29,7 +29,7 @@ class ClaudeExtractor(
         const val DEFAULT_MODEL_ID = "claude-haiku-5-5"
         const val ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
         const val ANTHROPIC_VERSION = "2023-06-01"
-        const val MAX_TOKENS = 2000
+        const val MAX_TOKENS = 8192
         const val EFFORT = "low"
 
         const val UNKNOWN = "unknown"
