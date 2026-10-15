@@ -11,9 +11,15 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import org.eu.angsumanray.recipecatcher.capture.CommentFetcher
+import org.eu.angsumanray.recipecatcher.capture.CoverImageFetcher
+import org.eu.angsumanray.recipecatcher.core.insta.InstagramPostFetcher
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractionInput
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractedRecipe
 import org.eu.angsumanray.recipecatcher.core.llm.RecipeExtractor
+import org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher
+import org.eu.angsumanray.recipecatcher.core.ports.HttpResponseData
+import org.eu.angsumanray.recipecatcher.core.web.WebRecipeFetcher
 import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
@@ -50,6 +56,7 @@ class RecipeViewerViewModelTest {
     private lateinit var tagRepository: TagRepository
     private lateinit var imageStorageManager: ImageStorageManager
     private lateinit var settingsStore: SettingsStore
+    private lateinit var coverImageFetcher: CoverImageFetcher
     private var recipeId: Long = 0L
 
     class FakeRecipeExtractor : RecipeExtractor {
@@ -80,6 +87,16 @@ class RecipeViewerViewModelTest {
         )
         tagRepository = TagRepository(database)
         settingsStore = SettingsStore(context, SecretStore(context))
+        val offlineFetcher = object : HttpFetcher {
+            override suspend fun get(url: String, headers: Map<String, String>) = HttpResponseData(503, "")
+        }
+        coverImageFetcher = CoverImageFetcher(
+            recipeRepository = repository,
+            imageStorageManager = imageStorageManager,
+            instagramPostFetcher = InstagramPostFetcher(emptyList()),
+            webRecipeFetcher = WebRecipeFetcher(offlineFetcher),
+            commentFetcher = CommentFetcher(context, settingsStore)
+        )
 
         val recipe = RecipeEntity(
             sourceType = "manual",
@@ -127,6 +144,7 @@ class RecipeViewerViewModelTest {
             recipeExtractor = FakeRecipeExtractor(),
             imageStorageManager = imageStorageManager,
             settingsStore = settingsStore,
+            coverImageFetcher = coverImageFetcher,
             savedStateHandle = savedStateHandle
         )
     }
@@ -267,5 +285,19 @@ class RecipeViewerViewModelTest {
         val updatedInventory = listsRepository.getAllInventoryItems().first { it.baseName == "onion" }
         assertEquals("out", updatedInventory.status)
         assertEquals(1, viewModel.uiState.value.timesCooked)
+    }
+
+    @Test
+    fun `fetch image is offered only for linked recipes without an image`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        assertFalse(viewModel.uiState.value.canFetchImage)
+
+        val instagram = RecipeEntity(sourceType = "instagram", sourceKey = "ABC123", sourceUrl = "https://www.instagram.com/p/ABC123/")
+        assertTrue(coverImageFetcher.canFetch(instagram))
+        assertTrue(coverImageFetcher.canFetch(instagram.copy(imagePath = "images/missing.jpg")))
+
+        val saved = imageStorageManager.saveImageBytes(42L, byteArrayOf(1, 2, 3))
+        assertFalse(coverImageFetcher.canFetch(instagram.copy(imagePath = saved)))
     }
 }

@@ -122,6 +122,13 @@ fun RecipeViewerScreen(
         }
     }
 
+    LaunchedEffect(state.imageFetchMessage) {
+        state.imageFetchMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearImageFetchMessage()
+        }
+    }
+
     val recipe = state.recipe
 
     Scaffold(
@@ -191,6 +198,16 @@ fun RecipeViewerScreen(
                                             } catch (e: ActivityNotFoundException) {
                                                 scope.launch { snackbarHostState.showSnackbar("No app can open this link") }
                                             }
+                                        }
+                                    )
+                                }
+                                if (state.canFetchImage) {
+                                    DropdownMenuItem(
+                                        text = { Text(if (state.isFetchingImage) "Fetching image..." else "Fetch image") },
+                                        enabled = !state.isFetchingImage,
+                                        onClick = {
+                                            showMenu = false
+                                            viewModel.fetchImage()
                                         }
                                     )
                                 }

@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import org.eu.angsumanray.recipecatcher.capture.CoverImageFetcher
 import org.eu.angsumanray.recipecatcher.core.domain.PlainTextRecipeFormatter
 import org.eu.angsumanray.recipecatcher.core.domain.QuantityScaler
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractionInput
@@ -59,7 +60,10 @@ data class RecipeViewerUiState(
     val currentServings: Int = 4,
     val checkedIngredientIds: Set<Long> = emptySet(),
     val isReExtracting: Boolean = false,
-    val reExtractError: String? = null
+    val reExtractError: String? = null,
+    val canFetchImage: Boolean = false,
+    val isFetchingImage: Boolean = false,
+    val imageFetchMessage: String? = null
 )
 
 @HiltViewModel
@@ -71,6 +75,7 @@ class RecipeViewerViewModel @Inject constructor(
     private val recipeExtractor: RecipeExtractor,
     private val imageStorageManager: ImageStorageManager,
     private val settingsStore: SettingsStore,
+    private val coverImageFetcher: CoverImageFetcher,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -99,6 +104,7 @@ class RecipeViewerViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 recipe = recipe,
+                canFetchImage = recipe != null && coverImageFetcher.canFetch(recipe),
                 baseServings = baseServings,
                 currentServings = current,
                 rawIngredients = rawIngs,
@@ -119,6 +125,7 @@ class RecipeViewerViewModel @Inject constructor(
                     val curr = _uiState.value.currentServings
                     _uiState.value = _uiState.value.copy(
                         recipe = updatedRecipe,
+                        canFetchImage = coverImageFetcher.canFetch(updatedRecipe),
                         baseServings = base,
                         scaledIngredients = scaleIngredients(_uiState.value.rawIngredients, base, curr)
                     )
@@ -198,6 +205,24 @@ class RecipeViewerViewModel @Inject constructor(
 
     fun clearIngredientChecks() {
         _uiState.value = _uiState.value.copy(checkedIngredientIds = emptySet())
+    }
+
+    /** Downloads the source's picture again for a recipe saved without one. */
+    fun fetchImage() {
+        val recipe = _uiState.value.recipe ?: return
+        if (_uiState.value.isFetchingImage) return
+        _uiState.value = _uiState.value.copy(isFetchingImage = true, imageFetchMessage = null)
+        viewModelScope.launch {
+            val saved = coverImageFetcher.fetch(recipe)
+            _uiState.value = _uiState.value.copy(
+                isFetchingImage = false,
+                imageFetchMessage = if (saved) "Image added" else "Couldn't fetch an image for this recipe"
+            )
+        }
+    }
+
+    fun clearImageFetchMessage() {
+        _uiState.value = _uiState.value.copy(imageFetchMessage = null)
     }
 
     fun toggleFavourite() {

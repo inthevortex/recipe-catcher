@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
@@ -19,7 +20,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
+import org.eu.angsumanray.recipecatcher.core.insta.InstagramComments
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -36,6 +42,9 @@ class CommentFetcher @Inject constructor(
         private const val PAGE_LOAD_TIMEOUT_MILLIS = 15_000L
         /** After the page loads, the comments endpoint and rendered comments get up to this long. */
         private const val SETTLE_MAX_MILLIS = 25_000L
+        /** After the page loads, the media info lookup gets up to this long. */
+        private const val MEDIA_INFO_MAX_MILLIS = 10_000L
+        private const val POLL_INTERVAL_MILLIS = 500L
         private const val MAX_COMMENT_CHARS = 5_000
 
         private const val CSS_FIX_SCRIPT = """
@@ -109,7 +118,14 @@ class CommentFetcher @Inject constructor(
         return try {
             withContext(Dispatchers.Main) {
                 withTimeoutOrNull(PAGE_LOAD_TIMEOUT_MILLIS + SETTLE_MAX_MILLIS) {
-                    fetchViaWebView(url, shortcode, targetCommentId, knownCaption)
+                    readLoadedPage(url) { webView, done ->
+                        val reader = InstagramCommentReader(webView, shortcode, targetCommentId, knownCaption, SETTLE_MAX_MILLIS) { comment ->
+                            if (comment != null) Log.d(TAG, "Found comment (${comment.length} chars)")
+                            done(comment)
+                        }
+                        reader.start()
+                        reader::cancel
+                    }
                 }
             }?.take(MAX_COMMENT_CHARS)
         } catch (e: CancellationException) {
@@ -120,12 +136,65 @@ class CommentFetcher @Inject constructor(
         }
     }
 
+    /**
+     * The URL of the cover image of the Instagram post at [postUrl], read through the logged-in
+     * session, or null when not logged in or on any failure.
+     */
+    suspend fun fetchCoverImageUrl(postUrl: String): String? {
+        if (!isInstagramLoggedIn()) return null
+        val shortcode = UrlNormalizer.extractInstagramShortcode(postUrl) ?: return null
+        val mediaId = InstagramComments.mediaIdFromShortcode(shortcode) ?: return null
+        val url = UrlNormalizer.canonicalizeInstagramUrl(shortcode)
+        return try {
+            withContext(Dispatchers.Main) {
+                withTimeoutOrNull(PAGE_LOAD_TIMEOUT_MILLIS + MEDIA_INFO_MAX_MILLIS) {
+                    readLoadedPage(url) { webView, done -> readMediaInfo(webView, mediaId, done) }
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to fetch cover image for $url", e)
+            null
+        }
+    }
+
+    /** Polls the media info lookup started on [webView]; returns a function that stops polling. */
+    private fun readMediaInfo(webView: WebView, mediaId: String, done: (String?) -> Unit): () -> Unit {
+        val handler = Handler(Looper.getMainLooper())
+        val deadline = SystemClock.uptimeMillis() + MEDIA_INFO_MAX_MILLIS
+        webView.evaluateJavascript(InstaSelectors.buildMediaInfoJs(mediaId), null)
+        fun poll() {
+            webView.evaluateJavascript(InstaSelectors.READ_MEDIA_INFO_JS) { raw ->
+                val state = try {
+                    Json.parseToJsonElement(InstagramCommentReader.decodeJsString(raw)) as? JsonObject
+                } catch (_: Exception) {
+                    null
+                }
+                val finished = (state?.get("state") as? JsonPrimitive)?.contentOrNull == "done"
+                when {
+                    finished -> {
+                        (state?.get("error") as? JsonPrimitive)?.contentOrNull?.let { Log.d(TAG, "Media info failed: $it; using og:image") }
+                        done((state?.get("url") as? JsonPrimitive)?.contentOrNull?.takeIf { it.startsWith("http") })
+                    }
+                    SystemClock.uptimeMillis() >= deadline -> done(null)
+                    else -> handler.postDelayed({ poll() }, POLL_INTERVAL_MILLIS)
+                }
+            }
+        }
+        poll()
+        return { handler.removeCallbacksAndMessages(null) }
+    }
+
+    /**
+     * Loads [url] in an off-screen WebView with the saved login cookies, then hands it to
+     * [startReading] once the page has loaded. [startReading] calls its callback once with the
+     * result and returns a function that stops its work early.
+     */
     @SuppressLint("SetJavaScriptEnabled")
-    private suspend fun fetchViaWebView(
+    private suspend fun readLoadedPage(
         url: String,
-        shortcode: String?,
-        targetCommentId: String?,
-        knownCaption: String?
+        startReading: (WebView, (String?) -> Unit) -> () -> Unit
     ): String? = suspendCancellableCoroutine { cont ->
         val webView = WebView(context)
         webView.layout(0, 0, 1080, 1920)
@@ -146,12 +215,12 @@ class CommentFetcher @Inject constructor(
         cookieManager.setAcceptThirdPartyCookies(webView, true)
 
         var finished = false
-        var reader: InstagramCommentReader? = null
+        var stopReading: (() -> Unit)? = null
 
         fun finish(result: String?) {
             if (finished) return
             finished = true
-            reader?.cancel()
+            stopReading?.invoke()
             try {
                 webView.stopLoading()
                 webView.destroy()
@@ -167,11 +236,8 @@ class CommentFetcher @Inject constructor(
 
             override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                 view?.evaluateJavascript(CSS_FIX_SCRIPT, null)
-                if (finished || reader != null) return
-                reader = InstagramCommentReader(webView, shortcode, targetCommentId, knownCaption, SETTLE_MAX_MILLIS) { comment ->
-                    if (comment != null) Log.d(TAG, "Found comment (${comment.length} chars)")
-                    finish(comment)
-                }.also { it.start() }
+                if (finished || stopReading != null) return
+                stopReading = startReading(webView) { result -> finish(result) }
             }
 
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
@@ -182,7 +248,7 @@ class CommentFetcher @Inject constructor(
             }
 
             override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
-                Log.w(TAG, "WebView renderer gone while reading comments")
+                Log.w(TAG, "WebView renderer gone while reading the page")
                 finish(null)
                 return true
             }

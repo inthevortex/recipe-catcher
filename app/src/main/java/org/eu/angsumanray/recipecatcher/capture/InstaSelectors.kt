@@ -80,6 +80,58 @@ object InstaSelectors {
     const val SELECTABLE_TEXT_CSS =
         "* { -webkit-user-select: text !important; user-select: text !important; }"
 
+    /** Defines `rcHeaders()`: the headers Instagram's web client sends with its own API requests. */
+    private val REQUEST_HEADERS_JS = """
+        function rcHeaders() {
+            var m = document.cookie.match(/(?:^|; )csrftoken=([^;]*)/);
+            var html = document.documentElement.innerHTML;
+            var app = html.match(/"X-IG-App-ID":"(\d+)"/) || html.match(/"appId":"(\d+)"/);
+            return {
+                'Accept': 'application/json',
+                'X-IG-App-ID': app ? app[1] : '$FALLBACK_IG_APP_ID',
+                'X-CSRFToken': m ? decodeURIComponent(m[1]) : '',
+                'X-Requested-With': 'XMLHttpRequest'
+            };
+        }
+    """.trimIndent()
+
+    /** Reads the state [buildMediaInfoJs] left behind, as a JSON string, or null before it starts. */
+    const val READ_MEDIA_INFO_JS =
+        "(function() { return window.__rcMedia ? JSON.stringify(window.__rcMedia) : null; })();"
+
+    /**
+     * Starts looking up the cover image of [mediaId] through Instagram's media info endpoint,
+     * falling back to the page's `og:image`. The outcome lands in `window.__rcMedia` as
+     * `{state: 'pending'|'done', url?, error?}`.
+     */
+    fun buildMediaInfoJs(mediaId: String): String = """
+        (function() {
+            if (window.__rcMedia) return;
+            window.__rcMedia = { state: 'pending' };
+            $REQUEST_HEADERS_JS
+
+            function ogImage() {
+                var meta = document.querySelector('meta[property="og:image"]');
+                return meta ? meta.getAttribute('content') : null;
+            }
+
+            fetch('/api/v1/media/$mediaId/info/', { credentials: 'include', headers: rcHeaders() })
+                .then(function(res) {
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    return res.json();
+                })
+                .then(function(body) {
+                    var item = (body.items || [])[0] || {};
+                    var media = (item.carousel_media && item.carousel_media[0]) || item;
+                    var candidates = (media.image_versions2 && media.image_versions2.candidates) || [];
+                    window.__rcMedia = { state: 'done', url: candidates.length ? candidates[0].url : ogImage() };
+                })
+                .catch(function(e) {
+                    window.__rcMedia = { state: 'done', url: ogImage(), error: String(e) };
+                });
+        })();
+    """.trimIndent()
+
     /** Reads the state [buildCommentsApiJs] left behind, as a JSON string, or null before it starts. */
     const val READ_COMMENTS_API_JS =
         "(function() { return window.__rcApi ? JSON.stringify(window.__rcApi) : null; })();"
@@ -102,16 +154,7 @@ object InstaSelectors {
                 var mediaId = '$mediaId';
                 var target = $targetJs;
 
-                function cookie(name) {
-                    var m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
-                    return m ? decodeURIComponent(m[1]) : '';
-                }
-
-                function appId() {
-                    var html = document.documentElement.innerHTML;
-                    var m = html.match(/"X-IG-App-ID":"(\d+)"/) || html.match(/"appId":"(\d+)"/);
-                    return m ? m[1] : '$FALLBACK_IG_APP_ID';
-                }
+                $REQUEST_HEADERS_JS
 
                 // Ids exceed 2^53, so JSON.parse would round them; quote long integers first.
                 function parseBody(text) {
@@ -122,12 +165,7 @@ object InstaSelectors {
 
                 async function run() {
                     var notes = [];
-                    var headers = {
-                        'Accept': 'application/json',
-                        'X-IG-App-ID': appId(),
-                        'X-CSRFToken': cookie('csrftoken'),
-                        'X-Requested-With': 'XMLHttpRequest'
-                    };
+                    var headers = rcHeaders();
                     var merged = null;
                     var cursor = '';
                     for (var page = 0; page < $maxPages; page++) {
