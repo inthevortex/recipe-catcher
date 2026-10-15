@@ -59,9 +59,10 @@ Status key: ✅ available · 🚧 in progress · 🗓️ planned
 
 | Source | How it works | Status |
 | --- | --- | --- |
-| **Instagram** posts, reels and `/tv/` links | Three fetch strategies tried in order: official oEmbed → `/embed/captioned/` page → post-page meta tags. The thumbnail is downloaded immediately because Instagram CDN links expire. | ✅ |
+| **Instagram** posts, reels and `/tv/` links | Three fetch strategies tried in order: official oEmbed → `/embed/captioned/` page → post-page meta tags. The thumbnail is downloaded immediately because Instagram CDN links expire. **Carousels** whose caption lacks recipe text also send slides 2–5 to Claude. | ✅ |
 | **Recipe websites** | schema.org `Recipe` JSON-LD first (walks arrays and `@graph`, normalises `HowToStep` / `HowToSection`, image and yield quirks), readable-text fallback capped at 12,000 characters, and a direct-mapping fallback so a JSON-LD recipe is never lost. `og:image` and `og:site_name` for cover and author. | ✅ |
-| **YouTube** videos and Shorts | Parses `ytInitialPlayerResponse` for title, channel and full description, falls back to `og:` meta tags, and follows up to 2 linked recipe pages when the description itself has no recipe. | ✅ |
+| **YouTube** videos and Shorts | Parses `ytInitialPlayerResponse` for title, channel and full description, falls back to `og:` meta tags, and follows up to 2 linked recipe pages when the description itself has no recipe. If there is still no recipe, the **caption transcript** from the video's subtitle track is used. | ✅ |
+| **Photos and screenshots** | Cookbook pages, handwritten cards, clippings and screenshots from TikTok, Pinterest or WhatsApp, read directly by Claude's vision input. Capture from **Write recipe** or the Android share sheet. | ✅ |
 | **By hand** | Write recipe (empty form) and **Fill from pasted text** (a WhatsApp message, a family recipe) through the same extractor. | ✅ |
 
 Capture runs in a WorkManager `CoroutineWorker` with a network constraint and exponential backoff, so it survives leaving the app. You can start it from the Android share sheet (a translucent `ShareReceiverActivity` over the source app) or the in-app **Paste link** screen. URLs are normalised and stripped of tracking parameters (`igsh`, `utm_*`, `fbclid`, `gclid`), and duplicates are caught by shortcode, video ID or normalised URL.
@@ -78,6 +79,16 @@ flowchart TD
   D -->|"Retry"| B
   F -->|"Retry"| C
 ```
+
+### Photos, screenshots and carousels ✅
+
+Claude Haiku 5.5 reads images with its vision input, so a photo of a printed recipe or a screenshot becomes a structured card in the same extraction call as text.
+
+- **Write recipe → Scan or pick photos** takes a photo with the camera, or picks up to 5 images from the gallery.
+- **Share sheet:** share a single image, or up to 5 images at once, from any app. Images beyond the fifth are ignored.
+- The first photo becomes the recipe's cover image.
+- **Instagram carousels:** when the caption lacks recipe text (fewer than three quantity lines), slides 2–5 are downloaded and sent to Claude alongside the caption.
+- **YouTube captions:** when neither the description nor the linked pages have a recipe, the transcript from the video's published or auto-generated subtitle track is used. Speech-to-text models such as Whisper are deliberately omitted, so a video with no subtitle track produces no transcript.
 
 ### AI extraction with Claude Haiku 5.5
 
@@ -257,13 +268,13 @@ A `kotlin("jvm")` module with **zero `android.*` / `androidx.*` imports or depen
 
 | Package | Contents |
 | --- | --- |
-| `model/` | Immutable domain models: `Recipe`, `Ingredient`, `Step`, `Tag`, `CookLogEntry`, `PlanSlot`, `PlanEntry`, `InventoryItem`, `GroceryItem`, `ChatMessage`, `SourceType` |
+| `model/` | Immutable domain models: `Recipe`, `Ingredient`, `Step`, `Tag`, `CookLogEntry`, `PlanSlot`, `PlanEntry`, `InventoryItem`, `GroceryItem`, `ChatMessage`, `SourceType` (including `IMAGE` for photo captures) |
 | `domain/` | `QuantityScaler` (single values and ranges), `FractionFormatter`, `IsoDuration` |
 | `capture/` | `UrlNormalizer`, `SourceClassifier` (Instagram, YouTube, web; tracking-parameter stripping), `SavedPostsImporter` (Instagram data download and pasted links) |
-| `insta/` | `PostFetchStrategy` implementations: oEmbed, embed page, post-page meta |
+| `insta/` | `PostFetchStrategy` implementations: oEmbed, embed page, post-page meta; `CarouselExtractor` for slide image URLs |
 | `web/` | `WebRecipeFetcher`, `JsonLdParser`, `ReadableTextExtractor` |
-| `youtube/` | `YouTubeFetcher` (player-response and meta-tag parsing, linked-recipe discovery) |
-| `llm/` | `RecipeExtractor` interface, `ClaudeExtractor`, `ChatPlanner`, `PlanSuggester`, prompts and JSON schema |
+| `youtube/` | `YouTubeFetcher` (player-response and meta-tag parsing, linked-recipe discovery); `YouTubeCaptionParser` (caption track selection, timed-text XML and JSON3 transcripts) |
+| `llm/` | `RecipeExtractor` interface, `ClaudeExtractor` (text and image input), `ChatPlanner`, `PlanSuggester`, prompts and JSON schema |
 | `ports/` | Outbound interfaces (`HttpFetcher`, `WebSearchProvider`) that `:app` implements |
 
 Planner (`PortionLedger`, `GroceryBuilder`, `ReminderPlanner`) and backup-format packages join `:core` as their features land.
@@ -285,12 +296,13 @@ Planner (`PortionLedger`, `GroceryBuilder`, `ReminderPlanner`) and backup-format
 | Settings & secrets | DataStore Preferences; AES-GCM in AndroidKeyStore for the API key |
 | Networking | Ktor client with the OkHttp engine, injected into `:core` as `HttpFetcher` |
 | Images | Coil 3 from local files; `FileProvider` for camera captures |
+| Vision input | `ImagePreprocessor` (`capture/`) applies EXIF orientation, caps the long edge at 1,568 px, JPEG-compresses (quality 85, stepping down until the base64 payload is under about 4.5 MB, inside Claude's 5 MB limit) and base64-encodes each image |
 | Watch sync | `WearSync` publishes plan data to the watch and applies its ticks (Google Play Services Wearable Data Layer) |
 
 ```text
 app/src/main/java/org/eu/angsumanray/recipecatcher/
 ├── MainActivity.kt · ShareReceiverActivity.kt · RecipeCatcherApp.kt
-├── capture/      CaptureWorker, ImageCleanupWorker
+├── capture/      CaptureWorker, ImageCleanupWorker, ImagePreprocessor
 ├── data/
 │   ├── db/       RecipeDatabase, entities, DAOs, converters, starter lists
 │   ├── image/    ImageStorageManager
@@ -339,8 +351,8 @@ This root-level task fails the build if any source file under `core/src/main` im
 | HTTP | Ktor client (OkHttp engine on Android) |
 | JSON | kotlinx.serialization |
 | HTML parsing | Jsoup |
-| Images | Coil 3 |
-| LLM | Claude Haiku 5.5 (`claude-haiku-5-5`) via the Anthropic Messages API |
+| Images | Coil 3 for display; `ImagePreprocessor` (`BitmapFactory`, `ExifInterface`) for vision input |
+| LLM | Claude Haiku 5.5 (`claude-haiku-5-5`) via the Anthropic Messages API, with text and image (vision) input |
 | Tests | JUnit 4, kotlin-test, Turbine, Ktor MockEngine, Robolectric, Room in-memory, WorkManager testing |
 | CI / CD | GitHub Actions (tests + isolation check on every push; signed APK on `v*` tags) |
 
@@ -513,11 +525,11 @@ Every wave ends with a tagged, signed release that installs over the previous on
 | **4** | Planner, lists, widget | Bottom tabs with Today as home, week planner with cook / prep / leftover entries, grocery list and inventory, reminders, Glance `TodayWidget` | ✅ Done |
 | **5** | Chat, Find with AI, Suggest | Recipe chat over your library with optional web search and citations, Find with AI on the edit form, `PlanSuggester` for empty plan slots | ✅ Done |
 | **6** | Bulk import, Wear OS | Instagram saves bulk import with collections and rate-limited background processing, top-comment fallback, `:wear` app with Today list, tile and complication | ✅ Done |
-| **7** | Media (later) | Recipes from images via Haiku 5.5 image input; voice and transcript extraction | 💭 Later |
+| **7** | Media | Recipes from photos and screenshots via Haiku 5.5 vision, Instagram carousel slides, YouTube caption transcripts (no speech-to-text) | ✅ Done |
 
 ```mermaid
 flowchart LR
-  W0["0 · Foundation"]:::done --> W1["1 · Instagram"]:::done --> W2["2 · Library & cooking"]:::done --> W3["3 · Web, YouTube, backup"]:::done --> W4["4 · Planner & widget"]:::done --> W5["5 · Chat & AI"]:::done --> W6["6 · Import & Wear OS"]:::done -.-> W7["7 · Media"]
+  W0["0 · Foundation"]:::done --> W1["1 · Instagram"]:::done --> W2["2 · Library & cooking"]:::done --> W3["3 · Web, YouTube, backup"]:::done --> W4["4 · Planner & widget"]:::done --> W5["5 · Chat & AI"]:::done --> W6["6 · Import & Wear OS"]:::done --> W7["7 · Media"]:::done
   classDef done fill:#2e7d32,color:#fff,stroke:#1b5e20
   classDef wip fill:#f9a825,color:#000,stroke:#f57f17
 ```
