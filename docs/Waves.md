@@ -10,7 +10,8 @@ flowchart TD
   W3 --> W4[Wave 4: Planner, lists, widget]
   W4 --> W5[Wave 5: Chat, Find with AI, Suggest]
   W5 --> W6[Wave 6: Bulk import, Wear OS]
-  W6 -.-> W7[Wave 7: Media, later]
+  W6 --> W7[Wave 7: Media & YouTube captions]
+  W7 --> W8[Wave 8: Polish, pantry & companion]
 ```
 
 **Rules for every wave**
@@ -28,7 +29,8 @@ flowchart TD
 - Re-extract and orphaned-image cleanup join Wave 2; the WebView retry for blocked sites joins Wave 3, run from the foreground only.
 - Leftover links use `ON DELETE SET NULL`; restore restarts the app with an AlarmManager PendingIntent or ProcessPhoenix.
 - The top-comment fetch stays in Wave 6 and runs only during a foreground capture.
-- Wave 7 reads images with Haiku 5.5's image input rather than a separate OCR library.
+- Wave 7 uses Claude Haiku 5.5 multimodal vision for image inputs (carousel slides 2–5, cookbook photos, handwritten notes, screenshots) and extracts YouTube timed-text caption tracks directly, omitting voice/speech-to-text models (Whisper).
+- Wave 8 introduces a dual model selector (Haiku 5.5 default, Sonnet 3.5 for Chat & Suggester), an interactive pantry reconciliation sheet on "Mark as cooked", plain-text recipe sharing (`text/plain`), orphaned image storage cleanup, Wear OS Compose Material 3 upgrade, and an in-app GitHub Releases update checker for phone and watch.
 
 ## Wave 0 — Foundation
 
@@ -131,9 +133,38 @@ Your Instagram backlog, the comment fallback, and the watch.
 
 **Done when:** a real export imports with no duplicates and survives a restart mid-queue, and a tick on the watch updates the phone and widget within seconds.
 
-## Wave 7 — Media (later)
+## Wave 7 — Media & YouTube Captions
 
-- [ ] Recipes from images (carousel slides, screenshots, cookbook photos) using Haiku 5.5's image input.
-- [ ] Voice transcription of reels and videos, and YouTube transcript extraction.
+Images and video captions turned into structured recipes using Claude Haiku 5.5 multimodal vision and direct timed-text extraction.
 
-To be detailed before the wave starts.
+- [ ] Multimodal vision in `ClaudeExtractor` / `ClaudeClient`: support `image` content blocks (Base64-encoded JPEG) alongside text prompt; support multiple image inputs.
+- [ ] `ImagePreprocessor` in `:app/capture`: EXIF orientation correction, downscaling to max 1568px on the longest edge, JPEG compression (< 5 MB), and Base64 encoding.
+- [ ] Photo Picker (`PickVisualMedia` / `PickMultipleVisualMedia`) and camera capture (`FileProvider`) in Add Recipe / Write Recipe screen.
+- [ ] Share target extension: accept `ACTION_SEND` and `ACTION_SEND_MULTIPLE` with MIME type `image/*`.
+- [ ] Instagram carousel image extractor: download slide images (slides 2–5) when post caption lacks recipe text, routing through vision extractor.
+- [ ] `YouTubeCaptionParser` in `:core/youtube`: parse `captionTracks` from `playerResponse`, fetch timed-text XML/JSON from `baseUrl`, strip formatting/music tags (`[Music]`), normalize into clean transcript, and feed into `RecipeExtractor`. Note explicitly that audio/voice transcription models are omitted.
+- [ ] Tests: `YouTubeCaptionParser` unit tests with timedtext XML/JSON fixtures; `ImagePreprocessor` tests (EXIF rotation, downscaling, compression); vision API payload serialization tests.
+
+**Done when:** sharing or picking a cookbook photo or carousel slide extracts a clean recipe in under 10 s, and a YouTube video with timed-text captions extracts without requiring description text.
+
+## Wave 8 — Polish, Pantry & Companion Enhancements
+
+Fine-tuned pantry reconciliation, plain text sharing, dual model selection, orphaned storage cleanup, Wear OS Compose Material 3 upgrade, and in-app update checks.
+
+- [ ] Dual model selector in Settings: choice between `claude-haiku-5-5` (default) and `claude-3-5-sonnet` for `ChatPlanner` and `PlanSuggester`.
+- [ ] Interactive Pantry reconciliation sheet/dialog on "Mark as cooked" (from Recipe viewer, Cooking mode, and Today screen):
+  - Displays recipe ingredients matched to inventory items by base name.
+  - Side-by-side dropdown/selector (`In Stock`, `Low`, `Out`, `Don't Change`).
+  - Supports manual modifications: mark used items `Out`, mark restocked items `In Stock`, skip unused/untracked items.
+  - Commits stock updates to Room and writes the cook log entry.
+- [ ] Share recipe as clean plain text (`ACTION_SEND` with MIME type `text/plain`):
+  - Formats recipe title, yield, prep & cook time, formatted ingredient checklist, and numbered instructions (clean text without markdown clutter).
+- [ ] `ImageCleanupWorker` in `:app/storage`: periodic WorkManager job + manual "Clean storage" button in Settings; scans `filesDir/images/`, diffs against active database paths (`recipe.cover_image_path`, `cook_log.photo_path`), deletes orphaned files, and reports freed space and count.
+- [ ] Wear OS Compose Material 3 upgrade: migrate `:wear` module to `androidx.wear.compose:compose-material3`, update UI cards, chips, typography, and responsive layouts.
+- [ ] In-App GitHub Release Update Checker (`UpdateChecker` in `:app/updates`):
+  - Settings "Check for updates" + periodic WorkManager background check against GitHub Releases API (`/repos/angsuman/recipe-catcher/releases/latest`).
+  - Dialog showing release notes, version tag, and "Download & Install" (downloads APK to cache, invokes package installer via `FileProvider`).
+  - Wearable Data Layer notification: sends `/update_available` message to watch companion.
+- [ ] Tests: pantry reconciliation logic tests, image cleanup worker tests, plain text export formatter tests, update checker tests, and wear M3 UI tests.
+
+**Done when:** marking a recipe cooked updates pantry stock as chosen, sharing sends clean plain text, "Clean storage" removes unreferenced images, and the watch app runs on Wear Compose Material 3.
