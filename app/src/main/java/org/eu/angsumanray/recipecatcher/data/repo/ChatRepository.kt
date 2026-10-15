@@ -16,6 +16,8 @@ import org.eu.angsumanray.recipecatcher.core.llm.ChatPlanResult
 import org.eu.angsumanray.recipecatcher.core.llm.ChatPlanner
 import org.eu.angsumanray.recipecatcher.core.llm.LibraryEditProposal
 import org.eu.angsumanray.recipecatcher.core.llm.LibraryEditTools
+import org.eu.angsumanray.recipecatcher.core.llm.LibraryRecipe
+import org.eu.angsumanray.recipecatcher.core.llm.TagRef
 import org.eu.angsumanray.recipecatcher.core.llm.LlmUsage
 import org.eu.angsumanray.recipecatcher.core.llm.WebPicks
 import org.eu.angsumanray.recipecatcher.core.llm.llmErrorMessage
@@ -163,14 +165,31 @@ class ChatRepository @Inject constructor(
         )
     }
 
-    /** Lets chat read ingredients and see existing tag names when proposing library changes. */
+    /**
+     * Lets chat search the whole library, read ingredients and see existing tag names when
+     * proposing changes. The library is read in four queries, only once chat uses a tool.
+     */
     private suspend fun editTools(): LibraryEditTools {
-        val tagNames = database.tagDao().getAll()
-            .groupBy { it.kind }
-            .mapValues { (_, tags) -> tags.map { it.name } }
-        val ingredientDao = database.ingredientDao()
-        return LibraryEditTools(tagNames) { ids ->
-            ids.associateWith { id -> ingredientDao.getByRecipeId(id).map { it.name } }
+        val allTags = database.tagDao().getAll()
+        val tagNames = allTags.groupBy { it.kind }.mapValues { (_, tags) -> tags.map { it.name } }
+        return LibraryEditTools(tagNames) {
+            val tagsById = allTags.associateBy { it.id }
+            val tagsByRecipe = database.recipeTagDao().getAll().groupBy({ it.recipeId }) { link ->
+                tagsById[link.tagId]?.let { TagRef(it.kind, it.name) }
+            }
+            val ingredientsByRecipe = database.ingredientDao().getAll().groupBy({ it.recipeId }) { it.name }
+            database.recipeDao().getAllSaved().map { recipe ->
+                LibraryRecipe(
+                    id = recipe.id,
+                    title = recipe.title.orEmpty(),
+                    ingredients = ingredientsByRecipe[recipe.id].orEmpty(),
+                    tags = tagsByRecipe[recipe.id].orEmpty().filterNotNull(),
+                    dietType = recipe.dietType,
+                    complexity = recipe.complexity,
+                    spiceLevel = recipe.spiceLevel,
+                    totalMinutes = recipe.totalMin
+                )
+            }
         }
     }
 

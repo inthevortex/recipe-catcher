@@ -429,50 +429,56 @@ class ChatPlannerTest {
     """.trimIndent()
 
     @Test
-    fun testEditToolsLookUpIngredientsThenProposeValidatedChanges() = runBlocking {
+    fun testEditToolsSearchWholeLibraryThenProposeGroupedChanges() = runBlocking {
         val bodies = mutableListOf<String>()
         val responses = ArrayDeque(
             listOf(
-                toolUseResponse("tu_1", ChatPlanner.TOOL_GET_INGREDIENTS, """{"recipe_ids":[1,2,99]}"""),
+                toolUseResponse("tu_1", ChatPlanner.TOOL_FIND_RECIPES, """{"ingredients_any":["paneer","yogurt"]}"""),
+                toolUseResponse("tu_2", ChatPlanner.TOOL_GET_INGREDIENTS, """{"recipe_ids":[1,500,99999]}"""),
                 toolUseResponse(
-                    "tu_2",
+                    "tu_3",
                     ChatPlanner.TOOL_PROPOSE_CHANGES,
-                    """{"summary":"Mark dairy recipes","edits":[
-                        {"recipe_id":1,"add":[{"kind":"diet","name":"dairy"},{"kind":"allergens","name":" lactose "}],"diet_type":"Vegetarian","reason":"has paneer"},
-                        {"recipe_id":2,"add":[{"kind":"tag","name":"rich"}],"remove":[{"kind":"tag","name":"rich"}]},
-                        {"recipe_id":99,"add":[{"kind":"diet","name":"dairy"}]},
-                        {"recipe_id":1,"add":[{"kind":"tag","name":"duplicate"}]}
+                    """{"summary":"Mark dairy recipes","changes":[
+                        {"recipe_ids":[1,500,99999],"add":[{"kind":"diet","name":"dairy"},{"kind":"allergens","name":" lactose "}],"reason":"contain paneer or yogurt"},
+                        {"recipe_ids":[1],"diet_type":"Vegetarian","reason":"no meat"},
+                        {"recipe_ids":[2],"add":[{"kind":"tag","name":"rich"}],"remove":[{"kind":"tag","name":"rich"}]}
                     ]}"""
                 )
             )
         )
-        var lookedUp: List<Long> = emptyList()
+        var loads = 0
+        // The library holds a recipe (500) that the index sent with the message doesn't list.
+        val library = listOf(
+            LibraryRecipe(1, "Palak Paneer", ingredients = listOf("paneer", "spinach", "cream")),
+            LibraryRecipe(2, "Chicken Biryani", ingredients = listOf("chicken", "rice")),
+            LibraryRecipe(500, "Raita", ingredients = listOf("yogurt", "cucumber"))
+        )
         val planner = ChatPlanner(createClient { _, body -> bodies += body; HttpStatusCode.OK to responses.removeFirst() }, { "key" })
-        val tools = LibraryEditTools(tagNames = mapOf("diet" to listOf("dairy", "gluten"))) { ids ->
-            lookedUp = ids
-            mapOf(1L to listOf("paneer", "cream"), 2L to listOf("chicken", "rice"))
-        }
+        val tools = LibraryEditTools(tagNames = mapOf("diet" to listOf("dairy", "gluten"))) { loads++; library }
 
         val result = planner.planChat("mark recipes with dairy", libraryRecipes = sampleLibrary, editTools = tools).getOrThrow()
 
-        assertEquals(listOf(1L, 2L), lookedUp)
-        val second = Json.parseToJsonElement(bodies[1]).jsonObject["messages"]!!.jsonArray
-        val toolResult = second.last().jsonObject["content"]!!.jsonArray.first().jsonObject
-        assertEquals("tu_1", toolResult["tool_use_id"]!!.jsonPrimitive.content)
-        assertTrue(toolResult["content"]!!.jsonPrimitive.content.contains("1: paneer; cream"))
+        assertEquals(1, loads)
+        fun lastToolResult(i: Int) = Json.parseToJsonElement(bodies[i]).jsonObject["messages"]!!.jsonArray
+            .last().jsonObject["content"]!!.jsonArray.first().jsonObject["content"]!!.jsonPrimitive.content
+        val found = lastToolResult(1)
+        assertTrue(found.startsWith("2 recipes match"))
+        assertTrue(found.contains("500 | Raita | unknown | matched: yogurt"))
+        assertTrue(lastToolResult(2).contains("500 | Raita: yogurt; cucumber"))
+        val echoed = Json.parseToJsonElement(bodies[1]).jsonObject["messages"]!!.jsonArray.let { it[it.size - 2] }.toString()
         // The assistant turn is echoed back verbatim, thinking signature included.
-        val echoed = second[second.size - 2].toString()
         assertTrue(echoed.contains("\"signature\":\"sig_tu_1\""))
-        assertFalse(echoed.contains("null"))
         assertTrue(Json.parseToJsonElement(bodies[0]).jsonObject["system"].toString().contains("diet: dairy, gluten"))
 
         val edits = result.edits!!
         assertEquals("Mark dairy recipes", edits.summary)
-        assertEquals(listOf(1L), edits.edits.map { it.recipeId })
-        assertEquals(listOf(TagRef("diet", "dairy"), TagRef("diet", "lactose")), edits.edits.single().add)
-        assertEquals("vegetarian", edits.edits.single().dietType)
+        assertEquals(listOf(1L, 500L), edits.edits.map { it.recipeId })
+        val paneer = edits.edits.first()
+        assertEquals(listOf(TagRef("diet", "dairy"), TagRef("diet", "lactose")), paneer.add)
+        assertEquals("vegetarian", paneer.dietType)
+        assertEquals("contain paneer or yogurt; no meat", paneer.reason)
         assertEquals(LibraryEditProposal.STATUS_PROPOSED, edits.status)
-        assertEquals(200, result.usage.inputTokens)
+        assertEquals(300, result.usage.inputTokens)
     }
 
     @Test

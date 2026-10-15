@@ -131,12 +131,13 @@ class ChatPlanner(
         private const val MAX_PAUSE_CONTINUATIONS = 4
         private const val FALLBACK_RESULT_COUNT = 8
         private const val MAX_SEARCH_TERMS = 12
-        private const val MAX_TOOL_ROUNDS = 5
-        private const val MAX_INGREDIENT_LOOKUP = 60
+        private const val MAX_TOOL_ROUNDS = 10
+        private const val MAX_INGREDIENT_LOOKUP = 100
         private const val SUGGEST_MAX_TOKENS = 1500
         /** A proposal touching most of a library needs room for a line per recipe. */
         private const val EDIT_MAX_TOKENS = 8000
 
+        const val TOOL_FIND_RECIPES = "find_recipes"
         const val TOOL_GET_INGREDIENTS = "get_recipe_ingredients"
         const val TOOL_PROPOSE_CHANGES = "propose_library_changes"
 
@@ -180,9 +181,10 @@ Unless you are calling a tool, you MUST respond strictly with a valid JSON objec
 
         const val LIBRARY_EDIT_PROMPT = """You can also change recipe data when the user asks, e.g. "tag every air fryer recipe as quick", "mark recipes with paneer as containing dairy", "set these to vegetarian".
 - Editable: tags (kind "tag"), allergens / contains (kind "diet"), equipment (kind "equipment"), consumables (kind "consumable"), diet_type (vegan, vegetarian, eggetarian, non-veg), complexity (easy, medium, hard), spice_level (mild, medium, hot), make_ahead and freezer_friendly.
-- Pick the matching recipes from the index. When that depends on ingredients beyond the index's main ingredients (allergens, a specific ingredient), call get_recipe_ingredients for the candidates first.
+- The index above may not list every recipe. Find recipes to change with find_recipes, which searches the whole library by ingredients, text, tags, diet, complexity, spice and time, and pages through long results.
+- find_recipes matches words inside ingredient names, so check what matched ("coconut milk" is not dairy). When a decision needs a recipe's full ingredient list, call get_recipe_ingredients.
 - Reuse an existing tag name when one fits; a new name creates a new tag.
-- Then call propose_library_changes once, listing every recipe that needs a change with a short reason. Leave out recipes that already have it.
+- Then call propose_library_changes once. Group recipes that get the same change into one entry with all their recipe_ids. Leave out recipes that already have the change.
 - The user reviews the proposal and applies it; never say the changes are already made.
 For any other request, answer with the JSON above."""
 
@@ -413,7 +415,8 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
 
                 toolUses.firstOrNull { it.name == TOOL_PROPOSE_CHANGES }?.let { proposeCall ->
                     val raw = json.decodeFromJsonElement(RawEditProposal.serializer(), proposeCall.input ?: JsonObject(emptyMap()))
-                    val proposal = LibraryEditProposal.validated(raw.summary, raw.edits, validIds)
+                    val libraryIds = editTools.library().map { it.id }.toSet()
+                    val proposal = LibraryEditProposal.validated(raw.summary, raw.toEdits(), libraryIds)
                     val text = AnthropicSupport.responseText(anthropicResponse).trim()
                     val reply = when {
                         proposal.edits.isEmpty() -> text.ifEmpty { "No recipes need that change." }
@@ -434,7 +437,7 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
                     put("role", "assistant")
                     put("content", rawContent)
                 }
-                val results = toolUses.map { runEditTool(it, editTools, validIds) }
+                val results = toolUses.map { runEditTool(it, editTools) }
                 messages += buildJsonObject {
                     put("role", "user")
                     put("content", JsonArray(results))
@@ -480,28 +483,33 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
     }
 
     /** Answers one read-only tool call with a `tool_result` block. */
-    private suspend fun runEditTool(
-        call: AnthropicContentBlock,
-        editTools: LibraryEditTools,
-        validIds: Set<Long>
-    ): JsonObject {
-        val (text, isError) = when (call.name) {
-            TOOL_GET_INGREDIENTS -> {
-                val ids = try {
-                    json.decodeFromJsonElement(RawIngredientLookup.serializer(), call.input ?: JsonObject(emptyMap())).recipeIds
-                } catch (e: Exception) {
-                    emptyList()
-                }.filter { it in validIds }.distinct().take(MAX_INGREDIENT_LOOKUP)
-                if (ids.isEmpty()) {
-                    "No known recipe_ids given." to true
-                } else {
-                    val found = editTools.ingredients(ids)
-                    ids.joinToString("\n") { id ->
-                        "$id: " + (found[id]?.joinToString("; ")?.ifEmpty { null } ?: "no ingredients stored")
-                    } to false
+    private suspend fun runEditTool(call: AnthropicContentBlock, editTools: LibraryEditTools): JsonObject {
+        val input = call.input ?: JsonObject(emptyMap())
+        val (text, isError) = try {
+            when (call.name) {
+                TOOL_FIND_RECIPES -> {
+                    val query = json.decodeFromJsonElement(RecipeQuery.serializer(), input)
+                    LibraryQueryEngine.describe(LibraryQueryEngine.find(query, editTools.library()), query.offset) to false
                 }
+                TOOL_GET_INGREDIENTS -> {
+                    val byId = editTools.library().associateBy { it.id }
+                    val ids = json.decodeFromJsonElement(RawIngredientLookup.serializer(), input).recipeIds
+                        .filter { it in byId }.distinct().take(MAX_INGREDIENT_LOOKUP)
+                    if (ids.isEmpty()) {
+                        "No known recipe_ids given." to true
+                    } else {
+                        ids.joinToString("\n") { id ->
+                            val recipe = byId.getValue(id)
+                            "$id | ${recipe.title}: " + recipe.ingredients.joinToString("; ").ifEmpty { "no ingredients stored" }
+                        } to false
+                    }
+                }
+                else -> "Unknown tool ${call.name}" to true
             }
-            else -> "Unknown tool ${call.name}" to true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            "Invalid input for ${call.name}: ${e.message}" to true
         }
         return buildJsonObject {
             put("type", "tool_result")
@@ -513,8 +521,38 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
 
     private fun editToolDefinitions(): JsonArray = buildJsonArray {
         add(buildJsonObject {
+            put("name", TOOL_FIND_RECIPES)
+            put(
+                "description",
+                "Search the whole recipe library. All given criteria must hold. Returns matching ids, titles, diet type and the ingredients that matched, ${LibraryQueryEngine.PAGE_SIZE} per page."
+            )
+            putJsonObject("input_schema") {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("ingredients_any") {
+                        stringArray("At least one ingredient name contains one of these words, e.g. [\"paneer\", \"cream\", \"ghee\"].")
+                    }
+                    putJsonObject("ingredients_none") { stringArray("No ingredient name contains any of these words.") }
+                    putJsonObject("text") {
+                        put("type", "string")
+                        put("description", "Title, ingredients or tags contain this text.")
+                    }
+                    putJsonObject("has_tags") { tagRefArray() }
+                    putJsonObject("lacks_tags") { tagRefArray() }
+                    putJsonObject("diet_types") { stringArray("Diet type is one of these; \"unknown\" matches recipes without one.") }
+                    putJsonObject("complexity") { stringEnum(ClaudeExtractor.COMPLEXITY_VALUES) }
+                    putJsonObject("spice_level") { stringEnum(ClaudeExtractor.SPICE_LEVEL_VALUES) }
+                    putJsonObject("max_total_minutes") { put("type", "integer") }
+                    putJsonObject("offset") {
+                        put("type", "integer")
+                        put("description", "Skip this many matches, to page through long results.")
+                    }
+                }
+            }
+        })
+        add(buildJsonObject {
             put("name", TOOL_GET_INGREDIENTS)
-            put("description", "Full ingredient lists of recipes in the index, for deciding allergens, diet or ingredient-based tags. Up to $MAX_INGREDIENT_LOOKUP ids per call.")
+            put("description", "Full ingredient lists of recipes, for deciding allergens, diet or ingredient-based tags. Up to $MAX_INGREDIENT_LOOKUP ids per call.")
             putJsonObject("input_schema") {
                 put("type", "object")
                 putJsonObject("properties") {
@@ -528,7 +566,7 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
         })
         add(buildJsonObject {
             put("name", TOOL_PROPOSE_CHANGES)
-            put("description", "Propose changes to recipes for the user to review and apply. Call once with every recipe that needs a change.")
+            put("description", "Propose changes to recipes for the user to review and apply. Call once; group recipes that get the same change.")
             putJsonObject("input_schema") {
                 put("type", "object")
                 putJsonObject("properties") {
@@ -536,12 +574,15 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
                         put("type", "string")
                         put("description", "One sentence describing the change, e.g. 'Tag 12 air fryer recipes as quick'.")
                     }
-                    putJsonObject("edits") {
+                    putJsonObject("changes") {
                         put("type", "array")
                         putJsonObject("items") {
                             put("type", "object")
                             putJsonObject("properties") {
-                                putJsonObject("recipe_id") { put("type", "integer") }
+                                putJsonObject("recipe_ids") {
+                                    put("type", "array")
+                                    putJsonObject("items") { put("type", "integer") }
+                                }
                                 putJsonObject("add") { tagRefArray() }
                                 putJsonObject("remove") { tagRefArray() }
                                 putJsonObject("diet_type") { stringEnum(ClaudeExtractor.DIET_TYPE_VALUES) }
@@ -549,15 +590,18 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
                                 putJsonObject("spice_level") { stringEnum(ClaudeExtractor.SPICE_LEVEL_VALUES) }
                                 putJsonObject("make_ahead") { put("type", "boolean") }
                                 putJsonObject("freezer_friendly") { put("type", "boolean") }
-                                putJsonObject("reason") { put("type", "string") }
+                                putJsonObject("reason") {
+                                    put("type", "string")
+                                    put("description", "Why these recipes get this change, e.g. 'contain paneer or ghee'.")
+                                }
                             }
-                            putJsonArray("required") { add(JsonPrimitive("recipe_id")) }
+                            putJsonArray("required") { add(JsonPrimitive("recipe_ids")) }
                         }
                     }
                 }
                 putJsonArray("required") {
                     add(JsonPrimitive("summary"))
-                    add(JsonPrimitive("edits"))
+                    add(JsonPrimitive("changes"))
                 }
             }
         })
@@ -576,6 +620,12 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
                 add(JsonPrimitive("name"))
             }
         }
+    }
+
+    private fun JsonObjectBuilder.stringArray(description: String) {
+        put("type", "array")
+        putJsonObject("items") { put("type", "string") }
+        put("description", description)
     }
 
     private fun JsonObjectBuilder.stringEnum(values: List<String>) {
@@ -838,17 +888,58 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
     }
 }
 
-/** What the edit tools need from the app: tag names to reuse, and ingredient lists on request. */
+/**
+ * What the edit tools need from the app: tag names to reuse, and the whole library, loaded once
+ * on first use so the lookups run over every recipe rather than the index sent with the message.
+ */
 class LibraryEditTools(
     /** Existing tag names by kind ("tag", "diet", "equipment", "consumable"). */
     val tagNames: Map<String, List<String>>,
-    val ingredients: suspend (List<Long>) -> Map<Long, List<String>>
-)
+    private val loadLibrary: suspend () -> List<LibraryRecipe>
+) {
+    private var cached: List<LibraryRecipe>? = null
+
+    suspend fun library(): List<LibraryRecipe> = cached ?: loadLibrary().also { cached = it }
+}
 
 @Serializable
 private data class RawEditProposal(
     val summary: String = "",
-    val edits: List<RecipeEdit> = emptyList()
+    val changes: List<RawChangeGroup> = emptyList()
+) {
+    /** One edit per recipe; a recipe named in several groups gets all of their changes. */
+    fun toEdits(): List<RecipeEdit> {
+        val byRecipe = linkedMapOf<Long, RecipeEdit>()
+        for (group in changes) {
+            for (id in group.recipeIds.distinct()) {
+                val current = byRecipe[id] ?: RecipeEdit(recipeId = id)
+                byRecipe[id] = current.copy(
+                    add = current.add + group.add,
+                    remove = current.remove + group.remove,
+                    dietType = group.dietType ?: current.dietType,
+                    complexity = group.complexity ?: current.complexity,
+                    spiceLevel = group.spiceLevel ?: current.spiceLevel,
+                    makeAhead = group.makeAhead ?: current.makeAhead,
+                    freezerFriendly = group.freezerFriendly ?: current.freezerFriendly,
+                    reason = listOf(current.reason, group.reason.trim()).filter { it.isNotEmpty() }.distinct().joinToString("; ")
+                )
+            }
+        }
+        return byRecipe.values.toList()
+    }
+}
+
+@Serializable
+private data class RawChangeGroup(
+    @SerialName("recipe_ids") val recipeIds: List<Long> = emptyList(),
+    val add: List<TagRef> = emptyList(),
+    val remove: List<TagRef> = emptyList(),
+    @SerialName("diet_type") val dietType: String? = null,
+    val complexity: String? = null,
+    @SerialName("spice_level") val spiceLevel: String? = null,
+    @SerialName("make_ahead") val makeAhead: Boolean? = null,
+    @SerialName("freezer_friendly") val freezerFriendly: Boolean? = null,
+    val reason: String = ""
 )
 
 @Serializable
