@@ -35,7 +35,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dagger.hilt.android.AndroidEntryPoint
-import org.eu.angsumanray.recipecatcher.capture.ImageCleanupWorker
+import org.eu.angsumanray.recipecatcher.storage.ImageCleanupWorker
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore

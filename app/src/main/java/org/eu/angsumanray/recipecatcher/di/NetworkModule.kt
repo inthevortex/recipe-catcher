@@ -144,7 +144,7 @@ object NetworkModule {
         return org.eu.angsumanray.recipecatcher.core.llm.PlanSuggester(
             httpClient = httpClient,
             apiKeyProvider = { settingsStore.getApiKey() },
-            modelIdProvider = { settingsStore.modelIdFlow.first() }
+            modelIdProvider = { settingsStore.chatModelIdFlow.first() }
         )
     }
 }

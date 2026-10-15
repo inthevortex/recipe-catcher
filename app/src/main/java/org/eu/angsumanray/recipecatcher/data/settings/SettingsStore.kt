@@ -56,6 +56,10 @@ class SettingsStore @Inject constructor(
         private val KEY_REMEMBER_BACKUP_FOLDER = androidx.datastore.preferences.core.booleanPreferencesKey("remember_backup_folder")
         private val KEY_BACKUP_FOLDER_URI = stringPreferencesKey("backup_folder_uri")
 
+        const val DEFAULT_CHAT_MODEL_ID = "claude-haiku-5-5"
+        const val CHAT_MODEL_HAIKU = "claude-haiku-5-5"
+        const val CHAT_MODEL_SONNET = "claude-3-5-sonnet"
+
         private val KEY_WEEK_STARTS_ON = stringPreferencesKey("week_starts_on")
         private val KEY_PREP_ALERT_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("prep_alert_enabled")
         private val KEY_PREP_ALERT_TIME = stringPreferencesKey("prep_alert_time")
@@ -72,6 +76,8 @@ class SettingsStore @Inject constructor(
         private val KEY_IMPORT_COOLDOWN_UNTIL = androidx.datastore.preferences.core.longPreferencesKey("import_cooldown_until")
         private val KEY_INSTAGRAM_LOGGED_IN = androidx.datastore.preferences.core.booleanPreferencesKey("instagram_logged_in")
         private val KEY_FETCH_TOP_COMMENT = androidx.datastore.preferences.core.booleanPreferencesKey("fetch_top_comment")
+        private val KEY_LAST_UPDATE_CHECK_AT = androidx.datastore.preferences.core.longPreferencesKey("last_update_check_at")
+        private val KEY_CACHED_LATEST_RELEASE_TAG = stringPreferencesKey("cached_latest_release_tag")
     }
 
     val weekStartsOnFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
@@ -182,7 +188,7 @@ class SettingsStore @Inject constructor(
     val chatModelIdFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
         prefs[KEY_CHAT_MODEL_ID]?.takeIf { it.isNotBlank() }
             ?: prefs[KEY_MODEL_ID]?.takeIf { it.isNotBlank() }
-            ?: DEFAULT_MODEL_ID
+            ?: DEFAULT_CHAT_MODEL_ID
     }
 
     val includeWebDefaultFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
@@ -193,15 +199,33 @@ class SettingsStore @Inject constructor(
         (prefs[KEY_MAX_WEB_SEARCHES] ?: DEFAULT_MAX_WEB_SEARCHES).coerceIn(MIN_WEB_SEARCHES, MAX_WEB_SEARCHES)
     }
 
-    /** The chat model as typed in Settings; blank means "same as the extraction model". */
     val chatModelIdSettingFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
-        prefs[KEY_CHAT_MODEL_ID].orEmpty()
+        prefs[KEY_CHAT_MODEL_ID] ?: DEFAULT_CHAT_MODEL_ID
     }
 
     suspend fun setChatModelId(modelId: String) {
         context.settingsDataStore.edit { prefs ->
             val trimmed = modelId.trim()
             if (trimmed.isEmpty()) prefs.remove(KEY_CHAT_MODEL_ID) else prefs[KEY_CHAT_MODEL_ID] = trimmed
+        }
+    }
+
+    val lastUpdateCheckAtFlow: Flow<Long> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_LAST_UPDATE_CHECK_AT] ?: 0L
+    }
+
+    val cachedLatestReleaseTagFlow: Flow<String?> = context.settingsDataStore.data.map { prefs ->
+        prefs[KEY_CACHED_LATEST_RELEASE_TAG]
+    }
+
+    suspend fun setLastUpdateCheck(timestamp: Long, latestReleaseTag: String?) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[KEY_LAST_UPDATE_CHECK_AT] = timestamp
+            if (latestReleaseTag != null) {
+                prefs[KEY_CACHED_LATEST_RELEASE_TAG] = latestReleaseTag
+            } else {
+                prefs.remove(KEY_CACHED_LATEST_RELEASE_TAG)
+            }
         }
     }
 

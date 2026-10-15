@@ -76,6 +76,8 @@ import org.eu.angsumanray.recipecatcher.core.domain.FractionFormatter
 import java.io.File
 import java.time.LocalDate
 
+import org.eu.angsumanray.recipecatcher.ui.pantry.PantryReconciliationSheet
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CookingModeScreen(
@@ -83,6 +85,7 @@ fun CookingModeScreen(
     onNavigateBack: () -> Unit
 ) {
     val state by viewModel.uiState.collectAsState()
+    val inventoryItems by viewModel.inventoryItems.collectAsState()
     val context = LocalContext.current
     val activity = context as? Activity
 
@@ -438,120 +441,21 @@ fun CookingModeScreen(
         }
     }
 
-    // Mark as Cooked Dialog
-    if (showMarkCookedDialog) {
-        CookingMarkCookedDialog(
+    // Mark as Cooked & Reconcile Pantry
+    if (showMarkCookedDialog && state.recipe != null) {
+        PantryReconciliationSheet(
+            recipeTitle = state.recipe?.title.orEmpty(),
+            ingredients = state.rawIngredients,
+            inventoryItems = inventoryItems,
             isSaving = state.isSaving,
+            onCreateTempCameraUri = { viewModel.createTempCameraUri() },
             onDismiss = { showMarkCookedDialog = false },
-            onConfirm = { date, note, photoUri ->
-                viewModel.markAsCooked(date, note, photoUri) {
+            onConfirm = { date, note, photoUri, reconciliationItems ->
+                viewModel.markAsCooked(date, note, photoUri, reconciliationItems) {
                     showMarkCookedDialog = false
                     onNavigateBack()
                 }
-            },
-            onCreateTempCameraUri = { viewModel.createTempCameraUri() }
+            }
         )
     }
-}
-
-@Composable
-private fun CookingMarkCookedDialog(
-    isSaving: Boolean,
-    onDismiss: () -> Unit,
-    onConfirm: (LocalDate, String?, Uri?) -> Unit,
-    onCreateTempCameraUri: () -> Pair<Uri, File>
-) {
-    var note by rememberSaveable { mutableStateOf("") }
-    var selectedDate by rememberSaveable { mutableStateOf(LocalDate.now()) }
-    var photoUri by rememberSaveable { mutableStateOf<Uri?>(null) }
-    var tempCameraUri by rememberSaveable { mutableStateOf<Uri?>(null) }
-
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri: Uri? ->
-        if (uri != null) photoUri = uri
-    }
-
-    val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicture()
-    ) { success: Boolean ->
-        if (success && tempCameraUri != null) {
-            photoUri = tempCameraUri
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Well Done! Mark as Cooked") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "Date: $selectedDate",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it },
-                    label = { Text("How did it turn out? (optional)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    maxLines = 3
-                )
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            val (uri, _) = onCreateTempCameraUri()
-                            tempCameraUri = uri
-                            cameraLauncher.launch(uri)
-                        }
-                    ) {
-                        Text("Take Photo")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            photoPickerLauncher.launch(
-                                androidx.activity.result.PickVisualMediaRequest(
-                                    ActivityResultContracts.PickVisualMedia.ImageOnly
-                                )
-                            )
-                        }
-                    ) {
-                        Text("Pick Photo")
-                    }
-                }
-
-                if (photoUri != null) {
-                    AsyncImage(
-                        model = photoUri,
-                        contentDescription = "Selected Photo",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(140.dp)
-                            .clip(RoundedCornerShape(8.dp)),
-                        contentScale = ContentScale.Crop
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    onConfirm(selectedDate, note.trim().ifEmpty { null }, photoUri)
-                },
-                enabled = !isSaving
-            ) {
-                Text("Save to Cook Log")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
 }

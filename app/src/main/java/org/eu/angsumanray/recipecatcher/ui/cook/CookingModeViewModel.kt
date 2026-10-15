@@ -9,17 +9,22 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.core.domain.QuantityScaler
+import org.eu.angsumanray.recipecatcher.core.planner.PantryReconciliationItem
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
+import org.eu.angsumanray.recipecatcher.data.db.entity.InventoryItemEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.StepEntity
 import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
 import org.eu.angsumanray.recipecatcher.data.repo.CookLogRepository
+import org.eu.angsumanray.recipecatcher.data.repo.ListsRepository
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import java.time.LocalDate
 import javax.inject.Inject
@@ -53,6 +58,7 @@ data class CookingModeUiState(
 class CookingModeViewModel @Inject constructor(
     private val recipeRepository: RecipeRepository,
     private val cookLogRepository: CookLogRepository,
+    private val listsRepository: ListsRepository,
     private val imageStorageManager: ImageStorageManager,
     private val timerAlerts: CookingTimerAlerts,
     savedStateHandle: SavedStateHandle
@@ -67,6 +73,9 @@ class CookingModeViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(CookingModeUiState())
     val uiState: StateFlow<CookingModeUiState> = _uiState.asStateFlow()
+
+    val inventoryItems: StateFlow<List<InventoryItemEntity>> = listsRepository.observeInventoryItems()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val timerJobs = mutableMapOf<Int, Job>()
     private val timerEndsAt = mutableMapOf<Int, Long>()
@@ -205,12 +214,16 @@ class CookingModeViewModel @Inject constructor(
         date: LocalDate = LocalDate.now(),
         note: String? = null,
         photoUri: Uri? = null,
+        reconciliationItems: List<PantryReconciliationItem> = emptyList(),
         onComplete: () -> Unit
     ) {
         if (_uiState.value.isSaving) return
         _uiState.value = _uiState.value.copy(isSaving = true)
         viewModelScope.launch {
             try {
+                if (reconciliationItems.isNotEmpty()) {
+                    listsRepository.applyPantryReconciliation(reconciliationItems)
+                }
                 val savedPath = if (photoUri != null) {
                     imageStorageManager.saveCookedImageFromUri(photoUri)
                 } else null

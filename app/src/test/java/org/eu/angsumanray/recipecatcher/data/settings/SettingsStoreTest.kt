@@ -59,6 +59,33 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun `SettingsStore manages chat model ID with dual model support`() = runBlocking {
+        // Defaults to claude-haiku-5-5
+        assertEquals(SettingsStore.DEFAULT_CHAT_MODEL_ID, settingsStore.chatModelIdFlow.first())
+        assertEquals(SettingsStore.DEFAULT_CHAT_MODEL_ID, settingsStore.chatModelIdSettingFlow.first())
+
+        // Set to Claude 3.5 Sonnet
+        settingsStore.setChatModelId(SettingsStore.CHAT_MODEL_SONNET)
+        assertEquals("claude-3-5-sonnet", settingsStore.chatModelIdFlow.first())
+        assertEquals("claude-3-5-sonnet", settingsStore.chatModelIdSettingFlow.first())
+
+        // Revert back to Haiku
+        settingsStore.setChatModelId(SettingsStore.CHAT_MODEL_HAIKU)
+        assertEquals("claude-haiku-5-5", settingsStore.chatModelIdFlow.first())
+    }
+
+    @Test
+    fun `SettingsStore persists update check state`() = runBlocking {
+        assertEquals(0L, settingsStore.lastUpdateCheckAtFlow.first())
+        assertEquals(null, settingsStore.cachedLatestReleaseTagFlow.first())
+
+        val now = 1729000000000L
+        settingsStore.setLastUpdateCheck(now, "v1.2.0")
+        assertEquals(now, settingsStore.lastUpdateCheckAtFlow.first())
+        assertEquals("v1.2.0", settingsStore.cachedLatestReleaseTagFlow.first())
+    }
+
+    @Test
     fun `SettingsStore calculates AI spend accurately`() {
         // 2000 input tokens at $0.10/M = $0.0002
         // 800 output tokens at $0.50/M = $0.0004

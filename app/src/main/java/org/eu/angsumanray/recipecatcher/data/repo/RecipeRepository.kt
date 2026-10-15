@@ -23,6 +23,11 @@ sealed interface CaptureStart {
     data object NoLink : CaptureStart
 }
 
+data class CleanStorageResult(
+    val deletedCount: Int,
+    val bytesFreed: Long
+)
+
 @Singleton
 class RecipeRepository @Inject constructor(
     private val database: RecipeDatabase,
@@ -332,24 +337,34 @@ class RecipeRepository @Inject constructor(
     suspend fun cleanOrphanedImages(
         modifiedBefore: Long = System.currentTimeMillis() - ORPHAN_GRACE_MILLIS
     ): Int {
-        val mgr = imageStorageManager ?: return 0
+        return cleanOrphanedImagesWithStats(modifiedBefore).deletedCount
+    }
+
+    suspend fun cleanOrphanedImagesWithStats(
+        modifiedBefore: Long = System.currentTimeMillis() - ORPHAN_GRACE_MILLIS
+    ): CleanStorageResult {
+        val mgr = imageStorageManager ?: return CleanStorageResult(0, 0L)
         mgr.deleteStaleCameraFiles(modifiedBefore)
         val diskFiles = mgr.scanAllImageFiles()
-        if (diskFiles.isEmpty()) return 0
+        if (diskFiles.isEmpty()) return CleanStorageResult(0, 0L)
 
         val recipeImages = recipeDao.getReferencedImagePaths().toSet()
         val cookPhotos = cookLogDao.getReferencedPhotoPaths().toSet()
         val referenced = recipeImages + cookPhotos
 
         var deletedCount = 0
-        for (file in diskFiles) {
-            if (file !in referenced && mgr.getFile(file).lastModified() < modifiedBefore) {
-                if (mgr.deleteImage(file)) {
+        var bytesFreed = 0L
+        for (relPath in diskFiles) {
+            val file = mgr.getFile(relPath)
+            if (relPath !in referenced && file.lastModified() < modifiedBefore) {
+                val length = file.length()
+                if (mgr.deleteImage(relPath)) {
                     deletedCount++
+                    bytesFreed += length
                 }
             }
         }
-        return deletedCount
+        return CleanStorageResult(deletedCount, bytesFreed)
     }
 
     suspend fun search(query: String): List<RecipeEntity> {

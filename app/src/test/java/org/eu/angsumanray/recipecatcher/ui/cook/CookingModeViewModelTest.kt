@@ -22,6 +22,7 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.StepEntity
 import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
 import org.eu.angsumanray.recipecatcher.data.repo.CookLogRepository
+import org.eu.angsumanray.recipecatcher.data.repo.ListsRepository
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -44,6 +45,7 @@ class CookingModeViewModelTest {
     private lateinit var database: RecipeDatabase
     private lateinit var repository: RecipeRepository
     private lateinit var cookLogRepository: CookLogRepository
+    private lateinit var listsRepository: ListsRepository
     private lateinit var imageStorageManager: ImageStorageManager
     private lateinit var context: Context
     private var recipeId: Long = 0L
@@ -60,6 +62,13 @@ class CookingModeViewModelTest {
         imageStorageManager = ImageStorageManager(context, okhttp3.OkHttpClient())
         repository = RecipeRepository(database, imageStorageManager)
         cookLogRepository = CookLogRepository(database, imageStorageManager)
+        listsRepository = ListsRepository(
+            database = database,
+            listsDao = database.listsDao(),
+            plannerDao = database.plannerDao(),
+            recipeDao = database.recipeDao(),
+            ingredientDao = database.ingredientDao()
+        )
 
         val recipe = RecipeEntity(
             sourceType = "manual",
@@ -96,6 +105,7 @@ class CookingModeViewModelTest {
         return CookingModeViewModel(
             recipeRepository = repository,
             cookLogRepository = cookLogRepository,
+            listsRepository = listsRepository,
             imageStorageManager = imageStorageManager,
             timerAlerts = CookingTimerAlerts(context),
             savedStateHandle = SavedStateHandle(args)

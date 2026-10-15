@@ -15,16 +15,22 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import org.eu.angsumanray.recipecatcher.BuildConfig
 import org.eu.angsumanray.recipecatcher.backup.BackupInspection
 import org.eu.angsumanray.recipecatcher.backup.BackupManager
 import org.eu.angsumanray.recipecatcher.backup.BackupManifest
 import org.eu.angsumanray.recipecatcher.backup.RestoreManager
 import org.eu.angsumanray.recipecatcher.core.llm.ClaudeExtractor
 import org.eu.angsumanray.recipecatcher.data.db.dao.LlmUsageDao
+import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import org.eu.angsumanray.recipecatcher.di.AnthropicHttpClient
+import org.eu.angsumanray.recipecatcher.updates.ApkInstaller
+import org.eu.angsumanray.recipecatcher.updates.UpdateCheckResult
+import org.eu.angsumanray.recipecatcher.updates.UpdateChecker
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import javax.inject.Inject
 
 sealed interface TestKeyStatus {
@@ -41,6 +47,15 @@ sealed interface BackupOpStatus {
     data class Error(val message: String) : BackupOpStatus
 }
 
+sealed interface UpdateUiStatus {
+    object Idle : UpdateUiStatus
+    object Checking : UpdateUiStatus
+    data class NoUpdate(val currentVersion: String) : UpdateUiStatus
+    data class UpdateAvailable(val result: UpdateCheckResult) : UpdateUiStatus
+    data class Downloading(val progress: Float) : UpdateUiStatus
+    data class Error(val message: String) : UpdateUiStatus
+}
+
 data class SpendStats(
     val inputTokens: Long = 0,
     val outputTokens: Long = 0,
@@ -54,8 +69,20 @@ class SettingsViewModel @Inject constructor(
     private val llmUsageDao: LlmUsageDao,
     private val backupManager: BackupManager,
     private val restoreManager: RestoreManager,
+    private val recipeRepository: RecipeRepository,
+    private val updateChecker: UpdateChecker,
+    private val apkInstaller: ApkInstaller,
     @AnthropicHttpClient private val httpClient: HttpClient
 ) : ViewModel() {
+
+    private val _cleanStorageMessage = MutableStateFlow<String?>(null)
+    val cleanStorageMessage: StateFlow<String?> = _cleanStorageMessage.asStateFlow()
+
+    private val _isCleaningStorage = MutableStateFlow(false)
+    val isCleaningStorage: StateFlow<Boolean> = _isCleaningStorage.asStateFlow()
+
+    private val _updateStatus = MutableStateFlow<UpdateUiStatus>(UpdateUiStatus.Idle)
+    val updateStatus: StateFlow<UpdateUiStatus> = _updateStatus.asStateFlow()
 
     private val _apiKey = MutableStateFlow("")
     val apiKey: StateFlow<String> = _apiKey.asStateFlow()
@@ -388,6 +415,64 @@ class SettingsViewModel @Inject constructor(
                 TestKeyStatus.Error(e.message ?: "Connection error")
             }
         }
+    }
+
+    fun cleanStorage() {
+        viewModelScope.launch {
+            _isCleaningStorage.value = true
+            try {
+                val result = recipeRepository.cleanOrphanedImagesWithStats()
+                val mb = String.format(Locale.US, "%.1f", result.bytesFreed / (1024.0 * 1024.0))
+                _cleanStorageMessage.value = if (result.deletedCount > 0) {
+                    "Cleaned ${result.deletedCount} orphaned images, freed ${mb} MB."
+                } else {
+                    "No orphaned images found. Storage is clean."
+                }
+            } catch (e: Exception) {
+                _cleanStorageMessage.value = "Storage cleanup failed: ${e.message}"
+            } finally {
+                _isCleaningStorage.value = false
+            }
+        }
+    }
+
+    fun clearCleanStorageMessage() {
+        _cleanStorageMessage.value = null
+    }
+
+    fun checkForUpdates() {
+        _updateStatus.value = UpdateUiStatus.Checking
+        viewModelScope.launch {
+            try {
+                val result = updateChecker.checkForUpdates()
+                if (result.isUpdateAvailable) {
+                    _updateStatus.value = UpdateUiStatus.UpdateAvailable(result)
+                } else {
+                    _updateStatus.value = UpdateUiStatus.NoUpdate(BuildConfig.VERSION_NAME)
+                }
+            } catch (e: Exception) {
+                _updateStatus.value = UpdateUiStatus.Error(e.message ?: "Failed to check for updates")
+            }
+        }
+    }
+
+    fun downloadAndInstallUpdate(url: String) {
+        _updateStatus.value = UpdateUiStatus.Downloading(0f)
+        viewModelScope.launch {
+            try {
+                val file = apkInstaller.downloadApk(url) { progress ->
+                    _updateStatus.value = UpdateUiStatus.Downloading(progress)
+                }
+                apkInstaller.installApk(file)
+                _updateStatus.value = UpdateUiStatus.Idle
+            } catch (e: Exception) {
+                _updateStatus.value = UpdateUiStatus.Error("Failed to install update: ${e.message}")
+            }
+        }
+    }
+
+    fun dismissUpdateStatus() {
+        _updateStatus.value = UpdateUiStatus.Idle
     }
 
     private companion object {

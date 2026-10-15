@@ -7,29 +7,39 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import org.eu.angsumanray.recipecatcher.core.domain.PlainTextRecipeFormatter
 import org.eu.angsumanray.recipecatcher.core.domain.QuantityScaler
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractionInput
 import org.eu.angsumanray.recipecatcher.core.llm.NoRecipeFoundException
 import org.eu.angsumanray.recipecatcher.core.llm.RecipeExtractor
+import org.eu.angsumanray.recipecatcher.core.model.Ingredient
+import org.eu.angsumanray.recipecatcher.core.model.Recipe
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
+import org.eu.angsumanray.recipecatcher.core.model.Step
+import org.eu.angsumanray.recipecatcher.core.planner.PantryReconciliationItem
 import org.eu.angsumanray.recipecatcher.data.db.entity.CookLogEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
+import org.eu.angsumanray.recipecatcher.data.db.entity.InventoryItemEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.StepEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
 import org.eu.angsumanray.recipecatcher.data.repo.CookLogRepository
+import org.eu.angsumanray.recipecatcher.data.repo.ListsRepository
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.data.repo.TagRepository
 import org.eu.angsumanray.recipecatcher.data.repo.toExtractionUsageEntity
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import java.time.LocalDate
+import java.util.Locale
 import javax.inject.Inject
 
 data class RecipeViewerUiState(
@@ -56,6 +66,7 @@ data class RecipeViewerUiState(
 class RecipeViewerViewModel @Inject constructor(
     private val recipeRepository: RecipeRepository,
     private val cookLogRepository: CookLogRepository,
+    private val listsRepository: ListsRepository,
     private val tagRepository: TagRepository,
     private val recipeExtractor: RecipeExtractor,
     private val imageStorageManager: ImageStorageManager,
@@ -67,6 +78,9 @@ class RecipeViewerViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(RecipeViewerUiState())
     val uiState: StateFlow<RecipeViewerUiState> = _uiState.asStateFlow()
+
+    val inventoryItems: StateFlow<List<InventoryItemEntity>> = listsRepository.observeInventoryItems()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
         observeData()
@@ -209,9 +223,13 @@ class RecipeViewerViewModel @Inject constructor(
     fun markAsCooked(
         date: LocalDate,
         note: String?,
-        photoUri: Uri?
+        photoUri: Uri?,
+        reconciliationItems: List<PantryReconciliationItem> = emptyList()
     ) {
         viewModelScope.launch {
+            if (reconciliationItems.isNotEmpty()) {
+                listsRepository.applyPantryReconciliation(reconciliationItems)
+            }
             val savedPath = if (photoUri != null) {
                 imageStorageManager.saveCookedImageFromUri(photoUri)
             } else null
@@ -223,6 +241,47 @@ class RecipeViewerViewModel @Inject constructor(
                 photoPath = savedPath
             )
         }
+    }
+
+    fun getSharePlainText(): String? {
+        val recipe = _uiState.value.recipe ?: return null
+        val ingredients = _uiState.value.rawIngredients.map { ing ->
+            Ingredient(
+                name = ing.name,
+                quantity = ing.quantity,
+                quantityMax = ing.quantityMax,
+                unit = ing.unit,
+                baseName = ing.baseName ?: ing.name.trim().lowercase(Locale.ROOT),
+                category = ing.category ?: "other",
+                groupName = ing.groupName
+            )
+        }
+        val steps = _uiState.value.steps.sortedBy { it.position }.map { s ->
+            Step(
+                position = s.position,
+                text = s.text,
+                timerSeconds = s.timerSeconds
+            )
+        }
+        val coreRecipe = Recipe(
+            id = recipe.id,
+            sourceKey = recipe.sourceKey,
+            title = recipe.title,
+            description = recipe.description,
+            sourceUrl = recipe.sourceUrl,
+            sourceType = SourceType.from(recipe.sourceType ?: "web"),
+            coverPhotoPath = recipe.coverPhotoPath,
+            imagePath = recipe.imagePath,
+            servings = _uiState.value.currentServings,
+            prepMin = recipe.prepMin,
+            cookMin = recipe.cookMin,
+            totalMin = recipe.totalMin,
+            cuisine = recipe.cuisine,
+            ingredients = ingredients,
+            steps = steps,
+            personalNote = recipe.personalNote
+        )
+        return PlainTextRecipeFormatter.format(coreRecipe)
     }
 
     fun createTempCameraUri(): Pair<Uri, java.io.File> {

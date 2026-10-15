@@ -25,6 +25,7 @@ data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val inputMessage: String = "",
     val includeWeb: Boolean = false,
+    val chatModelId: String = SettingsStore.CHAT_MODEL_HAIKU,
     val isSending: Boolean = false,
     val savingUrls: Set<String> = emptySet(),
     val errorMessage: String? = null,
@@ -55,11 +56,22 @@ class ChatViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            settingsStore.chatModelIdFlow.collect { modelId ->
+                _uiState.update { it.copy(chatModelId = modelId) }
+            }
+        }
+        viewModelScope.launch {
             database.recipeDao().observeAllSaved().collect { recipes ->
                 _uiState.update { state ->
                     state.copy(recipeTitles = recipes.associate { it.id to (it.title ?: "Untitled Recipe") })
                 }
             }
+        }
+    }
+
+    fun setChatModelId(modelId: String) {
+        viewModelScope.launch {
+            settingsStore.setChatModelId(modelId)
         }
     }
 

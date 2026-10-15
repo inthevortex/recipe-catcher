@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -80,6 +81,7 @@ import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.core.domain.FractionFormatter
 import org.eu.angsumanray.recipecatcher.data.db.entity.CookLogEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
+import org.eu.angsumanray.recipecatcher.ui.pantry.PantryReconciliationSheet
 import java.io.File
 import java.time.LocalDate
 
@@ -92,6 +94,7 @@ fun RecipeViewerScreen(
     onNavigateToEdit: (Long) -> Unit
 ) {
     val state by viewModel.uiState.collectAsState()
+    val inventoryItems by viewModel.inventoryItems.collectAsState()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -132,6 +135,23 @@ fun RecipeViewerScreen(
                 },
                 actions = {
                     if (recipe != null) {
+                        IconButton(onClick = {
+                            val shareText = viewModel.getSharePlainText()
+                            if (!shareText.isNullOrBlank()) {
+                                val sendIntent = Intent().apply {
+                                    action = Intent.ACTION_SEND
+                                    putExtra(Intent.EXTRA_TEXT, shareText)
+                                    type = "text/plain"
+                                }
+                                val shareIntent = Intent.createChooser(sendIntent, null)
+                                context.startActivity(shareIntent)
+                            }
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = "Share recipe"
+                            )
+                        }
                         IconButton(onClick = { showAddToPlanSheet = true }) {
                             Icon(
                                 imageVector = Icons.Default.DateRange,
@@ -799,15 +819,19 @@ fun RecipeViewerScreen(
         )
     }
 
-    // Dialog: Mark as Cooked
-    if (showMarkCookedDialog) {
-        MarkCookedDialog(
+    // Sheet: Mark as Cooked & Reconcile Pantry
+    if (showMarkCookedDialog && recipe != null) {
+        PantryReconciliationSheet(
+            recipeTitle = recipe.title.orEmpty(),
+            ingredients = state.rawIngredients,
+            inventoryItems = inventoryItems,
+            onCreateTempCameraUri = { viewModel.createTempCameraUri() },
             onDismiss = { showMarkCookedDialog = false },
-            onConfirm = { date, note, photoUri ->
-                viewModel.markAsCooked(date, note, photoUri)
+            onConfirm = { date, note, photoUri, reconciliationItems ->
+                viewModel.markAsCooked(date, note, photoUri, reconciliationItems)
                 showMarkCookedDialog = false
-            },
-            onCreateTempCameraUri = { viewModel.createTempCameraUri() }
+                scope.launch { snackbarHostState.showSnackbar("Logged to cook history!") }
+            }
         )
     }
 
@@ -830,113 +854,6 @@ fun RecipeViewerScreen(
 @dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
 interface RecipeViewerEntryPoint {
     fun plannerRepository(): org.eu.angsumanray.recipecatcher.data.repo.PlannerRepository
-}
-
-@Composable
-private fun MarkCookedDialog(
-    onDismiss: () -> Unit,
-    onConfirm: (LocalDate, String?, Uri?) -> Unit,
-    onCreateTempCameraUri: () -> Pair<Uri, File>
-) {
-    // Saveable so a camera round trip that recreates the activity keeps the dialog's input.
-    var note by rememberSaveable { mutableStateOf("") }
-    var selectedDate by rememberSaveable { mutableStateOf(LocalDate.now()) }
-    var photoUri by rememberSaveable { mutableStateOf<Uri?>(null) }
-    var tempCameraUri by rememberSaveable { mutableStateOf<Uri?>(null) }
-
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            photoUri = uri
-        }
-    }
-
-    val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicture()
-    ) { success: Boolean ->
-        if (success && tempCameraUri != null) {
-            photoUri = tempCameraUri
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Mark as Cooked") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "Date: $selectedDate",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it },
-                    label = { Text("Notes (e.g. less chilli next time)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    maxLines = 3
-                )
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            val (uri, _) = onCreateTempCameraUri()
-                            tempCameraUri = uri
-                            cameraLauncher.launch(uri)
-                        }
-                    ) {
-                        Text("Take Photo")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            photoPickerLauncher.launch(
-                                androidx.activity.result.PickVisualMediaRequest(
-                                    ActivityResultContracts.PickVisualMedia.ImageOnly
-                                )
-                            )
-                        }
-                    ) {
-                        Text("Pick Photo")
-                    }
-                }
-
-                if (photoUri != null) {
-                    AsyncImage(
-                        model = photoUri,
-                        contentDescription = "Selected Photo",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(140.dp)
-                            .clip(RoundedCornerShape(8.dp)),
-                        contentScale = ContentScale.Crop
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    onConfirm(
-                        selectedDate,
-                        note.trim().ifEmpty { null },
-                        photoUri
-                    )
-                }
-            ) {
-                Text("Save")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
 }
 
 private fun formatIngredientQuantity(ingredient: IngredientEntity): String =

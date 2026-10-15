@@ -25,11 +25,16 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -73,6 +78,10 @@ fun SettingsScreen(
     val theme by viewModel.theme.collectAsState()
     val testStatus by viewModel.testKeyStatus.collectAsState()
     val spendStats by viewModel.spendStats.collectAsState()
+
+    val cleanStorageMessage by viewModel.cleanStorageMessage.collectAsState()
+    val isCleaningStorage by viewModel.isCleaningStorage.collectAsState()
+    val updateStatus by viewModel.updateStatus.collectAsState()
 
     val isInstagramLoggedIn by viewModel.isInstagramLoggedIn.collectAsState()
     val fetchTopComment by viewModel.fetchTopComment.collectAsState()
@@ -187,6 +196,119 @@ fun SettingsScreen(
         BackupOpStatus.Idle -> Unit
     }
 
+    // Storage Clean Result Dialog
+    cleanStorageMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { viewModel.clearCleanStorageMessage() },
+            title = { Text("Storage Cleanup") },
+            text = { Text(msg) },
+            confirmButton = {
+                Button(onClick = { viewModel.clearCleanStorageMessage() }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+
+    // Update Check & Install Dialogs
+    when (val status = updateStatus) {
+        is UpdateUiStatus.Checking -> {
+            AlertDialog(
+                onDismissRequest = {},
+                confirmButton = {},
+                title = { Text("Checking for Updates") },
+                text = {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                        Text("Connecting to GitHub Releases...")
+                    }
+                }
+            )
+        }
+        is UpdateUiStatus.NoUpdate -> {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissUpdateStatus() },
+                title = { Text("Up to Date") },
+                text = { Text("You are on the latest version (${status.currentVersion}).") },
+                confirmButton = {
+                    Button(onClick = { viewModel.dismissUpdateStatus() }) {
+                        Text("OK")
+                    }
+                }
+            )
+        }
+        is UpdateUiStatus.UpdateAvailable -> {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissUpdateStatus() },
+                title = { Text("Update Available: ${status.result.latestVersion}") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(status.result.releaseName, fontWeight = FontWeight.Bold)
+                        if (status.result.releaseNotes.isNotBlank()) {
+                            Text(
+                                text = status.result.releaseNotes,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 8
+                            )
+                        }
+                        if (status.result.appApkUrl == null) {
+                            Text(
+                                "No APK asset attached to this release.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    if (status.result.appApkUrl != null) {
+                        Button(onClick = { viewModel.downloadAndInstallUpdate(status.result.appApkUrl) }) {
+                            Text("Download & Install")
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.dismissUpdateStatus() }) {
+                        Text("Later")
+                    }
+                }
+            )
+        }
+        is UpdateUiStatus.Downloading -> {
+            AlertDialog(
+                onDismissRequest = {},
+                confirmButton = {},
+                title = { Text("Downloading Update...") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        val percent = (status.progress * 100).toInt()
+                        LinearProgressIndicator(
+                            progress = { status.progress },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text("$percent%", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            )
+        }
+        is UpdateUiStatus.Error -> {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissUpdateStatus() },
+                title = { Text("Update Error") },
+                text = { Text(status.message) },
+                confirmButton = {
+                    Button(onClick = { viewModel.dismissUpdateStatus() }) {
+                        Text("OK")
+                    }
+                }
+            )
+        }
+        UpdateUiStatus.Idle -> Unit
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -278,21 +400,7 @@ fun SettingsScreen(
                 }
             }
 
-            // Model ID Section
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Claude Model ID",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                OutlinedTextField(
-                    value = modelId,
-                    onValueChange = { viewModel.setModelId(it) },
-                    label = { Text("Model ID") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-            }
+
 
             // Theme Preference
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -395,18 +503,56 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = "Chat & Web Search",
+                        text = "AI Chat & Web Search",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
-                    OutlinedTextField(
-                        value = chatModelId,
-                        onValueChange = { viewModel.setChatModelId(it) },
-                        label = { Text("Chat Model ID") },
-                        placeholder = { Text("Same as Claude Model ID") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
+                    Text(
+                        text = "Recipe extraction is internally optimized and fixed to Claude Haiku 5.5 for rapid, cost-effective parsing. Choose the model for interactive recipe chat below.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    var modelExpanded by remember { mutableStateOf(false) }
+                    val currentChatModelLabel = when (chatModelId) {
+                        SettingsStore.CHAT_MODEL_SONNET -> "Claude 3.5 Sonnet"
+                        else -> "Claude Haiku 5.5"
+                    }
+
+                    ExposedDropdownMenuBox(
+                        expanded = modelExpanded,
+                        onExpandedChange = { modelExpanded = it }
+                    ) {
+                        OutlinedTextField(
+                            value = currentChatModelLabel,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Chat Model") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded) },
+                            modifier = Modifier
+                                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                .fillMaxWidth()
+                        )
+                        ExposedDropdownMenu(
+                            expanded = modelExpanded,
+                            onDismissRequest = { modelExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Claude Haiku 5.5") },
+                                onClick = {
+                                    viewModel.setChatModelId(SettingsStore.CHAT_MODEL_HAIKU)
+                                    modelExpanded = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Claude 3.5 Sonnet") },
+                                onClick = {
+                                    viewModel.setChatModelId(SettingsStore.CHAT_MODEL_SONNET)
+                                    modelExpanded = false
+                                }
+                            )
+                        }
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -657,6 +803,48 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Manage Lists")
+                    }
+                }
+            }
+
+            // Storage & Maintenance Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Storage & Updates",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Clean up orphaned recipe/cook photos unreferenced by your database, and check for new releases.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { viewModel.cleanStorage() },
+                            modifier = Modifier.weight(1f),
+                            enabled = !isCleaningStorage
+                        ) {
+                            if (isCleaningStorage) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                            }
+                            Text("Clean Storage")
+                        }
+                        Button(
+                            onClick = { viewModel.checkForUpdates() },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Check Updates")
+                        }
                     }
                 }
             }

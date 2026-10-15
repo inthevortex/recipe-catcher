@@ -21,15 +21,12 @@ import androidx.compose.ui.unit.dp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
-import androidx.wear.compose.material.Checkbox
-import androidx.wear.compose.material.ListHeader
-import androidx.wear.compose.material.MaterialTheme
-import androidx.wear.compose.material.PositionIndicator
-import androidx.wear.compose.material.Scaffold
-import androidx.wear.compose.material.Text
-import androidx.wear.compose.material.TimeText
-import androidx.wear.compose.material.ToggleChip
-import androidx.wear.compose.material.ToggleChipDefaults
+import androidx.wear.compose.material3.CheckboxButton
+import androidx.wear.compose.material3.ListHeader
+import androidx.wear.compose.material3.MaterialTheme
+import androidx.wear.compose.material3.ScreenScaffold
+import androidx.wear.compose.material3.Text
+import androidx.wear.compose.material3.TimeText
 import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.wear.data.TodayRepository
 import org.eu.angsumanray.recipecatcher.wear.data.WearMealItem
@@ -43,39 +40,46 @@ fun TodayScreen(
     val listState = rememberScalingLazyListState()
     val scope = rememberCoroutineScope()
 
-    Scaffold(
-        timeText = { TimeText() },
-        positionIndicator = { PositionIndicator(scalingLazyListState = listState) }
-    ) {
+    ScreenScaffold(
+        scrollState = listState,
+        timeText = { TimeText() }
+    ) { contentPadding ->
         if (meals.isEmpty()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .padding(contentPadding)
                     .padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
                 Text(
                     text = "No meals planned",
-                    style = MaterialTheme.typography.title3,
+                    style = MaterialTheme.typography.titleMedium,
                     textAlign = TextAlign.Center
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "Plan meals on your phone to see them here.",
-                    style = MaterialTheme.typography.body2,
+                    style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center
                 )
             }
         } else {
             ScalingLazyColumn(
-                modifier = modifier.fillMaxSize(),
+                modifier = modifier
+                    .fillMaxSize()
+                    .padding(contentPadding),
                 state = listState,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 item {
                     ListHeader {
-                        Text(text = "Today's Meals", fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "Today's Meals",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
 
@@ -101,7 +105,7 @@ private fun MealItemRow(
     modifier: Modifier = Modifier
 ) {
     // Ticks only go one way: the phone owns un-ticking, so a done row stays done here.
-    ToggleChip(
+    CheckboxButton(
         modifier = modifier.fillMaxWidth(),
         checked = meal.done,
         onCheckedChange = { checked -> if (checked) onToggle() },
@@ -124,10 +128,6 @@ private fun MealItemRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-        },
-        toggleControl = {
-            Checkbox(checked = meal.done)
-        },
-        colors = ToggleChipDefaults.toggleChipColors()
+        }
     )
 }

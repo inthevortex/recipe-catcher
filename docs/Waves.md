@@ -151,20 +151,20 @@ Images and video captions turned into structured recipes using Claude Haiku 5.5 
 
 Fine-tuned pantry reconciliation, plain text sharing, dual model selection, orphaned storage cleanup, Wear OS Compose Material 3 upgrade, and in-app update checks.
 
-- [ ] Dual model selector in Settings: choice between `claude-haiku-5-5` (default) and `claude-3-5-sonnet` for `ChatPlanner` and `PlanSuggester`.
-- [ ] Interactive Pantry reconciliation sheet/dialog on "Mark as cooked" (from Recipe viewer, Cooking mode, and Today screen):
+- [x] Dual model selector in Settings: choice between `claude-haiku-5-5` (default) and `claude-3-5-sonnet` for `ChatPlanner` and `PlanSuggester`.
+- [x] Interactive Pantry reconciliation sheet/dialog on "Mark as cooked" (from Recipe viewer, Cooking mode, and Today screen):
   - Displays recipe ingredients matched to inventory items by base name.
   - Side-by-side dropdown/selector (`In Stock`, `Low`, `Out`, `Don't Change`).
   - Supports manual modifications: mark used items `Out`, mark restocked items `In Stock`, skip unused/untracked items.
   - Commits stock updates to Room and writes the cook log entry.
-- [ ] Share recipe as clean plain text (`ACTION_SEND` with MIME type `text/plain`):
+- [x] Share recipe as clean plain text (`ACTION_SEND` with MIME type `text/plain`):
   - Formats recipe title, yield, prep & cook time, formatted ingredient checklist, and numbered instructions (clean text without markdown clutter).
-- [ ] `ImageCleanupWorker` in `:app/storage`: periodic WorkManager job + manual "Clean storage" button in Settings; scans `filesDir/images/`, diffs against active database paths (`recipe.cover_image_path`, `cook_log.photo_path`), deletes orphaned files, and reports freed space and count.
-- [ ] Wear OS Compose Material 3 upgrade: migrate `:wear` module to `androidx.wear.compose:compose-material3`, update UI cards, chips, typography, and responsive layouts.
-- [ ] In-App GitHub Release Update Checker (`UpdateChecker` in `:app/updates`):
+- [x] `ImageCleanupWorker` in `:app/storage`: periodic WorkManager job + manual "Clean storage" button in Settings; scans `filesDir/images/`, diffs against active database paths (`recipe.cover_image_path`, `cook_log.photo_path`), deletes orphaned files, and reports freed space and count.
+- [x] Wear OS Compose Material 3 upgrade: migrate `:wear` module to `androidx.wear.compose:compose-material3`, update UI cards, chips, typography, and responsive layouts.
+- [x] In-App GitHub Release Update Checker (`UpdateChecker` in `:app/updates`):
   - Settings "Check for updates" + periodic WorkManager background check against GitHub Releases API (`/repos/angsuman/recipe-catcher/releases/latest`).
   - Dialog showing release notes, version tag, and "Download & Install" (downloads APK to cache, invokes package installer via `FileProvider`).
   - Wearable Data Layer notification: sends `/update_available` message to watch companion.
-- [ ] Tests: pantry reconciliation logic tests, image cleanup worker tests, plain text export formatter tests, update checker tests, and wear M3 UI tests.
+- [x] Tests: pantry reconciliation logic tests, image cleanup worker tests, plain text export formatter tests, update checker tests, and wear M3 UI tests.
 
 **Done when:** marking a recipe cooked updates pantry stock as chosen, sharing sends clean plain text, "Clean storage" removes unreferenced images, and the watch app runs on Wear Compose Material 3.

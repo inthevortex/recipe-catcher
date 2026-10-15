@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
@@ -38,12 +39,19 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.PlanEntryEntity
+import org.eu.angsumanray.recipecatcher.ui.pantry.PantryReconciliationSheet
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -58,6 +66,10 @@ fun TodayScreen(
     onNavigateToChat: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsState()
+    val inventoryItems by viewModel.inventoryItems.collectAsState()
+    val scope = rememberCoroutineScope()
+    var pendingReconciliationCookItem by remember { mutableStateOf<TodayEntryItem?>(null) }
+    var pendingIngredients by remember { mutableStateOf<List<IngredientEntity>>(emptyList()) }
 
     Scaffold(
         topBar = {
@@ -197,7 +209,18 @@ fun TodayScreen(
                 items(cookItems, key = { "cook_${it.entry.id}" }) { item ->
                     TodayMealCard(
                         item = item,
-                        onToggleDone = { viewModel.toggleEntryDone(item.entry.id) },
+                        onToggleDone = {
+                            if (item.isDone) {
+                                viewModel.toggleEntryDone(item.entry.id)
+                            } else if (item.recipe != null) {
+                                scope.launch {
+                                    pendingIngredients = viewModel.getRecipeIngredients(item.recipe.id)
+                                    pendingReconciliationCookItem = item
+                                }
+                            } else {
+                                viewModel.toggleEntryDone(item.entry.id)
+                            }
+                        },
                         onOpenRecipe = { item.recipe?.id?.let { onNavigateToViewer(it) } },
                         onStartCooking = { item.recipe?.id?.let { onNavigateToCookingMode(it, item.entry.portions) } }
                     )
@@ -266,6 +289,33 @@ fun TodayScreen(
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
+    }
+
+    if (pendingReconciliationCookItem != null) {
+        val pendingItem = pendingReconciliationCookItem!!
+        PantryReconciliationSheet(
+            recipeTitle = pendingItem.recipe?.title ?: pendingItem.entry.text.orEmpty(),
+            ingredients = pendingIngredients,
+            inventoryItems = inventoryItems,
+            onCreateTempCameraUri = { viewModel.createTempCameraUri() },
+            onDismiss = { pendingReconciliationCookItem = null },
+            onConfirm = { date, note, photoUri, reconciliationItems ->
+                val recipeId = pendingItem.recipe?.id
+                if (recipeId != null) {
+                    viewModel.markCookedWithReconciliation(
+                        entryId = pendingItem.entry.id,
+                        recipeId = recipeId,
+                        date = date,
+                        note = note,
+                        photoUri = photoUri,
+                        reconciliationItems = reconciliationItems
+                    )
+                } else {
+                    viewModel.toggleEntryDone(pendingItem.entry.id, photoPath = null, note = note)
+                }
+                pendingReconciliationCookItem = null
+            }
+        )
     }
 }
 
@@ -368,13 +418,22 @@ fun TodayMealCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            // Start Cooking Action
+            // Actions: Mark Cooked & Start Cooking
             if (onStartCooking != null && !item.isDone) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    OutlinedButton(
+                        onClick = onToggleDone,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Mark Cooked")
+                    }
                     FilledTonalButton(
                         onClick = onStartCooking,
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp)

@@ -1,0 +1,19 @@
+{
+  "tag_name": "v1.2.0",
+  "name": "1.2.0 - Polish, Pantry & Companion Enhancements",
+  "body": "## What's Changed\n* Dual model selector for Chat & Suggester\n* Interactive pantry reconciliation\n* Plain-text recipe sharing\n* Wear OS Material 3 upgrade\n* In-app GitHub release updates",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+    {
+      "name": "app-release.apk",
+      "browser_download_url": "https://github.com/angsuman/recipe-catcher/releases/download/v1.2.0/app-release.apk",
+      "size": 15420100
+    },
+    {
+      "name": "wear-release.apk",
+      "browser_download_url": "https://github.com/angsuman/recipe-catcher/releases/download/v1.2.0/wear-release.apk",
+      "size": 7240100
+    }
+  ]
+}

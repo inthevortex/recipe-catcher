@@ -40,7 +40,7 @@ data class WearTodaySnapshot(
  * Publishes the Today snapshot to connected Wear OS watches over Google Play Services Wearable Data Layer.
  */
 @Singleton
-class WearSync @Inject constructor(
+open class WearSync @Inject constructor(
     @ApplicationContext private val context: Context,
     private val plannerDao: PlannerDao,
     private val plannerRepository: PlannerRepository
@@ -86,8 +86,31 @@ class WearSync @Inject constructor(
         return WearTodaySnapshot(dateIso = date.toString(), timestamp = now, items = items)
     }
 
+    /**
+     * Sends a message to all connected watches alerting them of an available update.
+     */
+    open suspend fun sendUpdateAvailable(versionTag: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val messageClient = Wearable.getMessageClient(context)
+            val nodeClient = Wearable.getNodeClient(context)
+            val nodes = nodeClient.connectedNodes.await()
+            val payload = "{\"version\":\"$versionTag\"}".toByteArray(Charsets.UTF_8)
+            for (node in nodes) {
+                messageClient.sendMessage(node.id, PATH_UPDATE_AVAILABLE, payload).await()
+            }
+            Log.d(TAG, "Sent /update_available to ${nodes.size} connected watch nodes")
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.d(TAG, "Update available message not sent to watch", e)
+            false
+        }
+    }
+
     companion object {
         const val PATH_TODAY = "/today"
+        const val PATH_UPDATE_AVAILABLE = "/update_available"
         const val KEY_MEALS_JSON = "meals_json"
         const val KEY_TIMESTAMP = "timestamp"
         private const val TAG = "WearSync"

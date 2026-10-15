@@ -251,6 +251,40 @@ class ListsRepository @Inject constructor(
         }
     }
 
+    suspend fun applyPantryReconciliation(
+        items: List<org.eu.angsumanray.recipecatcher.core.planner.PantryReconciliationItem>
+    ) {
+        database.withTransaction {
+            for (item in items) {
+                val newStatus = when (item.action) {
+                    org.eu.angsumanray.recipecatcher.core.planner.PantryAction.IN_STOCK -> InventoryItemEntity.STATUS_IN_STOCK
+                    org.eu.angsumanray.recipecatcher.core.planner.PantryAction.LOW -> InventoryItemEntity.STATUS_LOW
+                    org.eu.angsumanray.recipecatcher.core.planner.PantryAction.OUT -> InventoryItemEntity.STATUS_OUT
+                    org.eu.angsumanray.recipecatcher.core.planner.PantryAction.DONT_CHANGE -> continue
+                }
+
+                val existing = item.matchedInventoryItem?.id?.takeIf { it > 0 }
+                    ?: listsDao.getInventoryItemByBaseName(item.baseName)?.id
+
+                if (existing != null) {
+                    setInventoryStatus(existing, newStatus)
+                } else {
+                    val entity = InventoryItemEntity(
+                        name = item.ingredientName,
+                        baseName = item.baseName,
+                        category = item.category.ifBlank { "other" },
+                        status = newStatus,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    val newId = listsDao.upsertInventoryItem(entity)
+                    if (newStatus == InventoryItemEntity.STATUS_OUT) {
+                        setInventoryStatus(newId, newStatus)
+                    }
+                }
+            }
+        }
+    }
+
     suspend fun deleteInventoryItem(id: Long) =
         listsDao.deleteInventoryItemById(id)
 }

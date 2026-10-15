@@ -4,7 +4,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.lifecycleScope
-import androidx.wear.compose.material.MaterialTheme
+import androidx.wear.compose.material3.AppScaffold
+import androidx.wear.compose.material3.MaterialTheme
 import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.wear.data.TodayRepository
 
@@ -20,7 +21,9 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                TodayScreen(repository = repository)
+                AppScaffold {
+                    TodayScreen(repository = repository)
+                }
             }
         }
     }

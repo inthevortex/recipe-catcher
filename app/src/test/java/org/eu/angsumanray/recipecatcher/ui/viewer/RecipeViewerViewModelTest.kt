@@ -21,12 +21,14 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.StepEntity
 import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
 import org.eu.angsumanray.recipecatcher.data.repo.CookLogRepository
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
+import org.eu.angsumanray.recipecatcher.data.repo.ListsRepository
 import org.eu.angsumanray.recipecatcher.data.repo.TagRepository
 import org.eu.angsumanray.recipecatcher.data.settings.SecretStore
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -44,6 +46,7 @@ class RecipeViewerViewModelTest {
     private lateinit var database: RecipeDatabase
     private lateinit var repository: RecipeRepository
     private lateinit var cookLogRepository: CookLogRepository
+    private lateinit var listsRepository: ListsRepository
     private lateinit var tagRepository: TagRepository
     private lateinit var imageStorageManager: ImageStorageManager
     private lateinit var settingsStore: SettingsStore
@@ -68,6 +71,13 @@ class RecipeViewerViewModelTest {
         imageStorageManager = ImageStorageManager(context, okhttp3.OkHttpClient())
         repository = RecipeRepository(database, imageStorageManager)
         cookLogRepository = CookLogRepository(database, imageStorageManager)
+        listsRepository = ListsRepository(
+            database = database,
+            listsDao = database.listsDao(),
+            plannerDao = database.plannerDao(),
+            recipeDao = database.recipeDao(),
+            ingredientDao = database.ingredientDao()
+        )
         tagRepository = TagRepository(database)
         settingsStore = SettingsStore(context, SecretStore(context))
 
@@ -107,6 +117,20 @@ class RecipeViewerViewModelTest {
         recipeId = repository.saveFullRecipe(recipe, ingredients, steps, emptyList())
     }
 
+    private fun createViewModel(): RecipeViewerViewModel {
+        val savedStateHandle = SavedStateHandle(mapOf("recipeId" to recipeId))
+        return RecipeViewerViewModel(
+            recipeRepository = repository,
+            cookLogRepository = cookLogRepository,
+            listsRepository = listsRepository,
+            tagRepository = tagRepository,
+            recipeExtractor = FakeRecipeExtractor(),
+            imageStorageManager = imageStorageManager,
+            settingsStore = settingsStore,
+            savedStateHandle = savedStateHandle
+        )
+    }
+
     @After
     fun teardown() {
         org.robolectric.shadows.ShadowLooper.idleMainLooper()
@@ -116,16 +140,7 @@ class RecipeViewerViewModelTest {
 
     @Test
     fun `viewModel scales ingredients correctly when servings stepper changes`() = runTest(testDispatcher) {
-        val savedStateHandle = SavedStateHandle(mapOf("recipeId" to recipeId))
-        val viewModel = RecipeViewerViewModel(
-            recipeRepository = repository,
-            cookLogRepository = cookLogRepository,
-            tagRepository = tagRepository,
-            recipeExtractor = FakeRecipeExtractor(),
-            imageStorageManager = imageStorageManager,
-            settingsStore = settingsStore,
-            savedStateHandle = savedStateHandle
-        )
+        val viewModel = createViewModel()
 
         advanceUntilIdle()
 
@@ -159,16 +174,7 @@ class RecipeViewerViewModelTest {
 
     @Test
     fun `ingredient session checklist toggle and clear`() = runTest(testDispatcher) {
-        val savedStateHandle = SavedStateHandle(mapOf("recipeId" to recipeId))
-        val viewModel = RecipeViewerViewModel(
-            recipeRepository = repository,
-            cookLogRepository = cookLogRepository,
-            tagRepository = tagRepository,
-            recipeExtractor = FakeRecipeExtractor(),
-            imageStorageManager = imageStorageManager,
-            settingsStore = settingsStore,
-            savedStateHandle = savedStateHandle
-        )
+        val viewModel = createViewModel()
         advanceUntilIdle()
 
         val ingId = viewModel.uiState.value.rawIngredients.first().id
@@ -183,16 +189,7 @@ class RecipeViewerViewModelTest {
 
     @Test
     fun `favourite and personal note toggle in viewModel`() = runTest(testDispatcher) {
-        val savedStateHandle = SavedStateHandle(mapOf("recipeId" to recipeId))
-        val viewModel = RecipeViewerViewModel(
-            recipeRepository = repository,
-            cookLogRepository = cookLogRepository,
-            tagRepository = tagRepository,
-            recipeExtractor = FakeRecipeExtractor(),
-            imageStorageManager = imageStorageManager,
-            settingsStore = settingsStore,
-            savedStateHandle = savedStateHandle
-        )
+        val viewModel = createViewModel()
         advanceUntilIdle()
 
         assertFalse(viewModel.uiState.value.recipe!!.isFavourite)
@@ -209,16 +206,7 @@ class RecipeViewerViewModelTest {
 
     @Test
     fun `mark as cooked adds log to cookLogRepository`() = runTest(testDispatcher) {
-        val savedStateHandle = SavedStateHandle(mapOf("recipeId" to recipeId))
-        val viewModel = RecipeViewerViewModel(
-            recipeRepository = repository,
-            cookLogRepository = cookLogRepository,
-            tagRepository = tagRepository,
-            recipeExtractor = FakeRecipeExtractor(),
-            imageStorageManager = imageStorageManager,
-            settingsStore = settingsStore,
-            savedStateHandle = savedStateHandle
-        )
+        val viewModel = createViewModel()
         advanceUntilIdle()
 
         assertEquals(0, viewModel.uiState.value.timesCooked)
@@ -229,5 +217,55 @@ class RecipeViewerViewModelTest {
 
         assertEquals(1, viewModel.uiState.value.timesCooked)
         assertEquals("2026-10-15", viewModel.uiState.value.lastCookedDate)
+    }
+
+    @Test
+    fun `getSharePlainText formats recipe into clean plain text without markdown`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        val plainText = viewModel.getSharePlainText()
+        assertNotNull(plainText)
+        assertTrue(plainText!!.contains("Test Curry"))
+        assertTrue(plainText.contains("Ingredients:"))
+        assertTrue(plainText.contains("Oil"))
+        assertTrue(plainText.contains("Onion"))
+        assertTrue(plainText.contains("Instructions:"))
+        assertTrue(plainText.contains("1. Heat oil in pan"))
+        assertFalse(plainText.contains("**"))
+        assertFalse(plainText.contains("##"))
+    }
+
+    @Test
+    fun `mark as cooked with pantry reconciliation updates inventory status`() = runTest(testDispatcher) {
+        // Pre-populate inventory with onion as IN_STOCK
+        listsRepository.addInventoryItem(name = "Onion", baseName = "onion", category = "vegetables", status = "in_stock")
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        val matchedInventory = listsRepository.getAllInventoryItems().first { it.baseName == "onion" }
+        assertEquals("in_stock", matchedInventory.status)
+
+        // Mark as cooked and reconcile onion to OUT
+        val reconciliationItems = listOf(
+            org.eu.angsumanray.recipecatcher.core.planner.PantryReconciliationItem(
+                ingredientName = "Onion",
+                baseName = "onion",
+                category = "vegetables",
+                action = org.eu.angsumanray.recipecatcher.core.planner.PantryAction.OUT
+            )
+        )
+
+        viewModel.markAsCooked(
+            date = LocalDate.now(),
+            note = "Cooked curry",
+            photoUri = null,
+            reconciliationItems = reconciliationItems
+        )
+        advanceUntilIdle()
+
+        val updatedInventory = listsRepository.getAllInventoryItems().first { it.baseName == "onion" }
+        assertEquals("out", updatedInventory.status)
+        assertEquals(1, viewModel.uiState.value.timesCooked)
     }
 }

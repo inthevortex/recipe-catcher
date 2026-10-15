@@ -30,6 +30,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -40,6 +41,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -72,6 +75,7 @@ import androidx.compose.ui.unit.dp
 import org.eu.angsumanray.recipecatcher.core.llm.RecipeSuggestion
 import org.eu.angsumanray.recipecatcher.core.llm.WebRecipeSuggestion
 import org.eu.angsumanray.recipecatcher.core.model.ChatMessage
+import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -217,7 +221,8 @@ fun ChatScreen(
                 Column(modifier = Modifier.padding(12.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         FilterChip(
                             selected = state.includeWeb,
@@ -231,6 +236,46 @@ fun ChatScreen(
                                 )
                             }
                         )
+
+                        // Model Selector Dropdown
+                        var modelMenuExpanded by remember { mutableStateOf(false) }
+                        Box {
+                            AssistChip(
+                                onClick = { modelMenuExpanded = true },
+                                label = {
+                                    Text(
+                                        text = if (state.chatModelId == SettingsStore.CHAT_MODEL_SONNET) "Claude 3.5 Sonnet" else "Claude Haiku 5.5",
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                },
+                                trailingIcon = {
+                                    Icon(
+                                        Icons.Default.ArrowDropDown,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            )
+                            DropdownMenu(
+                                expanded = modelMenuExpanded,
+                                onDismissRequest = { modelMenuExpanded = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Claude Haiku 5.5") },
+                                    onClick = {
+                                        viewModel.setChatModelId(SettingsStore.CHAT_MODEL_HAIKU)
+                                        modelMenuExpanded = false
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Claude 3.5 Sonnet") },
+                                    onClick = {
+                                        viewModel.setChatModelId(SettingsStore.CHAT_MODEL_SONNET)
+                                        modelMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(6.dp))
