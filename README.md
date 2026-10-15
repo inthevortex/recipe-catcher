@@ -161,10 +161,37 @@ On the Edit Recipe screen, **Find with AI** asks Claude to discover a recipe fro
 
 **Fill empty slots with AI** on the Plan screen proposes varied meals for unscheduled slots from today onward, with awareness of leftovers already in the plan. A dialog opens with one pick per slot preselected, so you can adjust before adding them.
 
+### Instagram saves bulk import ✅
+
+Bring in your existing Instagram saves in one go:
+
+- **Sources:** your Instagram data download (the **ZIP** or the extracted `saved_posts.json`) or a list of **pasted links**. `SavedPostsImporter` in `:core` parses them.
+- **Collection names** from the export are preserved, so imported recipes keep the grouping you had on Instagram.
+- **Rate-limited background processing** through `ImportWorker`: one link roughly every 30 seconds, with a **30-minute cooldown** after a failure so Instagram is never hammered.
+- **Progress tracking** on the Import screen, backed by the `import_item` queue.
+- **Skipped list with retry** for links that could not be fetched or had no recipe.
+
+### Top comment fallback ✅
+
+Many Instagram recipes live in the author's first comment ("recipe in comments"):
+
+- When the caption has no recipe, a **foreground capture fallback** reads the author's comments with an **off-screen WebView** (`CommentFetcher`) and feeds them to the extractor.
+- **Instagram login** in Settings lets the WebView see comments on posts that need a signed-in session. It is opt-in, and the session stays on your phone.
+
+### Wear OS companion ✅
+
+The `:wear` module puts today's meals on your wrist:
+
+- **Today meal list** built with Compose for Wear OS.
+- **Tile** (`TodayTileService`) with interactive meal ticks.
+- **Complication** (`TodayComplicationService`) for watch faces.
+- **Two-way sync** with the phone over the Google Play Services Wearable Data Layer. Ticks made on the watch reach `:app`, and plan changes on the phone reach the watch.
+
 ### Privacy and security
 
 - The Anthropic API key is encrypted with an **AES-GCM key held in AndroidKeyStore**, with only the ciphertext stored in DataStore (`EncryptedSharedPreferences` is deprecated).
 - No proprietary backend, no analytics SDKs, no telemetry. Network traffic is limited to fetching the page you shared and calling the Claude API with your own key.
+- **Instagram login** (optional, for top comments) is stored on-device only.
 - **Chat settings** in Settings hold the Anthropic API key, a default for **Include web**, and the maximum web searches per message.
 - An **AI spend panel** in Settings shows running cost this month and all time, computed from every call's `usage` block logged to the `llm_usage` table.
 
@@ -190,21 +217,26 @@ flowchart TD
     UI["Compose UI + ViewModels<br/>(Hilt)"]
     REPO["Repositories"]
     DB[("Room DB<br/>14 tables + FTS4")]
-    WORK["WorkManager<br/>CaptureWorker · ImageCleanupWorker"]
+    WORK["WorkManager<br/>CaptureWorker · ImportWorker · ImageCleanupWorker"]
     SEC["SettingsStore · SecretStore<br/>(DataStore + AndroidKeyStore)"]
     NET["KtorHttpFetcher<br/>(OkHttp engine)"]
+    SYNC["WearSync<br/>(Wearable Data Layer)"]
   end
 
   subgraph CORE[":core — pure Kotlin JVM"]
     MODEL["model/"]
     DOMAIN["domain/<br/>QuantityScaler · FractionFormatter · IsoDuration"]
-    CAPTURE["capture/<br/>UrlNormalizer · SourceClassifier"]
+    CAPTURE["capture/<br/>UrlNormalizer · SourceClassifier · SavedPostsImporter"]
     PARSERS["insta/ · web/ · youtube/<br/>string in → model out"]
     LLM["llm/<br/>RecipeExtractor · ChatPlanner · PlanSuggester"]
     PORTS["ports/<br/>HttpFetcher · WebSearchProvider"]
   end
 
-  WEAR[":wear — Wear OS (planned)"]
+  subgraph WEARM[":wear — Wear OS companion"]
+    WUI["Today list (Compose for Wear OS)"]
+    TILE["TodayTileService"]
+    COMP["TodayComplicationService"]
+  end
 
   UI --> REPO --> DB
   WORK --> PARSERS
@@ -214,7 +246,9 @@ flowchart TD
   PARSERS --> PORTS
   LLM --> PORTS
   NET -. implements .-> PORTS
-  WEAR -. Data Layer sync .-> APP
+  SYNC <-. "Data Layer sync" .-> WUI
+  WUI --- TILE
+  WUI --- COMP
 ```
 
 ### `:core` — pure Kotlin JVM
@@ -225,14 +259,14 @@ A `kotlin("jvm")` module with **zero `android.*` / `androidx.*` imports or depen
 | --- | --- |
 | `model/` | Immutable domain models: `Recipe`, `Ingredient`, `Step`, `Tag`, `CookLogEntry`, `PlanSlot`, `PlanEntry`, `InventoryItem`, `GroceryItem`, `ChatMessage`, `SourceType` |
 | `domain/` | `QuantityScaler` (single values and ranges), `FractionFormatter`, `IsoDuration` |
-| `capture/` | `UrlNormalizer`, `SourceClassifier` (Instagram, YouTube, web; tracking-parameter stripping) |
+| `capture/` | `UrlNormalizer`, `SourceClassifier` (Instagram, YouTube, web; tracking-parameter stripping), `SavedPostsImporter` (Instagram data download and pasted links) |
 | `insta/` | `PostFetchStrategy` implementations: oEmbed, embed page, post-page meta |
 | `web/` | `WebRecipeFetcher`, `JsonLdParser`, `ReadableTextExtractor` |
 | `youtube/` | `YouTubeFetcher` (player-response and meta-tag parsing, linked-recipe discovery) |
 | `llm/` | `RecipeExtractor` interface, `ClaudeExtractor`, `ChatPlanner`, `PlanSuggester`, prompts and JSON schema |
 | `ports/` | Outbound interfaces (`HttpFetcher`, `WebSearchProvider`) that `:app` implements |
 
-Planner (`PortionLedger`, `GroceryBuilder`, `ReminderPlanner`), importer and backup-format packages join `:core` as their features land.
+Planner (`PortionLedger`, `GroceryBuilder`, `ReminderPlanner`) and backup-format packages join `:core` as their features land.
 
 **Rules**
 
@@ -247,10 +281,11 @@ Planner (`PortionLedger`, `GroceryBuilder`, `ReminderPlanner`), importer and bac
 | UI | Jetpack Compose + Material 3, Navigation Compose. **Material You dynamic colour**, dark theme by default (Dark / Light / Follow system). |
 | DI | Hilt (`@AndroidEntryPoint`, `@HiltViewModel`, Hilt-injected workers) |
 | Persistence | Room + KSP, schema v1 with all 14 tables plus `recipe_fts`, `exportSchema = true` (schemas in `app/schemas/`) |
-| Background | WorkManager `CoroutineWorker`s for capture and image cleanup |
+| Background | WorkManager `CoroutineWorker`s for capture, bulk import (`ImportWorker`) and image cleanup |
 | Settings & secrets | DataStore Preferences; AES-GCM in AndroidKeyStore for the API key |
 | Networking | Ktor client with the OkHttp engine, injected into `:core` as `HttpFetcher` |
 | Images | Coil 3 from local files; `FileProvider` for camera captures |
+| Watch sync | `WearSync` publishes plan data to the watch and applies its ticks (Google Play Services Wearable Data Layer) |
 
 ```text
 app/src/main/java/org/eu/angsumanray/recipecatcher/
@@ -266,9 +301,18 @@ app/src/main/java/org/eu/angsumanray/recipecatcher/
 └── ui/           library, paste, review, viewer, cook, edit, settings, theme
 ```
 
-### `:wear` — Wear OS companion (planned)
+### `:wear` — Wear OS companion
 
-Compose for Wear OS with a Today list, tile and complication, synced from the phone over the **Google Play Services Data Layer**. It uses the same application ID and signing key as `:app`, the phone stays the single source of truth, and ticks made out of range are queued in DataStore until the watch reconnects.
+Compose for Wear OS with a Today list, a tile (`TodayTileService`) and a complication (`TodayComplicationService`), kept in sync with `:app` over the **Google Play Services Wearable Data Layer** (`WearDataListenerService` on the watch, `WearSync` on the phone). It uses the same application ID and signing key as `:app`, and the phone stays the single source of truth.
+
+```text
+wear/src/main/java/org/eu/angsumanray/recipecatcher/wear/
+├── WearDataListenerService.kt
+├── data/           synced Today state
+├── ui/             Today meal list
+├── tile/           TodayTileService
+└── complication/   TodayComplicationService
+```
 
 ### Architectural invariants
 
@@ -468,12 +512,12 @@ Every wave ends with a tagged, signed release that installs over the previous on
 | **3** | Web, YouTube, backup | `WebRecipeFetcher`, `YouTubeFetcher`, clipboard detection, WebView retry for blocked sites, `BackupManager`, `RestoreManager`, pre-migration backup | ✅ Done |
 | **4** | Planner, lists, widget | Bottom tabs with Today as home, week planner with cook / prep / leftover entries, grocery list and inventory, reminders, Glance `TodayWidget` | ✅ Done |
 | **5** | Chat, Find with AI, Suggest | Recipe chat over your library with optional web search and citations, Find with AI on the edit form, `PlanSuggester` for empty plan slots | ✅ Done |
-| **6** | Bulk import, Wear OS | Instagram saved-posts importer, opt-in top-comment fetch, `:wear` app with tile and complication | 🗓️ Planned |
+| **6** | Bulk import, Wear OS | Instagram saves bulk import with collections and rate-limited background processing, top-comment fallback, `:wear` app with Today list, tile and complication | ✅ Done |
 | **7** | Media (later) | Recipes from images via Haiku 5.5 image input; voice and transcript extraction | 💭 Later |
 
 ```mermaid
 flowchart LR
-  W0["0 · Foundation"]:::done --> W1["1 · Instagram"]:::done --> W2["2 · Library & cooking"]:::done --> W3["3 · Web, YouTube, backup"]:::done --> W4["4 · Planner & widget"]:::done --> W5["5 · Chat & AI"]:::done --> W6["6 · Import & Wear OS"] -.-> W7["7 · Media"]
+  W0["0 · Foundation"]:::done --> W1["1 · Instagram"]:::done --> W2["2 · Library & cooking"]:::done --> W3["3 · Web, YouTube, backup"]:::done --> W4["4 · Planner & widget"]:::done --> W5["5 · Chat & AI"]:::done --> W6["6 · Import & Wear OS"]:::done -.-> W7["7 · Media"]
   classDef done fill:#2e7d32,color:#fff,stroke:#1b5e20
   classDef wip fill:#f9a825,color:#000,stroke:#f57f17
 ```
