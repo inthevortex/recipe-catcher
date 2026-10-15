@@ -32,7 +32,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
@@ -97,6 +96,7 @@ import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeFilter
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeSortOrder
+import org.eu.angsumanray.recipecatcher.ui.theme.AppIcons
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -217,7 +217,7 @@ fun LibraryScreen(
                 title = { Text("Recipe Catcher", fontWeight = FontWeight.Bold) },
                 actions = {
                     IconButton(onClick = onNavigateToChat) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Recipe Chat")
+                        Icon(AppIcons.Chat, contentDescription = "Recipe Chat")
                     }
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
@@ -657,13 +657,13 @@ private fun LibraryToolbar(
         ) {
             Row(modifier = Modifier.padding(2.dp)) {
                 ViewModeButton(
-                    icon = LibraryIcons.GridView,
+                    icon = AppIcons.GridView,
                     description = "All recipes",
                     selected = viewMode == LibraryViewMode.ALL,
                     onClick = { onViewModeSelected(LibraryViewMode.ALL) }
                 )
                 ViewModeButton(
-                    icon = LibraryIcons.Label,
+                    icon = AppIcons.Label,
                     description = "Group by tags",
                     selected = viewMode == LibraryViewMode.BY_TAG,
                     onClick = { onViewModeSelected(LibraryViewMode.BY_TAG) }
@@ -720,7 +720,7 @@ private fun LibraryToolbar(
         IconButton(onClick = onOpenFilterSheet) {
             BadgedBox(badge = { if (activeCount > 0) Badge { Text("$activeCount") } }) {
                 Icon(
-                    LibraryIcons.Tune,
+                    AppIcons.Tune,
                     contentDescription = if (activeCount > 0) "Filters ($activeCount active)" else "Filters",
                     tint = if (activeCount > 0) selectedTint else idleTint
                 )
@@ -730,7 +730,7 @@ private fun LibraryToolbar(
         Box {
             IconButton(onClick = { showSortMenu = true }) {
                 Icon(
-                    LibraryIcons.Sort,
+                    AppIcons.Sort,
                     contentDescription = "Sort: ${filter.sortOrder.displayName}",
                     tint = if (filter.sortOrder != RecipeSortOrder.NEWEST_SAVED) selectedTint else idleTint
                 )
@@ -757,7 +757,7 @@ private fun LibraryToolbar(
         val favouritesOnly = filter.isFavourite == true
         IconButton(onClick = onFavouriteToggled) {
             Icon(
-                if (favouritesOnly) Icons.Default.Star else LibraryIcons.StarBorder,
+                if (favouritesOnly) Icons.Default.Star else AppIcons.StarBorder,
                 contentDescription = if (favouritesOnly) "Show all recipes" else "Show favourites only",
                 tint = if (favouritesOnly) selectedTint else idleTint
             )

@@ -1,4 +1,4 @@
-package org.eu.angsumanray.recipecatcher.ui.library
+package org.eu.angsumanray.recipecatcher.ui.theme
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -6,8 +6,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.unit.dp
 
-/** Material icons the library toolbar needs that the core icon set lacks (Apache 2.0 path data). */
-internal object LibraryIcons {
+/** Material icons the app needs that the core icon set lacks (Apache 2.0 path data). */
+object AppIcons {
+
+    val Chat: ImageVector = icon(
+        "Chat",
+        "M20,2H4c-1.1,0 -1.99,0.9 -1.99,2L2,22l4,-4h14c1.1,0 2,-0.9 2,-2V4c0,-1.1 -0.9,-2 -2,-2zM6,9h12v2H6V9zM14,14H6v-2h8v2zM18,8H6V6h12v2z"
+    )
 
     val Tune: ImageVector = icon(
         "Tune",
