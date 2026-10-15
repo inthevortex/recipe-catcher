@@ -57,7 +57,8 @@ class LibraryViewModel @Inject constructor(
     private val settingsStore: org.eu.angsumanray.recipecatcher.data.settings.SettingsStore,
     private val foregroundPageFetcher: org.eu.angsumanray.recipecatcher.capture.ForegroundPageFetcher,
     private val webRecipeFetcher: WebRecipeFetcher,
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val commentFetcher: org.eu.angsumanray.recipecatcher.capture.CommentFetcher? = null
 ) : ViewModel() {
 
     val newRecipesSinceBackup: StateFlow<Int> = settingsStore.newRecipesSinceBackupFlow
@@ -218,6 +219,18 @@ class LibraryViewModel @Inject constructor(
             ) {
                 val result = foregroundPageFetcher.retryInWebView(recipe.id)
                 if (result.isSuccess) return@launch
+            }
+            if (recipe.sourceType == SourceType.INSTAGRAM.value &&
+                recipe.commentRaw.isNullOrBlank() &&
+                commentFetcher != null
+            ) {
+                val url = recipe.sourceUrl ?: "https://www.instagram.com/p/${recipe.sourceKey}/"
+                try {
+                    commentFetcher.fetchTopComment(url)?.let {
+                        recipeRepository.updateCommentRaw(recipe.id, it)
+                    }
+                } catch (e: Exception) {
+                }
             }
             val nextStatus = if (recipe.captionRaw.isNullOrBlank()) {
                 RecipeEntity.STATUS_PENDING_FETCH

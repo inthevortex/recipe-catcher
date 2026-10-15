@@ -130,7 +130,26 @@ class RecipeRepository @Inject constructor(
         return database.withTransaction {
             val existing = recipeDao.getBySourceKey(source.sourceKey)
             if (existing != null) {
-                CaptureStart.Existing(existing.id)
+                val isFailed = existing.status == RecipeEntity.STATUS_FAILED_FETCH ||
+                    existing.status == RecipeEntity.STATUS_FAILED_EXTRACT ||
+                    existing.status == RecipeEntity.STATUS_NO_RECIPE_FOUND ||
+                    existing.status.startsWith("failed")
+
+                if (isFailed) {
+                    // Previous capture attempt failed or was marked no recipe found.
+                    // Reset its state so the fresh share can fetch comments and re-extract!
+                    val reset = existing.copy(
+                        status = RecipeEntity.STATUS_PENDING_FETCH,
+                        captionRaw = null,
+                        commentRaw = null,
+                        errorMessage = null,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    recipeDao.update(reset)
+                    CaptureStart.Created(existing.id, source.sourceType)
+                } else {
+                    CaptureStart.Existing(existing.id)
+                }
             } else {
                 val id = insertPendingRecipe(source.sourceType.value, source.sourceKey, source.canonicalUrl)
                 CaptureStart.Created(id, source.sourceType)

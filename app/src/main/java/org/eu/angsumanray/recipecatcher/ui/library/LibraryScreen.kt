@@ -143,12 +143,22 @@ fun LibraryScreen(
                 pastedContentText = ""
             },
             title = {
-                Text(if (recipeForPastingText?.sourceType == "web") "Paste Page Text" else "Paste Text")
+                Text(
+                    when (recipeForPastingText?.sourceType) {
+                        "web" -> "Paste Page Text"
+                        "instagram" -> "Paste Comment / Text"
+                        else -> "Paste Text"
+                    }
+                )
             },
             text = {
                 Column {
                     Text(
-                        text = "Paste recipe text or HTML directly from the page:",
+                        text = if (recipeForPastingText?.sourceType == "instagram") {
+                            "Paste the recipe comment from Instagram or any recipe text. Claude will extract ingredients, instructions, and details automatically."
+                        } else {
+                            "Paste recipe text or HTML directly from the page:"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -156,7 +166,9 @@ fun LibraryScreen(
                     OutlinedTextField(
                         value = pastedContentText,
                         onValueChange = { pastedContentText = it },
-                        label = { Text("Recipe text / HTML") },
+                        label = {
+                            Text(if (recipeForPastingText?.sourceType == "instagram") "Recipe comment / text" else "Recipe text / HTML")
+                        },
                         modifier = Modifier.fillMaxWidth().height(160.dp),
                         maxLines = 10
                     )
@@ -1334,7 +1346,9 @@ private fun PendingCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = when (recipe.status) {
-                RecipeEntity.STATUS_FAILED_FETCH, RecipeEntity.STATUS_FAILED_EXTRACT -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+                RecipeEntity.STATUS_FAILED_FETCH,
+                RecipeEntity.STATUS_FAILED_EXTRACT,
+                RecipeEntity.STATUS_NO_RECIPE_FOUND -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
                 else -> MaterialTheme.colorScheme.surface
             }
         )
@@ -1359,7 +1373,9 @@ private fun PendingCard(
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     color = when (recipe.status) {
-                        RecipeEntity.STATUS_FAILED_FETCH, RecipeEntity.STATUS_FAILED_EXTRACT -> MaterialTheme.colorScheme.error
+                        RecipeEntity.STATUS_FAILED_FETCH,
+                        RecipeEntity.STATUS_FAILED_EXTRACT,
+                        RecipeEntity.STATUS_NO_RECIPE_FOUND -> MaterialTheme.colorScheme.error
                         RecipeEntity.STATUS_NEEDS_REVIEW -> MaterialTheme.colorScheme.primary
                         else -> MaterialTheme.colorScheme.secondary
                     }
@@ -1398,7 +1414,11 @@ private fun PendingCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (recipe.status == RecipeEntity.STATUS_FAILED_FETCH || recipe.status == RecipeEntity.STATUS_FAILED_EXTRACT) {
+                val isFailed = recipe.status == RecipeEntity.STATUS_FAILED_FETCH ||
+                    recipe.status == RecipeEntity.STATUS_FAILED_EXTRACT ||
+                    recipe.status == RecipeEntity.STATUS_NO_RECIPE_FOUND
+
+                if (isFailed) {
                     OutlinedButton(onClick = onRetry) {
                         Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
@@ -1406,9 +1426,14 @@ private fun PendingCard(
                     }
                 }
 
-                if (recipe.status == RecipeEntity.STATUS_FAILED_FETCH && onPastePageText != null) {
+                if (isFailed && onPastePageText != null) {
                     OutlinedButton(onClick = onPastePageText) {
-                        Text(if (recipe.sourceType == "web") "Paste page text" else "Paste caption")
+                        val label = when (recipe.sourceType) {
+                            "web" -> "Paste page text"
+                            "instagram" -> "Paste comment / text"
+                            else -> "Paste text"
+                        }
+                        Text(label)
                     }
                 }
 

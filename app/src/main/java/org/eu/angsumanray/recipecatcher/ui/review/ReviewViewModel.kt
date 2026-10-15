@@ -60,7 +60,8 @@ class ReviewViewModel @Inject constructor(
     private val recipeRepository: RecipeRepository,
     private val tagDao: TagDao,
     savedStateHandle: SavedStateHandle,
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val commentFetcher: org.eu.angsumanray.recipecatcher.capture.CommentFetcher? = null
 ) : ViewModel() {
 
     // Secondary constructor for testing
@@ -72,7 +73,22 @@ class ReviewViewModel @Inject constructor(
         recipeRepository = recipeRepository,
         tagDao = tagDao,
         savedStateHandle = savedStateHandle,
-        context = android.app.Application()
+        context = android.app.Application(),
+        commentFetcher = null
+    )
+
+    // Secondary constructor for testing with context
+    constructor(
+        recipeRepository: RecipeRepository,
+        tagDao: TagDao,
+        savedStateHandle: SavedStateHandle,
+        context: Context
+    ) : this(
+        recipeRepository = recipeRepository,
+        tagDao = tagDao,
+        savedStateHandle = savedStateHandle,
+        context = context,
+        commentFetcher = null
     )
 
     private val recipeId: Long = checkNotNull(savedStateHandle["recipeId"])
@@ -207,33 +223,65 @@ class ReviewViewModel @Inject constructor(
     fun retryCapture() {
         viewModelScope.launch {
             val recipe = recipeRepository.getRecipe(recipeId) ?: return@launch
-            val nextStatus = if (recipe.captionRaw.isNullOrBlank()) {
-                RecipeEntity.STATUS_PENDING_FETCH
-            } else {
-                RecipeEntity.STATUS_PENDING_EXTRACT
-            }
-            recipeRepository.updateRecipeStatus(recipe.id, nextStatus, null)
             wasExtracting = true
             _uiState.update { current ->
                 current.copy(
                     isFailed = false,
                     errorMessage = null,
                     isExtracting = true,
-                    extractionStage = if (nextStatus == RecipeEntity.STATUS_PENDING_FETCH) {
-                        when (recipe.sourceType) {
-                            SourceType.WEB.value -> "Fetching recipe details from website..."
-                            SourceType.YOUTUBE.value -> "Fetching video details from YouTube..."
-                            else -> "Fetching recipe details from Instagram..."
-                        }
-                    } else {
-                        "Claude is analyzing ingredients and instructions..."
+                    extractionStage = when (recipe.sourceType) {
+                        SourceType.WEB.value -> "Fetching recipe details from website..."
+                        SourceType.YOUTUBE.value -> "Fetching video details from YouTube..."
+                        else -> "Fetching recipe details from Instagram..."
                     }
                 )
             }
+            if (recipe.sourceType == SourceType.INSTAGRAM.value && commentFetcher != null) {
+                try {
+                    val url = recipe.sourceUrl ?: recipe.sourceKey
+                    commentFetcher.fetchTopComment(url)?.let {
+                        recipeRepository.updateCommentRaw(recipe.id, it)
+                    }
+                } catch (_: Exception) {}
+            }
+            val nextStatus = if (recipe.captionRaw.isNullOrBlank()) {
+                RecipeEntity.STATUS_PENDING_FETCH
+            } else {
+                RecipeEntity.STATUS_PENDING_EXTRACT
+            }
+            recipeRepository.updateRecipeStatus(recipe.id, nextStatus, null)
             try {
                 CaptureWorker.enqueue(context, recipe.id)
             } catch (e: Exception) {
                 // Ignore work enqueue issues in test environments without WorkManager initialized
+            }
+        }
+    }
+
+    fun pasteTextAndExtract(text: String) {
+        if (text.isBlank()) return
+        viewModelScope.launch {
+            val recipe = recipeRepository.getRecipe(recipeId) ?: return@launch
+            val trimmed = text.trim()
+            val updated = recipe.copy(
+                captionRaw = trimmed,
+                status = RecipeEntity.STATUS_PENDING_EXTRACT,
+                errorMessage = null,
+                updatedAt = System.currentTimeMillis()
+            )
+            recipeRepository.updateRecipe(updated)
+            wasExtracting = true
+            _uiState.update { current ->
+                current.copy(
+                    isFailed = false,
+                    errorMessage = null,
+                    isExtracting = true,
+                    extractionStage = "Claude is analyzing ingredients and instructions..."
+                )
+            }
+            try {
+                CaptureWorker.enqueue(context, recipeId)
+            } catch (e: Exception) {
             }
         }
     }

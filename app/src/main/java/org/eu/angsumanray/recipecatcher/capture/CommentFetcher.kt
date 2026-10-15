@@ -79,6 +79,7 @@ class CommentFetcher @Inject constructor(
     @SuppressLint("SetJavaScriptEnabled")
     private suspend fun fetchViaWebView(url: String): String? = suspendCancellableCoroutine { cont ->
         val webView = WebView(context)
+        webView.layout(0, 0, 1080, 1920)
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
         webView.settings.userAgentString = USER_AGENT

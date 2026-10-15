@@ -17,7 +17,10 @@ object InstaSelectors {
         "ul._a9ym > li",
         "ul.x1heor9g li",
         "article ul li",
-        "div[role='dialog'] ul li"
+        "div[role='dialog'] ul li",
+        "ul > div > li",
+        "div[role='presentation'] ul li",
+        "div.x1lliihq"
     )
 
     val COMMENT_TEXT_SELECTORS = listOf(
@@ -62,6 +65,15 @@ object InstaSelectors {
         return """
             (function() {
                 try {
+                    // Try expanding collapsed comments on mobile web layout
+                    var clickable = document.querySelectorAll('button, div[role="button"], a, span');
+                    for (var b = 0; b < clickable.length; b++) {
+                        var txt = (clickable[b].innerText || clickable[b].textContent || '').toLowerCase().trim();
+                        if ((txt.indexOf('view all') >= 0 || txt.indexOf('view') >= 0) && txt.indexOf('comment') >= 0) {
+                            clickable[b].click();
+                            break;
+                        }
+                    }
                     var containers = ${jsArray(COMMENT_CONTAINER_SELECTORS)};
                     var texts = ${jsArray(COMMENT_TEXT_SELECTORS)};
                     var captionSelectors = ${jsArray(CAPTION_SELECTORS)};
@@ -74,7 +86,7 @@ object InstaSelectors {
                     });
                     function isCaption(t) {
                         for (var c = 0; c < captions.length; c++) {
-                            if (captions[c] === t || captions[c].indexOf(t) >= 0) return true;
+                            if (captions[c] === t || captions[c].indexOf(t) >= 0 || t.indexOf(captions[c]) >= 0) return true;
                         }
                         return false;
                     }

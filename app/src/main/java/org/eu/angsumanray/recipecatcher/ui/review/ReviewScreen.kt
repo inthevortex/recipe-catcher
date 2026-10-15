@@ -19,11 +19,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -57,6 +59,9 @@ fun ReviewScreen(
     val state by viewModel.uiState.collectAsState()
     var showRawCaption by remember { mutableStateOf(false) }
 
+    var showPasteDialog by remember { mutableStateOf(false) }
+    var pasteInput by remember { mutableStateOf("") }
+
     if (state.isLoading) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
@@ -73,9 +78,53 @@ fun ReviewScreen(
     }
 
     if (state.isFailed) {
+        if (showPasteDialog) {
+            AlertDialog(
+                onDismissRequest = { showPasteDialog = false },
+                title = { Text("Paste Comment / Recipe Text") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Paste the recipe comment from Instagram or any recipe text. Claude will extract ingredients, instructions, and details automatically.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = pasteInput,
+                            onValueChange = { pasteInput = it },
+                            label = { Text("Recipe text / comment") },
+                            modifier = Modifier.fillMaxWidth().height(160.dp),
+                            maxLines = 10
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val txt = pasteInput.trim()
+                            if (txt.isNotBlank()) {
+                                showPasteDialog = false
+                                viewModel.pasteTextAndExtract(txt)
+                                pasteInput = ""
+                            }
+                        },
+                        enabled = pasteInput.isNotBlank()
+                    ) {
+                        Text("Extract Recipe")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showPasteDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
         ExtractionFailedView(
             errorMessage = state.errorMessage ?: "Failed to extract recipe",
             onRetry = { viewModel.retryCapture() },
+            onPasteText = { showPasteDialog = true },
             onFillManually = { viewModel.dismissFailure() },
             onNavigateBack = onNavigateBack
         )
@@ -368,6 +417,7 @@ private fun ExtractionProgressView(
 private fun ExtractionFailedView(
     errorMessage: String,
     onRetry: () -> Unit,
+    onPasteText: () -> Unit,
     onFillManually: () -> Unit,
     onNavigateBack: () -> Unit
 ) {
@@ -425,6 +475,13 @@ private fun ExtractionFailedView(
                 modifier = Modifier.fillMaxWidth(0.7f)
             ) {
                 Text("Retry Extraction")
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            FilledTonalButton(
+                onClick = onPasteText,
+                modifier = Modifier.fillMaxWidth(0.7f)
+            ) {
+                Text("Paste Comment / Text")
             }
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedButton(

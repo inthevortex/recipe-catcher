@@ -29,6 +29,8 @@
         <activity
             android:name=".ShareReceiverActivity"
             android:exported="true"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
