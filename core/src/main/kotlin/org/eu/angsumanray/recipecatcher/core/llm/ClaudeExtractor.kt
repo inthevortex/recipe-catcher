@@ -41,10 +41,10 @@ class ClaudeExtractor(
         )
         val SUGGESTION_KIND_VALUES = listOf("tag", "diet", "equipment", "consumable")
 
-        const val SYSTEM_PROMPT = """You are an expert recipe extraction system. Extract structured recipe information from the provided source text.
+        const val SYSTEM_PROMPT = """You are an expert recipe extraction system. Extract structured recipe information from the provided source text and/or images.
 Rules:
-1. Extract only what is in the text; never invent ingredients, quantities or steps.
-2. If the text contains no recipe (e.g. 'recipe in bio' with no ingredients/steps), set is_recipe: false and empty/zero values.
+1. Extract only what is in the text or images; never invent ingredients, quantities or steps.
+2. If the source contains no recipe (e.g. 'recipe in bio' with no ingredients/steps and no recipe in images), set is_recipe: false and empty/zero values.
 3. Quantities as decimals (½ -> 0.5); ranges use quantity_max; 'to taste' gives a 0 quantity with the phrase in note.
 4. Use metric units: g, kg, ml, l, plus tsp, tbsp, pinch and pc. Convert imperial and US units: oz -> g, lb -> g or kg, fl oz -> ml, cups -> ml (1 US cup = 240 ml), a stick of butter -> 113 g, inches -> cm, and °F -> °C inside steps. Round converted values sensibly. Keep unknown units as written; the original line always stays in raw.
 5. Write output in English, translating when the source is in another language. Keep Indian ingredient names common in English (paneer, ghee, jeera) as they are.
@@ -67,7 +67,7 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
 
         val modelId = modelIdProvider().trim().ifEmpty { DEFAULT_MODEL_ID }
         val userContent = buildUserTurnText(input)
-        val requestPayload = buildRequestPayload(modelId, userContent)
+        val requestPayload = buildRequestPayload(modelId, userContent, input.sourceImages)
 
         val (statusCode, responseBody) = try {
             val response = httpClient.post(ANTHROPIC_MESSAGES_URL) {
@@ -128,10 +128,20 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
         appendLine("Allow new tags: ${input.allowNewTags}")
         appendLine()
         appendLine("Source text:")
-        appendLine(input.sourceText)
+        if (input.sourceText.isNotBlank()) {
+            appendLine(input.sourceText)
+        } else if (input.sourceImages.isNotEmpty()) {
+            appendLine("(Recipe content is present in the attached image(s). Extract all recipe information directly from the images.)")
+        } else {
+            appendLine()
+        }
     }
 
-    internal fun buildRequestPayload(modelId: String, userContent: String): String {
+    internal fun buildRequestPayload(
+        modelId: String,
+        userContent: String,
+        images: List<String> = emptyList()
+    ): String {
         val root = buildJsonObject {
             put("model", modelId)
             put("max_tokens", MAX_TOKENS)
@@ -147,7 +157,26 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
             putJsonArray("messages") {
                 add(buildJsonObject {
                     put("role", "user")
-                    put("content", userContent)
+                    if (images.isEmpty()) {
+                        put("content", userContent)
+                    } else {
+                        putJsonArray("content") {
+                            for (base64Image in images) {
+                                add(buildJsonObject {
+                                    put("type", "image")
+                                    putJsonObject("source") {
+                                        put("type", "base64")
+                                        put("media_type", "image/jpeg")
+                                        put("data", base64Image)
+                                    }
+                                })
+                            }
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", userContent)
+                            })
+                        }
+                    }
                 })
             }
             putJsonObject("output_config") {

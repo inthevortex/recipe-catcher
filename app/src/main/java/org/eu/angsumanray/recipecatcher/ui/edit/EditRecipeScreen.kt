@@ -1,5 +1,9 @@
 package org.eu.angsumanray.recipecatcher.ui.edit
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -76,6 +80,26 @@ fun EditRecipeScreen(
     var pendingCandidate by remember { mutableStateOf<WebRecipeSuggestion?>(null) }
     var pasteInput by remember { mutableStateOf("") }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var showPhotoSourceDialog by remember { mutableStateOf(false) }
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 5)
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.fillFromPhotos(uris) {}
+        }
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success) {
+            pendingCameraUri?.let { uri ->
+                viewModel.fillFromPhotos(listOf(uri)) {}
+            }
+        }
+    }
 
     LaunchedEffect(state.extractError) {
         state.extractError?.let {
@@ -148,14 +172,23 @@ fun EditRecipeScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            // Fill from pasted text quick action
-            OutlinedButton(
-                onClick = { showPasteDialog = true },
-                modifier = Modifier.fillMaxWidth()
+            // Quick AI input actions: Scan photos or Paste text
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Fill from pasted text (AI extraction)")
+                OutlinedButton(
+                    onClick = { showPhotoSourceDialog = true },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Scan or pick photos")
+                }
+                OutlinedButton(
+                    onClick = { showPasteDialog = true },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Fill from text")
+                }
             }
 
             // Basic Details
@@ -237,7 +270,7 @@ fun EditRecipeScreen(
                             FilterChip(
                                 selected = state.complexity.equals(level, ignoreCase = true),
                                 onClick = { viewModel.updateComplexity(if (state.complexity == level) "" else level) },
-                                label = { Text(level.capitalize()) }
+                                label = { Text(level.replaceFirstChar { it.uppercase() }) }
                             )
                         }
                     }
@@ -256,7 +289,7 @@ fun EditRecipeScreen(
                             FilterChip(
                                 selected = state.spiceLevel.equals(spice, ignoreCase = true),
                                 onClick = { viewModel.updateSpiceLevel(if (state.spiceLevel == spice) "" else spice) },
-                                label = { Text(spice.capitalize()) }
+                                label = { Text(spice.replaceFirstChar { it.uppercase() }) }
                             )
                         }
                     }
@@ -268,7 +301,7 @@ fun EditRecipeScreen(
                             FilterChip(
                                 selected = state.dietType.equals(diet, ignoreCase = true),
                                 onClick = { viewModel.updateDietType(if (state.dietType == diet) "" else diet) },
-                                label = { Text(diet.capitalize()) }
+                                label = { Text(diet.replaceFirstChar { it.uppercase() }) }
                             )
                         }
                     }
@@ -585,6 +618,64 @@ fun EditRecipeScreen(
                     Text("Cancel")
                 }
             }
+        )
+    }
+
+    // Dialog: Scan or pick photos
+    if (showPhotoSourceDialog) {
+        AlertDialog(
+            onDismissRequest = { showPhotoSourceDialog = false },
+            title = { Text("Scan or Pick Photos") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Take a photo of a recipe book, handwritten card, or note, or select up to 5 photos from your gallery to extract with AI vision.")
+                    OutlinedButton(
+                        onClick = {
+                            showPhotoSourceDialog = false
+                            val uri = viewModel.createCameraUri()
+                            pendingCameraUri = uri
+                            cameraLauncher.launch(uri)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Take photo with camera")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            showPhotoSourceDialog = false
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Pick photos from gallery")
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showPhotoSourceDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (state.isExtractingText && !showPasteDialog && !showFindWithAiDialog) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Analyzing Photos") },
+            text = {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    Text("Extracting recipe details with Claude vision...")
+                }
+            },
+            confirmButton = {}
         )
     }
 

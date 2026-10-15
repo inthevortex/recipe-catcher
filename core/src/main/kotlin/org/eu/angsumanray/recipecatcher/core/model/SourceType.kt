@@ -15,7 +15,10 @@ enum class SourceType(val value: String) {
     YOUTUBE("youtube"),
 
     @SerialName("manual")
-    MANUAL("manual");
+    MANUAL("manual"),
+
+    @SerialName("image")
+    IMAGE("image");
 
     companion object {
         fun from(value: String): SourceType {

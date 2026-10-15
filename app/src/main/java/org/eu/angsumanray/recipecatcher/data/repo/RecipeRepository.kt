@@ -149,6 +149,23 @@ class RecipeRepository @Inject constructor(
         return if (id != -1L) id else checkNotNull(recipeDao.getBySourceKey(sourceKey)).id
     }
 
+    /** Inserts a `pending_extract` row for image captures, returning the new recipe id. */
+    suspend fun insertPendingImageRecipe(
+        sourceKey: String,
+        imageDirectoryOrPaths: String
+    ): Long {
+        val now = System.currentTimeMillis()
+        val entity = RecipeEntity(
+            sourceType = SourceType.IMAGE.value,
+            sourceKey = sourceKey,
+            sourceUrl = imageDirectoryOrPaths,
+            status = RecipeEntity.STATUS_PENDING_EXTRACT,
+            createdAt = now,
+            updatedAt = now
+        )
+        return recipeDao.insert(entity)
+    }
+
     /** Writes an extraction result and its usage row atomically, leaving the recipe in [RecipeEntity.STATUS_NEEDS_REVIEW]. */
     suspend fun saveExtraction(
         recipe: RecipeEntity,

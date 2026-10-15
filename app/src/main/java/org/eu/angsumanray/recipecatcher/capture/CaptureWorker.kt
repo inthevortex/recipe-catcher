@@ -40,6 +40,7 @@ import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import org.eu.angsumanray.recipecatcher.data.repo.toExtractionUsageEntity
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 @HiltWorker
@@ -52,6 +53,7 @@ class CaptureWorker @AssistedInject constructor(
     private val webRecipeFetcher: WebRecipeFetcher,
     private val youTubeFetcher: YouTubeFetcher,
     private val imageStorageManager: ImageStorageManager,
+    private val imagePreprocessor: ImagePreprocessor,
     private val recipeExtractor: RecipeExtractor,
     private val settingsStore: SettingsStore
 ) : CoroutineWorker(appContext, workerParams) {
@@ -93,8 +95,8 @@ class CaptureWorker @AssistedInject constructor(
         var currentRecipe = recipe
         val sourceType = SourceType.from(currentRecipe.sourceType)
 
-        // Step 1: Fetch source content if captionRaw is blank
-        if (currentRecipe.captionRaw.isNullOrBlank()) {
+        // Step 1: Fetch source content if captionRaw is blank (or if not yet fetched)
+        if (currentRecipe.captionRaw.isNullOrBlank() && sourceType != SourceType.IMAGE && sourceType != SourceType.MANUAL) {
             when (sourceType) {
                 SourceType.INSTAGRAM -> {
                     val postData = try {
@@ -106,15 +108,26 @@ class CaptureWorker @AssistedInject constructor(
                         null
                     }
 
-                    if (postData == null || postData.caption.isNullOrBlank()) {
+                    if (postData == null || (postData.caption.isNullOrBlank() && postData.slideImageUrls.isEmpty())) {
                         return retryOrFail(recipeId, RecipeEntity.STATUS_FAILED_FETCH, "Couldn't read this post")
                     }
 
                     val imagePath = postData.imageUrl?.takeIf { it.isNotBlank() }
                         ?.let { imageStorageManager.downloadAndSave(recipeId, it) }
 
+                    // Cache carousel slides 2-5 if available
+                    if (postData.slideImageUrls.isNotEmpty()) {
+                        val slidesDir = File(applicationContext.cacheDir, "slides/$recipeId").apply { mkdirs() }
+                        postData.slideImageUrls.take(4).forEachIndexed { idx, slideUrl ->
+                            val bytes = imageStorageManager.downloadBytes(slideUrl)
+                            if (bytes != null) {
+                                File(slidesDir, "slide_${idx + 2}.jpg").writeBytes(bytes)
+                            }
+                        }
+                    }
+
                     currentRecipe = currentRecipe.copy(
-                        captionRaw = postData.caption,
+                        captionRaw = postData.caption ?: "",
                         authorHandle = postData.author ?: currentRecipe.authorHandle,
                         imagePath = imagePath ?: currentRecipe.imagePath,
                         status = RecipeEntity.STATUS_PENDING_EXTRACT,
@@ -171,7 +184,27 @@ class CaptureWorker @AssistedInject constructor(
                         null
                     }
 
-                    if (ytData == null || ytData.description.isNullOrBlank()) {
+                    if (ytData == null) {
+                        return retryOrFail(recipeId, RecipeEntity.STATUS_FAILED_FETCH, "Couldn't read this YouTube video")
+                    }
+
+                    var rawText = ytData.description
+                    val trackUrl = ytData.preferredCaptionTrackUrl
+                    // When YouTube description has no recipe, check for captionTracks / preferredCaptionTrackUrl
+                    if (rawText.isNullOrBlank() && trackUrl != null) {
+                        val transcript = try {
+                            youTubeFetcher.fetchCaptionTranscript(trackUrl)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            null
+                        }
+                        if (!transcript.isNullOrBlank()) {
+                            rawText = transcript
+                        }
+                    }
+
+                    if (rawText.isNullOrBlank()) {
                         return retryOrFail(recipeId, RecipeEntity.STATUS_FAILED_FETCH, "Couldn't read this YouTube video")
                     }
 
@@ -180,7 +213,7 @@ class CaptureWorker @AssistedInject constructor(
 
                     currentRecipe = currentRecipe.copy(
                         title = ytData.title ?: currentRecipe.title,
-                        captionRaw = ytData.description,
+                        captionRaw = rawText,
                         authorHandle = ytData.author ?: currentRecipe.authorHandle,
                         imagePath = imagePath ?: currentRecipe.imagePath,
                         status = RecipeEntity.STATUS_PENDING_EXTRACT,
@@ -190,8 +223,8 @@ class CaptureWorker @AssistedInject constructor(
                     database.recipeDao().update(currentRecipe)
                 }
 
-                SourceType.MANUAL -> {
-                    // Manual recipe already has caption/content
+                SourceType.IMAGE, SourceType.MANUAL -> {
+                    // No remote fetch needed
                 }
             }
         }
@@ -219,6 +252,62 @@ class CaptureWorker @AssistedInject constructor(
             return Result.failure()
         }
 
+        // Prepare multimodal images for SourceType.IMAGE or Instagram carousel slides
+        val sourceImages = mutableListOf<String>()
+
+        if (sourceType == SourceType.IMAGE) {
+            val imageFiles = resolveSourceImages(currentRecipe)
+            if (imageFiles.isEmpty()) {
+                recipeRepository.updateRecipeStatus(
+                    recipeId,
+                    RecipeEntity.STATUS_FAILED_EXTRACT,
+                    "Image processing failed or file too large"
+                )
+                return Result.failure()
+            }
+
+            val processedImages = mutableListOf<ProcessedImage>()
+            for (file in imageFiles) {
+                val processed = imagePreprocessor.processFile(file)
+                if (processed != null) {
+                    processedImages.add(processed)
+                }
+            }
+
+            if (processedImages.isEmpty()) {
+                recipeRepository.updateRecipeStatus(
+                    recipeId,
+                    RecipeEntity.STATUS_FAILED_EXTRACT,
+                    "Image processing failed or file too large"
+                )
+                return Result.failure()
+            }
+
+            // Save primary photo as the recipe cover photo in filesDir/images/<recipeId>.jpg
+            val primary = processedImages.first()
+            val coverPath = imagePreprocessor.saveAsRecipeCover(primary, recipeId)
+            currentRecipe = currentRecipe.copy(
+                imagePath = coverPath,
+                coverPhotoPath = coverPath
+            )
+            database.recipeDao().update(currentRecipe)
+
+            sourceImages.addAll(processedImages.map { it.base64 })
+        } else if (sourceType == SourceType.INSTAGRAM) {
+            val caption = currentRecipe.captionRaw.orEmpty()
+            val lacksQuantities = InstagramPostFetcher.hasFewerThan3QuantityLines(caption)
+            val slidesDir = File(applicationContext.cacheDir, "slides/$recipeId")
+            val slideFiles = slidesDir.listFiles()?.filter { it.isFile && it.length() > 0 }?.sortedBy { it.name }
+            if (lacksQuantities && !slideFiles.isNullOrEmpty()) {
+                for (file in slideFiles.take(4)) {
+                    val processed = imagePreprocessor.processFile(file)
+                    if (processed != null) {
+                        sourceImages.add(processed.base64)
+                    }
+                }
+            }
+        }
+
         val captionRaw = currentRecipe.captionRaw.orEmpty()
         val extractionInput = ExtractionInput(
             sourceType = sourceType,
@@ -227,6 +316,7 @@ class CaptureWorker @AssistedInject constructor(
             } else {
                 captionRaw
             },
+            sourceImages = sourceImages,
             topComment = currentRecipe.commentRaw,
             author = currentRecipe.authorHandle,
             allowedTags = tagsByKind[TagEntity.KIND_TAG].orEmpty().map { it.name },
@@ -246,8 +336,18 @@ class CaptureWorker @AssistedInject constructor(
             return when (ex) {
                 is NoRecipeFoundException -> {
                     ex.usage?.let { recipeRepository.logUsage(it.toExtractionUsageEntity(activeModel)) }
-                    // Try YouTube linked-page fallback
+
+                    // Instagram carousel fallback if not yet tried
+                    if (sourceType == SourceType.INSTAGRAM && sourceImages.isEmpty()) {
+                        val carouselSuccess = tryInstagramCarouselFallback(currentRecipe, activeModel, tagsByKind)
+                        if (carouselSuccess) return Result.success()
+                    }
+
+                    // YouTube caption transcript or linked-page fallback
                     if (sourceType == SourceType.YOUTUBE) {
+                        val captionSuccess = tryYouTubeCaptionFallback(currentRecipe, activeModel, tagsByKind)
+                        if (captionSuccess) return Result.success()
+
                         val linkedSuccess = tryLinkedPageFallback(currentRecipe, activeModel, tagsByKind)
                         if (linkedSuccess) return Result.success()
                     }
@@ -285,10 +385,19 @@ class CaptureWorker @AssistedInject constructor(
         }
 
         if (!extracted.isRecipe) {
+            if (sourceType == SourceType.INSTAGRAM && sourceImages.isEmpty()) {
+                val carouselSuccess = tryInstagramCarouselFallback(currentRecipe, activeModel, tagsByKind)
+                if (carouselSuccess) return Result.success()
+            }
+
             if (sourceType == SourceType.YOUTUBE) {
+                val captionSuccess = tryYouTubeCaptionFallback(currentRecipe, activeModel, tagsByKind)
+                if (captionSuccess) return Result.success()
+
                 val linkedSuccess = tryLinkedPageFallback(currentRecipe, activeModel, tagsByKind)
                 if (linkedSuccess) return Result.success()
             }
+
             recipeRepository.updateRecipeStatus(
                 recipeId,
                 RecipeEntity.STATUS_NO_RECIPE_FOUND,
@@ -299,6 +408,131 @@ class CaptureWorker @AssistedInject constructor(
 
         applyAndSaveExtraction(currentRecipe, extracted, activeModel, tagsByKind)
         return Result.success()
+    }
+
+    private fun resolveSourceImages(recipe: RecipeEntity): List<File> {
+        val files = mutableListOf<File>()
+
+        val sourceUrl = recipe.sourceUrl
+        if (!sourceUrl.isNullOrBlank()) {
+            val candidate = File(sourceUrl)
+            if (candidate.isDirectory) {
+                candidate.listFiles()?.filter { it.isFile && it.length() > 0 }?.sortedBy { it.name }?.let {
+                    files.addAll(it)
+                }
+            } else if (candidate.isFile && candidate.length() > 0) {
+                files.add(candidate)
+            } else if (sourceUrl.contains("|")) {
+                sourceUrl.split("|").forEach { path ->
+                    val f = File(path)
+                    if (f.isFile && f.length() > 0) files.add(f)
+                }
+            }
+        }
+
+        if (files.isEmpty()) {
+            val dirByKey = File(applicationContext.cacheDir, "image_captures/${recipe.sourceKey}")
+            if (dirByKey.isDirectory) {
+                dirByKey.listFiles()?.filter { it.isFile && it.length() > 0 }?.sortedBy { it.name }?.let {
+                    files.addAll(it)
+                }
+            }
+        }
+
+        if (files.isEmpty()) {
+            val dirById = File(applicationContext.cacheDir, "images/${recipe.id}")
+            if (dirById.isDirectory) {
+                dirById.listFiles()?.filter { it.isFile && it.length() > 0 }?.sortedBy { it.name }?.let {
+                    files.addAll(it)
+                }
+            }
+        }
+
+        if (files.isEmpty() && !recipe.imagePath.isNullOrBlank()) {
+            val f = imageStorageManager.getFile(recipe.imagePath)
+            if (f.isFile && f.length() > 0) files.add(f)
+        }
+
+        return files
+    }
+
+    private suspend fun tryInstagramCarouselFallback(
+        recipe: RecipeEntity,
+        activeModel: String,
+        tagsByKind: Map<String, List<TagEntity>>
+    ): Boolean {
+        val slidesDir = File(applicationContext.cacheDir, "slides/${recipe.id}")
+        val slideFiles = slidesDir.listFiles()?.filter { it.isFile && it.length() > 0 }?.sortedBy { it.name }
+            ?: return false
+        if (slideFiles.isEmpty()) return false
+
+        val slideImages = mutableListOf<String>()
+        for (file in slideFiles.take(4)) {
+            val processed = imagePreprocessor.processFile(file) ?: continue
+            slideImages.add(processed.base64)
+        }
+        if (slideImages.isEmpty()) return false
+
+        val carouselInput = ExtractionInput(
+            sourceType = SourceType.INSTAGRAM,
+            sourceText = recipe.captionRaw.orEmpty(),
+            sourceImages = slideImages,
+            author = recipe.authorHandle,
+            allowedTags = tagsByKind[TagEntity.KIND_TAG].orEmpty().map { it.name },
+            allowedDiet = tagsByKind[TagEntity.KIND_DIET].orEmpty().map { it.name },
+            allowedEquipment = tagsByKind[TagEntity.KIND_EQUIPMENT].orEmpty().map { it.name },
+            allowedConsumables = tagsByKind[TagEntity.KIND_CONSUMABLE].orEmpty().map { it.name }
+        )
+
+        val extraction = recipeExtractor.extract(carouselInput)
+        (extraction.exceptionOrNull() as? NoRecipeFoundException)?.usage?.let {
+            recipeRepository.logUsage(it.toExtractionUsageEntity(activeModel))
+        }
+        val result = extraction.getOrNull()
+        if (result != null && result.isRecipe) {
+            applyAndSaveExtraction(recipe, result, activeModel, tagsByKind)
+            return true
+        }
+        return false
+    }
+
+    private suspend fun tryYouTubeCaptionFallback(
+        recipe: RecipeEntity,
+        activeModel: String,
+        tagsByKind: Map<String, List<TagEntity>>
+    ): Boolean {
+        val ytData = try {
+            youTubeFetcher.fetch(recipe.sourceKey)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        } ?: return false
+
+        val trackUrl = ytData.preferredCaptionTrackUrl ?: return false
+        val transcript = youTubeFetcher.fetchCaptionTranscript(trackUrl) ?: return false
+        if (transcript.isBlank()) return false
+
+        val captionInput = ExtractionInput(
+            sourceType = SourceType.YOUTUBE,
+            sourceText = transcript,
+            author = ytData.author ?: recipe.authorHandle,
+            allowedTags = tagsByKind[TagEntity.KIND_TAG].orEmpty().map { it.name },
+            allowedDiet = tagsByKind[TagEntity.KIND_DIET].orEmpty().map { it.name },
+            allowedEquipment = tagsByKind[TagEntity.KIND_EQUIPMENT].orEmpty().map { it.name },
+            allowedConsumables = tagsByKind[TagEntity.KIND_CONSUMABLE].orEmpty().map { it.name }
+        )
+
+        val extraction = recipeExtractor.extract(captionInput)
+        (extraction.exceptionOrNull() as? NoRecipeFoundException)?.usage?.let {
+            recipeRepository.logUsage(it.toExtractionUsageEntity(activeModel))
+        }
+        val result = extraction.getOrNull()
+        if (result != null && result.isRecipe) {
+            applyAndSaveExtraction(recipe.copy(captionRaw = transcript), result, activeModel, tagsByKind)
+            return true
+        }
+        return false
     }
 
     private suspend fun tryLinkedPageFallback(
@@ -373,6 +607,8 @@ class CaptureWorker @AssistedInject constructor(
             makeAhead = extracted.makeAhead,
             freezerFriendly = extracted.freezerFriendly,
             llmModel = model,
+            imagePath = currentRecipe.imagePath,
+            coverPhotoPath = currentRecipe.coverPhotoPath ?: currentRecipe.imagePath,
             status = RecipeEntity.STATUS_NEEDS_REVIEW,
             errorMessage = null,
             updatedAt = System.currentTimeMillis()

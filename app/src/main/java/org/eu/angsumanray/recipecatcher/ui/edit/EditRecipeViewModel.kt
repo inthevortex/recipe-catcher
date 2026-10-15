@@ -32,6 +32,11 @@ import org.eu.angsumanray.recipecatcher.core.llm.ChatPlanner
 import org.eu.angsumanray.recipecatcher.core.llm.WebRecipeSuggestion
 import org.eu.angsumanray.recipecatcher.core.web.WebRecipeFetcher
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
+import android.net.Uri
+import org.eu.angsumanray.recipecatcher.capture.ImagePreprocessor
+import org.eu.angsumanray.recipecatcher.capture.ProcessedImage
+import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
+import java.io.File
 import java.util.UUID
 import javax.inject.Inject
 
@@ -83,6 +88,8 @@ class EditRecipeViewModel @Inject constructor(
     private val chatPlanner: ChatPlanner,
     private val webRecipeFetcher: WebRecipeFetcher,
     private val settingsStore: SettingsStore,
+    private val imagePreprocessor: ImagePreprocessor,
+    private val imageStorageManager: ImageStorageManager,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -377,6 +384,155 @@ class EditRecipeViewModel @Inject constructor(
         }
     }
 
+    fun createCameraUri(): Uri = imageStorageManager.createTempCameraUri().first
+
+    fun fillFromPhotos(imageUris: List<Uri>, onFinished: () -> Unit = {}) {
+        if (imageUris.isEmpty()) return
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isExtractingText = true, extractError = null)
+            try {
+                val processedImages = mutableListOf<ProcessedImage>()
+                for (uri in imageUris) {
+                    val processed = imagePreprocessor.processUri(uri)
+                    if (processed != null) {
+                        processedImages.add(processed)
+                    }
+                }
+
+                if (processedImages.isEmpty()) {
+                    _uiState.value = _uiState.value.copy(
+                        isExtractingText = false,
+                        extractError = "Could not process selected photos"
+                    )
+                    return@launch
+                }
+
+                val primaryProcessed = processedImages.first()
+                val coverPath = if (recipeId > 0) {
+                    imagePreprocessor.saveAsRecipeCover(primaryProcessed, recipeId)
+                } else {
+                    val tempFile = File(imageStorageManager.imagesDir, "temp_${UUID.randomUUID()}.jpg")
+                    tempFile.writeBytes(primaryProcessed.jpegBytes)
+                    "images/${tempFile.name}"
+                }
+
+                val tags = tagRepository.getTagsByKind(TagEntity.KIND_TAG).map { it.name }
+                val diet = tagRepository.getTagsByKind(TagEntity.KIND_DIET).map { it.name }
+                val equipment = tagRepository.getTagsByKind(TagEntity.KIND_EQUIPMENT).map { it.name }
+                val consumables = tagRepository.getTagsByKind(TagEntity.KIND_CONSUMABLE).map { it.name }
+                val allowNewTags = settingsStore.allowNewAiTagsFlow.first()
+
+                val result = recipeExtractor.extract(
+                    ExtractionInput(
+                        sourceType = SourceType.IMAGE,
+                        sourceText = "",
+                        sourceImages = processedImages.map { it.base64 },
+                        topComment = null,
+                        author = null,
+                        allowedTags = tags,
+                        allowedDiet = diet,
+                        allowedEquipment = equipment,
+                        allowedConsumables = consumables,
+                        allowNewTags = allowNewTags
+                    )
+                )
+
+                val activeModel = settingsStore.modelIdFlow.first()
+                result.fold(
+                    onSuccess = { extracted ->
+                        recipeRepository.logUsage(extracted.usage.toExtractionUsageEntity(activeModel))
+                        val allDbTags = tagRepository.getAllTags()
+                        val tagIdMap = allDbTags.associate { (it.name.lowercase() to it.kind) to it.id }
+
+                        val matchedTagIds = mutableSetOf<Long>()
+                        extracted.tags.forEach { name ->
+                            tagIdMap[name.lowercase() to TagEntity.KIND_TAG]?.let { matchedTagIds.add(it) }
+                        }
+                        extracted.contains.forEach { name ->
+                            tagIdMap[name.lowercase() to TagEntity.KIND_DIET]?.let { matchedTagIds.add(it) }
+                        }
+                        extracted.equipment.forEach { name ->
+                            tagIdMap[name.lowercase() to TagEntity.KIND_EQUIPMENT]?.let { matchedTagIds.add(it) }
+                        }
+                        extracted.consumables.forEach { name ->
+                            tagIdMap[name.lowercase() to TagEntity.KIND_CONSUMABLE]?.let { matchedTagIds.add(it) }
+                        }
+
+                        var ingPos = 0
+                        val ingredientEntities = extracted.ingredientGroups.flatMap { group ->
+                            group.items.map { item ->
+                                IngredientEntity(
+                                    recipeId = recipeId,
+                                    position = ingPos++,
+                                    groupName = group.name?.ifBlank { null },
+                                    quantity = item.quantity?.takeIf { it > 0 },
+                                    quantityMax = item.quantityMax?.takeIf { it > 0 },
+                                    unit = item.unit?.ifBlank { null },
+                                    name = item.name,
+                                    baseName = item.baseName,
+                                    category = item.category,
+                                    note = item.note?.ifBlank { null },
+                                    rawText = item.rawText
+                                )
+                            }
+                        }
+
+                        val stepEntities = extracted.steps.mapIndexed { index, step ->
+                            StepEntity(
+                                recipeId = recipeId,
+                                position = index,
+                                text = step.text,
+                                timerSeconds = step.timerSeconds
+                            )
+                        }
+
+                        _uiState.value = _uiState.value.copy(
+                            isExtractingText = false,
+                            title = extracted.title?.ifBlank { _uiState.value.title } ?: _uiState.value.title,
+                            description = extracted.description?.ifBlank { _uiState.value.description } ?: _uiState.value.description,
+                            servingsText = (extracted.servings ?: _uiState.value.servingsText.toIntOrNull() ?: 4).toString(),
+                            prepMin = extracted.prepMinutes?.takeIf { it > 0 } ?: _uiState.value.prepMin,
+                            cookMin = extracted.cookMinutes?.takeIf { it > 0 } ?: _uiState.value.cookMin,
+                            totalMin = extracted.totalMinutes?.takeIf { it > 0 } ?: _uiState.value.totalMin,
+                            cuisine = extracted.cuisine?.ifBlank { _uiState.value.cuisine } ?: _uiState.value.cuisine,
+                            complexity = extracted.complexity?.ifBlank { _uiState.value.complexity } ?: _uiState.value.complexity,
+                            complexityReason = extracted.complexityReason?.ifBlank { _uiState.value.complexityReason } ?: _uiState.value.complexityReason,
+                            spiceLevel = extracted.spiceLevel?.ifBlank { _uiState.value.spiceLevel } ?: _uiState.value.spiceLevel,
+                            dietType = extracted.dietType?.ifBlank { _uiState.value.dietType } ?: _uiState.value.dietType,
+                            kcalPerServing = extracted.kcalPerServing?.takeIf { it > 0 } ?: _uiState.value.kcalPerServing,
+                            makeAhead = extracted.makeAhead || _uiState.value.makeAhead,
+                            freezerFriendly = extracted.freezerFriendly || _uiState.value.freezerFriendly,
+                            imagePath = coverPath,
+                            coverPhotoPath = coverPath,
+                            ingredients = if (ingredientEntities.isNotEmpty()) ingredientEntities else _uiState.value.ingredients,
+                            quantityTexts = if (ingredientEntities.isNotEmpty()) {
+                                ingredientEntities.map { formatQuantityText(it.quantity, it.quantityMax) }
+                            } else _uiState.value.quantityTexts,
+                            steps = if (stepEntities.isNotEmpty()) stepEntities else _uiState.value.steps,
+                            selectedTagIds = matchedTagIds
+                        )
+                        onFinished()
+                    },
+                    onFailure = { err ->
+                        if (err is NoRecipeFoundException) {
+                            err.usage?.let { recipeRepository.logUsage(it.toExtractionUsageEntity(activeModel)) }
+                        }
+                        _uiState.value = _uiState.value.copy(
+                            isExtractingText = false,
+                            extractError = err.message ?: "Failed to extract recipe from photos"
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isExtractingText = false,
+                    extractError = e.message ?: "Error extracting recipe from photos"
+                )
+            }
+        }
+    }
+
     fun searchFindWithAi(dishName: String, hints: String = "") {
         val state = _uiState.value
         if (dishName.isBlank() || state.isSearchingAi || state.isFetchingCandidate) return
@@ -637,6 +793,8 @@ class EditRecipeViewModel @Inject constructor(
                     freezerFriendly = state.freezerFriendly,
                     personalNote = state.personalNote.trim().takeIf { it.isNotEmpty() },
                     reviewed = true,
+                    imagePath = state.imagePath,
+                    coverPhotoPath = state.coverPhotoPath,
                     status = RecipeEntity.STATUS_SAVED,
                     createdAt = now,
                     updatedAt = now,
@@ -662,6 +820,8 @@ class EditRecipeViewModel @Inject constructor(
                     personalNote = state.personalNote.trim().takeIf { it.isNotEmpty() },
                     captionRaw = state.captionRaw.ifBlank { null } ?: existing.captionRaw,
                     reviewed = true, // Clear "To review" mark on save
+                    imagePath = state.imagePath ?: existing.imagePath,
+                    coverPhotoPath = state.coverPhotoPath ?: existing.coverPhotoPath,
                     status = RecipeEntity.STATUS_SAVED,
                     savedAt = existing.savedAt ?: now,
                     updatedAt = now
@@ -678,6 +838,18 @@ class EditRecipeViewModel @Inject constructor(
                 tagIds = state.selectedTagIds.toList(),
                 source = RecipeTagEntity.SOURCE_USER
             )
+
+            val currentCover = state.coverPhotoPath ?: state.imagePath
+            if (currentCover != null && currentCover.contains("temp_")) {
+                val tempFile = imageStorageManager.getFile(currentCover)
+                if (tempFile.exists()) {
+                    val destFile = imageStorageManager.getRecipeImageFile(savedId)
+                    tempFile.copyTo(destFile, overwrite = true)
+                    tempFile.delete()
+                    recipeRepository.updateImagePath(savedId, "images/$savedId.jpg")
+                    recipeRepository.updateCoverPhotoPath(savedId, "images/$savedId.jpg")
+                }
+            }
 
             _uiState.value = _uiState.value.copy(isSaved = true)
             onSuccess(savedId)

@@ -351,4 +351,71 @@ class ClaudeExtractorTest {
         assertTrue(error is NoRecipeFoundException)
         assertEquals(10, (error as NoRecipeFoundException).usage?.inputTokens)
     }
+
+    @Test
+    fun `buildRequestPayload with image blocks produces valid Anthropic vision content structure`() {
+        val extractor = ClaudeExtractor(createClient { _, _ -> HttpStatusCode.OK to "" }, { "k" })
+        val dummyBase64_1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        val dummyBase64_2 = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR42mNk+M/AwAAEDAwMABx4AwsAAA=="
+
+        val payloadString = extractor.buildRequestPayload(
+            modelId = "claude-haiku-5-5",
+            userContent = "Source text:\n(Recipe in attached photos)",
+            images = listOf(dummyBase64_1, dummyBase64_2)
+        )
+
+        val root = Json.parseToJsonElement(payloadString).jsonObject
+        val userMessage = root["messages"]!!.jsonArray[0].jsonObject
+        val contentArray = userMessage["content"]!!.jsonArray
+
+        assertEquals(3, contentArray.size)
+
+        // First block: image 1
+        val block1 = contentArray[0].jsonObject
+        assertEquals("image", block1["type"]!!.jsonPrimitive.content)
+        val source1 = block1["source"]!!.jsonObject
+        assertEquals("base64", source1["type"]!!.jsonPrimitive.content)
+        assertEquals("image/jpeg", source1["media_type"]!!.jsonPrimitive.content)
+        assertEquals(dummyBase64_1, source1["data"]!!.jsonPrimitive.content)
+
+        // Second block: image 2
+        val block2 = contentArray[1].jsonObject
+        assertEquals("image", block2["type"]!!.jsonPrimitive.content)
+        val source2 = block2["source"]!!.jsonObject
+        assertEquals("base64", source2["type"]!!.jsonPrimitive.content)
+        assertEquals("image/jpeg", source2["media_type"]!!.jsonPrimitive.content)
+        assertEquals(dummyBase64_2, source2["data"]!!.jsonPrimitive.content)
+
+        // Third block: text prompt
+        val block3 = contentArray[2].jsonObject
+        assertEquals("text", block3["type"]!!.jsonPrimitive.content)
+        assertTrue(block3["text"]!!.jsonPrimitive.content.contains("Source text:"))
+    }
+
+    @Test
+    fun `extract with sourceImages sends vision content blocks and parses successfully`() = runBlocking {
+        var capturedBody = ""
+        val client = createClient { _, body ->
+            capturedBody = body
+            HttpStatusCode.OK to sampleAnthropicRecipeJson
+        }
+
+        val extractor = ClaudeExtractor(client, { "test-api-key" }, { "claude-haiku-5-5" })
+        val dummyBase64 = "AQIDBA=="
+        val input = ExtractionInput(
+            sourceType = SourceType.IMAGE,
+            sourceText = "",
+            sourceImages = listOf(dummyBase64)
+        )
+
+        val result = extractor.extract(input)
+        assertTrue(result.isSuccess)
+        val recipe = result.getOrThrow()
+        assertEquals("Paneer Butter Masala", recipe.title)
+
+        // Verify request payload contained the image block
+        assertTrue(capturedBody.contains("\"type\":\"image\""))
+        assertTrue(capturedBody.contains(dummyBase64))
+        assertTrue(capturedBody.contains("Recipe content is present in the attached image(s)"))
+    }
 }

@@ -11,7 +11,7 @@ import org.jsoup.Jsoup
 import java.net.URI
 import java.util.Locale
 
-class YouTubeFetcher(
+open class YouTubeFetcher(
     private val httpFetcher: HttpFetcher,
     private val log: (String) -> Unit = {}
 ) {
@@ -62,7 +62,7 @@ class YouTubeFetcher(
         isLenient = true
     }
 
-    suspend fun fetch(urlOrId: String): YouTubeData? {
+    open suspend fun fetch(urlOrId: String): YouTubeData? {
         val videoId = UrlNormalizer.extractYouTubeVideoId(urlOrId)
             ?: urlOrId.trim().takeIf { it.isNotBlank() && !it.contains("/") }
             ?: return null
@@ -111,13 +111,18 @@ class YouTubeFetcher(
                     val description = videoDetails["shortDescription"]?.jsonPrimitive?.contentOrNull
 
                     if (!title.isNullOrBlank() || !description.isNullOrBlank()) {
+                        val captionTracks = YouTubeCaptionParser.extractCaptionTracks(playerJsonString)
+                        val preferredTrackUrl = YouTubeCaptionParser.pickPreferredCaptionTrack(captionTracks)?.baseUrl
+
                         return YouTubeData(
                             videoId = videoId,
                             title = title?.trim(),
                             author = author?.trim(),
                             description = description?.trim(),
                             thumbnailUrl = thumbnailUrl,
-                            isPlayerResponse = true
+                            isPlayerResponse = true,
+                            captionTracks = captionTracks,
+                            preferredCaptionTrackUrl = preferredTrackUrl
                         )
                     }
                 }
@@ -187,5 +192,34 @@ class YouTubeFetcher(
             }
         }
         return null
+    }
+
+    /**
+     * Fetches and parses timed-text subtitles from a caption track baseUrl.
+     */
+    open suspend fun fetchCaptionTranscript(trackUrl: String): String? {
+        val headers = mapOf(
+            "User-Agent" to DESKTOP_USER_AGENT,
+            "Accept-Language" to "en",
+            "Cookie" to "SOCS=CAI"
+        )
+        val response = try {
+            httpFetcher.get(trackUrl, headers)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log("Caption track fetch failed for $trackUrl: ${e.message}")
+            return null
+        }
+
+        if (!response.isSuccessful || response.body.isBlank()) {
+            return null
+        }
+
+        return if (trackUrl.contains("fmt=json3") || response.body.trimStart().startsWith("{")) {
+            YouTubeCaptionParser.parseTimedTextJson(response.body)
+        } else {
+            YouTubeCaptionParser.parseTimedTextXml(response.body)
+        }.ifBlank { null }
     }
 }

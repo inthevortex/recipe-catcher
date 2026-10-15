@@ -12,7 +12,8 @@ data class ExtractionInput(
     val allowedDiet: List<String> = emptyList(),
     val allowedEquipment: List<String> = emptyList(),
     val allowedConsumables: List<String> = emptyList(),
-    val allowNewTags: Boolean = false
+    val allowNewTags: Boolean = false,
+    val sourceImages: List<String> = emptyList()
 )
 
 data class ExtractedIngredient(

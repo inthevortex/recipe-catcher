@@ -75,10 +75,15 @@ class PostPageMetaFetchStrategy(
             quotedCaptionRegex.find(caption)?.let { caption = it.groupValues[1].trim() }
         }
 
+        val slideUrls = CarouselExtractor.extractSlideUrls(html)
+        val coverImage = ogImage?.takeIf { it.isNotBlank() } ?: slideUrls.firstOrNull()
+        val slides = if (slideUrls.size > 1) slideUrls.drop(1).take(4) else emptyList()
+
         return PostData(
             caption = caption?.takeIf { it.isNotBlank() },
             author = author?.trim()?.removePrefix("@")?.takeIf { it.isNotBlank() },
-            imageUrl = ogImage?.takeIf { it.isNotBlank() }
+            imageUrl = coverImage,
+            slideImageUrls = slides
         )
     }
 }

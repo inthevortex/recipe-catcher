@@ -18,6 +18,7 @@ class InstagramPostFetcher(
         var winningCaption: String? = null
         var winningAuthor: String? = null
         var mergedImageUrl: String? = null
+        var mergedSlideUrls: List<String> = emptyList()
 
         for (strategy in strategies) {
             val result = try {
@@ -35,6 +36,9 @@ class InstagramPostFetcher(
             if (winningAuthor == null && !result.author.isNullOrBlank()) {
                 winningAuthor = result.author
             }
+            if (mergedSlideUrls.isEmpty() && result.slideImageUrls.isNotEmpty()) {
+                mergedSlideUrls = result.slideImageUrls
+            }
             if (winningCaption == null && !result.caption.isNullOrBlank()) {
                 winningCaption = result.caption
                 log("Instagram caption for $shortcode from strategy ${strategy.name}")
@@ -49,7 +53,8 @@ class InstagramPostFetcher(
         return PostData(
             caption = caption,
             author = winningAuthor,
-            imageUrl = mergedImageUrl
+            imageUrl = mergedImageUrl,
+            slideImageUrls = mergedSlideUrls
         )
     }
 
@@ -75,6 +80,19 @@ class InstagramPostFetcher(
         private fun isHashtagOnlyLine(line: String): Boolean {
             val tokens = line.split("\\s+".toRegex()).filter { it.isNotBlank() }
             return tokens.isNotEmpty() && tokens.all { it.startsWith("#") }
+        }
+
+        /**
+         * Quick recipe heuristic: checks whether the caption has fewer than 3 lines that look like ingredient quantities.
+         */
+        fun hasFewerThan3QuantityLines(caption: String?): Boolean {
+            if (caption.isNullOrBlank()) return true
+            val quantityRegex = Regex("""(?:\d+|[½¼¾⅓⅔⅛])\s*(?:g|kg|ml|l|tsp|tbsp|cup|cups|oz|lb|pinch|pinches|piece|pieces|pc|pcs|clove|cloves|can|cans|slice|slices|tb|ts)?\b""", RegexOption.IGNORE_CASE)
+            val count = caption.lines().count { line ->
+                val trimmed = line.trim()
+                trimmed.isNotEmpty() && quantityRegex.containsMatchIn(trimmed)
+            }
+            return count < 3
         }
     }
 }

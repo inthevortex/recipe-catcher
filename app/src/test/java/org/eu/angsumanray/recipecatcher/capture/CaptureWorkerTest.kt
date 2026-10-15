@@ -1,6 +1,11 @@
 package org.eu.angsumanray.recipecatcher.capture
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import java.io.ByteArrayOutputStream
+import java.io.File
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.ListenableWorker
@@ -26,6 +31,7 @@ import org.eu.angsumanray.recipecatcher.core.llm.ExtractedStep
 import org.eu.angsumanray.recipecatcher.core.llm.ExtractionInput
 import org.eu.angsumanray.recipecatcher.core.llm.LlmUsage
 import org.eu.angsumanray.recipecatcher.core.llm.NoRecipeFoundException
+import org.eu.angsumanray.recipecatcher.core.llm.NewListSuggestion
 import org.eu.angsumanray.recipecatcher.core.llm.RecipeExtractor
 import org.eu.angsumanray.recipecatcher.core.llm.TransientApiException
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
@@ -59,6 +65,7 @@ class CaptureWorkerTest {
     private lateinit var secretStore: SecretStore
     private lateinit var settingsStore: SettingsStore
     private lateinit var imageStorageManager: ImageStorageManager
+    private lateinit var imagePreprocessor: ImagePreprocessor
 
     @Before
     fun setup() = runBlocking {
@@ -72,6 +79,7 @@ class CaptureWorkerTest {
         settingsStore = SettingsStore(context, secretStore)
         settingsStore.saveApiKey("sk-ant-test-key")
         imageStorageManager = ImageStorageManager(context, OkHttpClient())
+        imagePreprocessor = ImagePreprocessor(context, imageStorageManager)
     }
 
     @After
@@ -112,6 +120,7 @@ class CaptureWorkerTest {
                     webFetcher,
                     ytFetcher,
                     imageStorageManager,
+                    imagePreprocessor,
                     extractor,
                     settingsStore
                 )
@@ -618,5 +627,317 @@ class CaptureWorkerTest {
         val row = recipeRepository.getRecipe(recipeId)
         assertEquals(RecipeEntity.STATUS_PENDING_EXTRACT, row?.status)
         assertEquals("Add Anthropic API key in Settings", row?.errorMessage)
+    }
+
+    private fun createSampleJpeg(width: Int = 400, height: Int = 400): ByteArray {
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(Color.GREEN)
+        val bos = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, bos)
+        bitmap.recycle()
+        return bos.toByteArray()
+    }
+
+    private fun createExtractedRecipe(
+        isRecipe: Boolean = true,
+        title: String? = "Test Recipe",
+        description: String? = "Test description",
+        servings: Int? = 2,
+        prepMinutes: Int? = null,
+        cookMinutes: Int? = null,
+        totalMinutes: Int? = null,
+        cuisine: String? = null,
+        complexity: String? = null,
+        complexityReason: String? = null,
+        spiceLevel: String? = null,
+        dietType: String? = null,
+        contains: List<String> = emptyList(),
+        kcalPerServing: Int? = null,
+        makeAhead: Boolean = false,
+        freezerFriendly: Boolean = false,
+        ingredientGroups: List<ExtractedIngredientGroup> = emptyList(),
+        steps: List<ExtractedStep> = emptyList(),
+        equipment: List<String> = emptyList(),
+        consumables: List<String> = emptyList(),
+        tags: List<String> = emptyList(),
+        newListSuggestions: List<NewListSuggestion> = emptyList(),
+        confidence: Double = 0.95,
+        usage: LlmUsage = LlmUsage(inputTokens = 100, outputTokens = 50, cacheReadTokens = 0, model = "claude-haiku-5-5")
+    ): ExtractedRecipe = ExtractedRecipe(
+        isRecipe = isRecipe,
+        title = title,
+        description = description,
+        servings = servings,
+        prepMinutes = prepMinutes,
+        cookMinutes = cookMinutes,
+        totalMinutes = totalMinutes,
+        cuisine = cuisine,
+        complexity = complexity,
+        complexityReason = complexityReason,
+        spiceLevel = spiceLevel,
+        dietType = dietType,
+        contains = contains,
+        kcalPerServing = kcalPerServing,
+        makeAhead = makeAhead,
+        freezerFriendly = freezerFriendly,
+        ingredientGroups = ingredientGroups,
+        steps = steps,
+        equipment = equipment,
+        consumables = consumables,
+        tags = tags,
+        newListSuggestions = newListSuggestions,
+        confidence = confidence,
+        usage = usage
+    )
+
+    private fun createExtractedIngredient(
+        name: String,
+        rawText: String,
+        quantity: Double? = null,
+        quantityMax: Double? = null,
+        unit: String? = null,
+        baseName: String = name.lowercase(),
+        category: String = "pantry",
+        note: String? = null
+    ): ExtractedIngredient = ExtractedIngredient(
+        quantity = quantity,
+        quantityMax = quantityMax,
+        unit = unit,
+        name = name,
+        baseName = baseName,
+        category = category,
+        note = note,
+        rawText = rawText
+    )
+
+    private fun createExtractedStep(
+        text: String,
+        timerSeconds: Int? = null
+    ): ExtractedStep = ExtractedStep(text = text, timerSeconds = timerSeconds)
+
+    @Test
+    fun `CaptureWorker extracts SourceType_IMAGE with images from disk and sets cover photo`() = runBlocking {
+        val dir = File(context.cacheDir, "test_images_1").apply { mkdirs() }
+        val img1 = File(dir, "img_1.jpg").apply { writeBytes(createSampleJpeg(300, 300)) }
+        val img2 = File(dir, "img_2.jpg").apply { writeBytes(createSampleJpeg(300, 300)) }
+
+        val recipeId = recipeRepository.insertPendingImageRecipe("image_test_key_1", dir.absolutePath)
+
+        var capturedImages = emptyList<String>()
+        val mockExtractor = object : RecipeExtractor {
+            override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> {
+                assertEquals(SourceType.IMAGE, input.sourceType)
+                capturedImages = input.sourceImages
+                return Result.success(
+                    createExtractedRecipe(
+                        isRecipe = true,
+                        title = "Cookbook Dal Tadka",
+                        description = "Classic dal",
+                        servings = 4,
+                        ingredientGroups = listOf(
+                            ExtractedIngredientGroup(
+                                name = null,
+                                items = listOf(createExtractedIngredient(name = "Dal", rawText = "1 cup dal", quantity = 1.0, unit = "cup"))
+                            )
+                        ),
+                        steps = listOf(createExtractedStep(text = "Boil dal"))
+                    )
+                )
+            }
+        }
+
+        val result = createWorker(recipeId, extractor = mockExtractor).doWork()
+        assertEquals(ListenableWorker.Result.success(), result)
+
+        val updated = recipeRepository.getRecipe(recipeId)
+        assertNotNull(updated)
+        assertEquals(RecipeEntity.STATUS_NEEDS_REVIEW, updated!!.status)
+        assertEquals("Cookbook Dal Tadka", updated.title)
+        assertEquals("images/$recipeId.jpg", updated.imagePath)
+        assertEquals("images/$recipeId.jpg", updated.coverPhotoPath)
+        assertEquals(2, capturedImages.size)
+
+        val coverFile = imageStorageManager.getRecipeImageFile(recipeId)
+        assertTrue(coverFile.exists())
+        assertTrue(coverFile.length() > 0)
+
+        dir.deleteRecursively()
+        Unit
+    }
+
+    @Test
+    fun `CaptureWorker falls back to YouTube caption transcript when description is empty`() = runBlocking {
+        val recipeId = recipeRepository.insertPendingRecipe("youtube", "yt_empty_desc_1")
+
+        val trackUrl = "https://www.youtube.com/api/timedtext?v=123"
+        val fakeYtFetcher = object : org.eu.angsumanray.recipecatcher.core.youtube.YouTubeFetcher(
+            object : org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher {
+                override suspend fun get(url: String, headers: Map<String, String>) =
+                    org.eu.angsumanray.recipecatcher.core.ports.HttpResponseData(404, "")
+            }
+        ) {
+            override suspend fun fetch(videoId: String) = org.eu.angsumanray.recipecatcher.core.youtube.YouTubeData(
+                videoId = videoId,
+                title = "Quick Omelette",
+                author = "Chef Mike",
+                description = "",
+                thumbnailUrl = "",
+                isPlayerResponse = true,
+                preferredCaptionTrackUrl = trackUrl
+            )
+
+            override suspend fun fetchCaptionTranscript(trackUrl: String): String =
+                "Break two eggs in a bowl. Whisk thoroughly with salt. Pour into hot buttered pan and fold."
+        }
+
+        var capturedSourceText = ""
+        val mockExtractor = object : RecipeExtractor {
+            override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> {
+                assertEquals(SourceType.YOUTUBE, input.sourceType)
+                capturedSourceText = input.sourceText
+                return Result.success(
+                    createExtractedRecipe(
+                        isRecipe = true,
+                        title = "Quick Omelette",
+                        description = "Whisked eggs",
+                        servings = 1,
+                        ingredientGroups = listOf(
+                            ExtractedIngredientGroup(
+                                name = null,
+                                items = listOf(createExtractedIngredient(name = "Eggs", rawText = "2 eggs", quantity = 2.0))
+                            )
+                        ),
+                        steps = listOf(createExtractedStep(text = "Whisk and fold"))
+                    )
+                )
+            }
+        }
+
+        val result = createWorker(recipeId, ytFetcher = fakeYtFetcher, extractor = mockExtractor).doWork()
+        assertEquals(ListenableWorker.Result.success(), result)
+
+        val updated = recipeRepository.getRecipe(recipeId)
+        assertNotNull(updated)
+        assertEquals(RecipeEntity.STATUS_NEEDS_REVIEW, updated!!.status)
+        assertEquals("Quick Omelette", updated.title)
+        assertTrue(capturedSourceText.contains("Break two eggs"))
+    }
+
+    @Test
+    fun `CaptureWorker falls back to YouTube caption transcript when description has no recipe`() = runBlocking {
+        val recipeId = recipeRepository.insertPendingRecipe("youtube", "yt_no_recipe_desc")
+
+        val trackUrl = "https://www.youtube.com/api/timedtext?v=456"
+        val fakeYtFetcher = object : org.eu.angsumanray.recipecatcher.core.youtube.YouTubeFetcher(
+            object : org.eu.angsumanray.recipecatcher.core.ports.HttpFetcher {
+                override suspend fun get(url: String, headers: Map<String, String>) =
+                    org.eu.angsumanray.recipecatcher.core.ports.HttpResponseData(404, "")
+            }
+        ) {
+            override suspend fun fetch(videoId: String) = org.eu.angsumanray.recipecatcher.core.youtube.YouTubeData(
+                videoId = videoId,
+                title = "Fried Rice",
+                author = "Chef Linda",
+                description = "Don't forget to like and subscribe! Social links below.",
+                thumbnailUrl = "",
+                isPlayerResponse = true,
+                preferredCaptionTrackUrl = trackUrl
+            )
+
+            override suspend fun fetchCaptionTranscript(trackUrl: String): String =
+                "Heat a wok with 1 tbsp sesame oil. Toss in cooked cold rice, 2 sliced spring onions, and 1 tbsp soy sauce."
+        }
+
+        var callCount = 0
+        val mockExtractor = object : RecipeExtractor {
+            override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> {
+                callCount++
+                if (callCount == 1) {
+                    // First call with YouTube description text returns no recipe found
+                    return Result.failure(NoRecipeFoundException("No recipe in description"))
+                }
+                // Second call with caption transcript succeeds
+                assertTrue(input.sourceText.contains("Heat a wok"))
+                return Result.success(
+                    createExtractedRecipe(
+                        isRecipe = true,
+                        title = "Fried Rice",
+                        description = "Wok fried rice",
+                        servings = 2,
+                        ingredientGroups = listOf(
+                            ExtractedIngredientGroup(
+                                name = null,
+                                items = listOf(createExtractedIngredient(name = "Rice", rawText = "cooked cold rice"))
+                            )
+                        ),
+                        steps = listOf(createExtractedStep(text = "Toss in wok"))
+                    )
+                )
+            }
+        }
+
+        val result = createWorker(recipeId, ytFetcher = fakeYtFetcher, extractor = mockExtractor).doWork()
+        assertEquals(ListenableWorker.Result.success(), result)
+
+        val updated = recipeRepository.getRecipe(recipeId)
+        assertNotNull(updated)
+        assertEquals(RecipeEntity.STATUS_NEEDS_REVIEW, updated!!.status)
+        assertEquals("Fried Rice", updated.title)
+    }
+
+    @Test
+    fun `CaptureWorker extracts Instagram carousel slides when caption lacks recipe quantities`() = runBlocking {
+        val recipeId = recipeRepository.insertPendingRecipe("instagram", "carousel_shortcode_1")
+
+        // Pre-create slide file in cacheDir
+        val slidesDir = File(context.cacheDir, "slides/$recipeId").apply { mkdirs() }
+        val slide2 = File(slidesDir, "slide_2.jpg").apply { writeBytes(createSampleJpeg(300, 300)) }
+
+        val mockStrategy = object : PostFetchStrategy {
+            override val name: String = "Mock"
+            override suspend fun fetch(shortcode: String): PostData {
+                return PostData(
+                    caption = "Swipe to see the full recipe in slides! #cooking #dinner",
+                    author = "homechef",
+                    imageUrl = null,
+                    slideImageUrls = listOf("https://example.com/s2.jpg")
+                )
+            }
+        }
+
+        var visionImagesProvided = false
+        val mockExtractor = object : RecipeExtractor {
+            override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> {
+                if (input.sourceImages.isNotEmpty()) {
+                    visionImagesProvided = true
+                }
+                return Result.success(
+                    createExtractedRecipe(
+                        isRecipe = true,
+                        title = "Slide Recipe Dish",
+                        description = "From carousel slides",
+                        servings = 3
+                    )
+                )
+            }
+        }
+
+        val result = createWorker(
+            recipeId,
+            postFetcher = InstagramPostFetcher(listOf(mockStrategy)),
+            extractor = mockExtractor
+        ).doWork()
+
+        assertEquals(ListenableWorker.Result.success(), result)
+        assertTrue(visionImagesProvided)
+
+        val updated = recipeRepository.getRecipe(recipeId)
+        assertNotNull(updated)
+        assertEquals(RecipeEntity.STATUS_NEEDS_REVIEW, updated!!.status)
+        assertEquals("Slide Recipe Dish", updated.title)
+
+        slidesDir.deleteRecursively()
+        Unit
     }
 }

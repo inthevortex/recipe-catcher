@@ -137,13 +137,13 @@ Your Instagram backlog, the comment fallback, and the watch.
 
 Images and video captions turned into structured recipes using Claude Haiku 5.5 multimodal vision and direct timed-text extraction.
 
-- [ ] Multimodal vision in `ClaudeExtractor` / `ClaudeClient`: support `image` content blocks (Base64-encoded JPEG) alongside text prompt; support multiple image inputs.
-- [ ] `ImagePreprocessor` in `:app/capture`: EXIF orientation correction, downscaling to max 1568px on the longest edge, JPEG compression (< 5 MB), and Base64 encoding.
-- [ ] Photo Picker (`PickVisualMedia` / `PickMultipleVisualMedia`) and camera capture (`FileProvider`) in Add Recipe / Write Recipe screen.
-- [ ] Share target extension: accept `ACTION_SEND` and `ACTION_SEND_MULTIPLE` with MIME type `image/*`.
-- [ ] Instagram carousel image extractor: download slide images (slides 2–5) when post caption lacks recipe text, routing through vision extractor.
-- [ ] `YouTubeCaptionParser` in `:core/youtube`: parse `captionTracks` from `playerResponse`, fetch timed-text XML/JSON from `baseUrl`, strip formatting/music tags (`[Music]`), normalize into clean transcript, and feed into `RecipeExtractor`. Note explicitly that audio/voice transcription models are omitted.
-- [ ] Tests: `YouTubeCaptionParser` unit tests with timedtext XML/JSON fixtures; `ImagePreprocessor` tests (EXIF rotation, downscaling, compression); vision API payload serialization tests.
+- [x] Multimodal vision in `ClaudeExtractor` / `ClaudeClient`: support `image` content blocks (Base64-encoded JPEG) alongside text prompt; support multiple image inputs.
+- [x] `ImagePreprocessor` in `:app/capture`: EXIF orientation correction, downscaling to max 1568px on the longest edge, JPEG compression (< 5 MB), and Base64 encoding.
+- [x] Photo Picker (`PickVisualMedia` / `PickMultipleVisualMedia`) and camera capture (`FileProvider`) in Add Recipe / Write Recipe screen.
+- [x] Share target extension: accept `ACTION_SEND` and `ACTION_SEND_MULTIPLE` with MIME type `image/*`.
+- [x] Instagram carousel image extractor: download slide images (slides 2–5) when post caption lacks recipe text, routing through vision extractor.
+- [x] `YouTubeCaptionParser` in `:core/youtube`: parse `captionTracks` from `playerResponse`, fetch timed-text XML/JSON from `baseUrl`, strip formatting/music tags (`[Music]`), normalize into clean transcript, and feed into `RecipeExtractor`. Note explicitly that audio/voice transcription models are omitted.
+- [x] Tests: `YouTubeCaptionParser` unit tests with timedtext XML/JSON fixtures; `ImagePreprocessor` tests (EXIF rotation, downscaling, compression); vision API payload serialization tests.
 
 **Done when:** sharing or picking a cookbook photo or carousel slide extracts a clean recipe in under 10 s, and a YouTube video with timed-text captions extracts without requiring description text.
 

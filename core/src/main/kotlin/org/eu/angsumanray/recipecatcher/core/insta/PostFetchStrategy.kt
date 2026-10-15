@@ -3,7 +3,8 @@ package org.eu.angsumanray.recipecatcher.core.insta
 data class PostData(
     val caption: String?,
     val author: String?,
-    val imageUrl: String?
+    val imageUrl: String?,
+    val slideImageUrls: List<String> = emptyList()
 )
 
 interface PostFetchStrategy {

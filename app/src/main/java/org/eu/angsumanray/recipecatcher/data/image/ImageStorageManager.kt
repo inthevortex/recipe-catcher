@@ -81,6 +81,22 @@ class ImageStorageManager @Inject constructor(
         }
     }
 
+    suspend fun downloadBytes(imageUrl: String): ByteArray? = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url(imageUrl)
+                .header("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15")
+                .build()
+
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                response.body?.bytes()
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /**
      * Resizes and saves a photo from a content URI to filesDir/images/cooked/<id>.jpg
      * Max long edge is capped at 1600 px, compressed to JPEG 85%.

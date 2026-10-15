@@ -6,5 +6,7 @@ data class YouTubeData(
     val author: String?,
     val description: String?,
     val thumbnailUrl: String,
-    val isPlayerResponse: Boolean
+    val isPlayerResponse: Boolean,
+    val captionTracks: List<YouTubeCaptionTrack> = emptyList(),
+    val preferredCaptionTrackUrl: String? = null
 )

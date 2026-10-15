@@ -54,10 +54,15 @@ class EmbedPageFetchStrategy(
             ?: doc.selectFirst(".EmbeddedMedia img")
         val imageUrl = imageElement?.attr("src")?.takeIf { it.isNotBlank() }
 
+        val slideUrls = CarouselExtractor.extractSlideUrls(html)
+        val coverImage = imageUrl ?: slideUrls.firstOrNull()
+        val slides = if (slideUrls.size > 1) slideUrls.drop(1).take(4) else emptyList()
+
         return PostData(
             caption = caption?.takeIf { it.isNotBlank() },
             author = author?.takeIf { it.isNotBlank() },
-            imageUrl = imageUrl
+            imageUrl = coverImage,
+            slideImageUrls = slides
         )
     }
 }
