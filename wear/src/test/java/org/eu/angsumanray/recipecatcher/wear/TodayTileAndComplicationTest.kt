@@ -47,7 +47,7 @@ class TodayTileAndComplicationTest {
             WearMealItem(id = 2L, title = "Sandwich", kind = "prep", slot = "Lunch", done = true),
             WearMealItem(id = 3L, title = "Curry", kind = "cook", slot = "Dinner", done = false)
         )
-        repository.updateFromSnapshot(WearTodaySnapshot("2026-10-15", 1000L, items))
+        repository.updateFromSnapshot(WearTodaySnapshot(java.time.LocalDate.now().toString(), 1000L, items))
 
         val tileService = object : TodayTileService() {
             init {
@@ -75,7 +75,7 @@ class TodayTileAndComplicationTest {
             WearMealItem(id = 10L, title = "Pasta", kind = "cook", slot = "Dinner", done = false),
             WearMealItem(id = 11L, title = "Toast", kind = "cook", slot = "Breakfast", done = true)
         )
-        repository.updateFromSnapshot(WearTodaySnapshot("2026-10-15", 2000L, items))
+        repository.updateFromSnapshot(WearTodaySnapshot(java.time.LocalDate.now().toString(), 2000L, items))
 
         val complicationService = object : TodayComplicationService() {
             init {

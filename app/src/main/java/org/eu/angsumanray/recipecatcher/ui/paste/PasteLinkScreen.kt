@@ -33,8 +33,10 @@ import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.capture.CaptureWorker
+import org.eu.angsumanray.recipecatcher.capture.CommentFetcher
 import org.eu.angsumanray.recipecatcher.core.capture.SourceClassifier
 import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
+import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.eu.angsumanray.recipecatcher.data.repo.CaptureStart
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 
@@ -42,7 +44,7 @@ import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 @Composable
 fun PasteLinkScreen(
     recipeRepository: RecipeRepository,
-    commentFetcher: org.eu.angsumanray.recipecatcher.capture.CommentFetcher? = null,
+    commentFetcher: CommentFetcher? = null,
     onNavigateBack: () -> Unit,
     onRecipeCaptured: (Long) -> Unit
 ) {
@@ -157,13 +159,14 @@ fun PasteLinkScreen(
                                 }
                                 is CaptureStart.Existing -> onRecipeCaptured(start.recipeId)
                                 is CaptureStart.Created -> {
-                                    if (start.sourceType == org.eu.angsumanray.recipecatcher.core.model.SourceType.INSTAGRAM && commentFetcher != null) {
-                                        val topComment = commentFetcher.fetchTopComment(trimmed)
-                                        if (!topComment.isNullOrBlank()) {
-                                            recipeRepository.updateCommentRaw(start.recipeId, topComment)
+                                    try {
+                                        if (start.sourceType == SourceType.INSTAGRAM && commentFetcher != null) {
+                                            commentFetcher.fetchTopComment(trimmed)?.let { recipeRepository.updateCommentRaw(start.recipeId, it) }
                                         }
+                                    } finally {
+                                        // The capture starts even when the comment fetch is cut short.
+                                        CaptureWorker.enqueue(context, start.recipeId)
                                     }
-                                    CaptureWorker.enqueue(context, start.recipeId)
                                     onRecipeCaptured(start.recipeId)
                                 }
                             }

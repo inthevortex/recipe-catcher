@@ -4,19 +4,23 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -30,31 +34,42 @@ class CommentFetcher @Inject constructor(
 
     companion object {
         private const val TAG = "CommentFetcher"
-        private const val TIMEOUT_MILLIS = 15_000L
-        private const val SETTLE_MILLIS = 3_000L // Up to 3-5s for Instagram dynamic DOM to render
+        private const val PAGE_LOAD_TIMEOUT_MILLIS = 15_000L
+        /** After the page loads, comments get up to this long to render. */
+        private const val SETTLE_MAX_MILLIS = 5_000L
+        private const val POLL_INTERVAL_MILLIS = 500L
+        private const val MAX_COMMENT_CHARS = 5_000
+        private const val USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
+        /** The canonical post URL for the first Instagram post link in [sharedText], if any. */
+        fun postUrlFrom(sharedText: String): String? =
+            UrlNormalizer.extractUrls(sharedText)
+                .firstNotNullOfOrNull { UrlNormalizer.extractInstagramShortcode(it) }
+                ?.let { UrlNormalizer.canonicalizeInstagramUrl(it) }
     }
 
     /**
-     * Loads the Instagram post URL in an off-screen WebView with saved cookies,
-     * waits for page load plus settle time, then runs evaluateJavascript to read the top comment.
+     * Loads the Instagram post linked in [sharedText] in an off-screen WebView with the saved login
+     * cookies, waits for page load plus up to 5 s, and reads the first comment.
      *
-     * Invariants:
-     * - Runs ONLY on foreground captures (never in background worker or bulk import).
-     * - Returns null on any failure, never throws or crashes capture.
+     * Call it only from a foreground capture, never from a worker or the bulk import. It returns
+     * null on any failure, including a timeout, a changed DOM or a crashed renderer.
      */
-    suspend fun fetchTopComment(url: String): String? {
-        val isLoggedIn = settingsStore.instagramLoggedInFlow.first()
-        val isFetchEnabled = settingsStore.fetchTopCommentFlow.first()
-        if (!isLoggedIn || !isFetchEnabled) {
+    suspend fun fetchTopComment(sharedText: String): String? {
+        if (!settingsStore.instagramLoggedInFlow.first() || !settingsStore.fetchTopCommentFlow.first()) {
             return null
         }
+        val url = postUrlFrom(sharedText) ?: return null
 
         return try {
             withContext(Dispatchers.Main) {
-                withTimeoutOrNull(TIMEOUT_MILLIS) {
+                withTimeoutOrNull(PAGE_LOAD_TIMEOUT_MILLIS + SETTLE_MAX_MILLIS) {
                     fetchViaWebView(url)
                 }
-            }
+            }?.take(MAX_COMMENT_CHARS)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Failed to fetch top comment for $url", e)
             null
@@ -64,61 +79,61 @@ class CommentFetcher @Inject constructor(
     @SuppressLint("SetJavaScriptEnabled")
     private suspend fun fetchViaWebView(url: String): String? = suspendCancellableCoroutine { cont ->
         val webView = WebView(context)
-        val settings = webView.settings
-        settings.javaScriptEnabled = true
-        settings.domStorageEnabled = true
-        settings.userAgentString = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        webView.settings.javaScriptEnabled = true
+        webView.settings.domStorageEnabled = true
+        webView.settings.userAgentString = USER_AGENT
 
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.setAcceptCookie(true)
+        cookieManager.setAcceptThirdPartyCookies(webView, true)
 
         val handler = Handler(Looper.getMainLooper())
         var finished = false
+        var settleDeadline = 0L
 
         fun finish(result: String?) {
             if (finished) return
             finished = true
             handler.removeCallbacksAndMessages(null)
+            webView.stopLoading()
             webView.destroy()
             if (cont.isActive) cont.resume(result)
         }
 
-        fun evaluateCommentJs() {
+        fun poll() {
             if (finished) return
             webView.evaluateJavascript(InstaSelectors.buildExtractionJs()) { raw ->
                 val comment = decodeJsString(raw)
-                if (comment.isNotBlank() && comment != "null") {
-                    finish(comment)
-                } else {
-                    finish(null)
+                when {
+                    comment.isNotBlank() -> finish(comment)
+                    SystemClock.uptimeMillis() >= settleDeadline -> finish(null)
+                    else -> handler.postDelayed({ poll() }, POLL_INTERVAL_MILLIS)
                 }
             }
         }
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, finishedUrl: String?) {
-                super.onPageFinished(view, finishedUrl)
-                handler.removeCallbacksAndMessages(null)
-                // Wait up to SETTLE_MILLIS after page load for comments to mount in DOM
-                handler.postDelayed({ evaluateCommentJs() }, SETTLE_MILLIS)
+                // Redirects can report several loads; the settle window starts at the first.
+                if (finished || settleDeadline != 0L) return
+                settleDeadline = SystemClock.uptimeMillis() + SETTLE_MAX_MILLIS
+                poll()
             }
 
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
-                super.onReceivedError(view, request, error)
-                if (request?.isForMainFrame == true) {
-                    finish(null)
-                }
+                if (request?.isForMainFrame == true) finish(null)
+            }
+
+            // Without this, a crashed renderer takes the whole app down with it.
+            override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                Log.w(TAG, "WebView renderer gone while reading comments")
+                finish(null)
+                return true
             }
         }
 
         cont.invokeOnCancellation {
-            handler.post {
-                handler.removeCallbacksAndMessages(null)
-                if (!finished) {
-                    finished = true
-                    webView.destroy()
-                }
-            }
+            handler.post { finish(null) }
         }
 
         webView.loadUrl(url)
@@ -130,6 +145,6 @@ class CommentFetcher @Inject constructor(
             Json.decodeFromString<String>(raw)
         } catch (_: Exception) {
             raw.removeSurrounding("\"")
-        }
+        }.trim()
     }
 }

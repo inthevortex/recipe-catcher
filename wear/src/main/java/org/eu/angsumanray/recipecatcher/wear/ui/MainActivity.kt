@@ -36,7 +36,7 @@ class MainActivity : ComponentActivity() {
         val entryId = intent.getLongExtra(EXTRA_TICK_ENTRY_ID, -1L)
         if (entryId > 0L) {
             lifecycleScope.launch {
-                repository.toggleMeal(entryId)
+                repository.markDone(entryId)
             }
         }
     }

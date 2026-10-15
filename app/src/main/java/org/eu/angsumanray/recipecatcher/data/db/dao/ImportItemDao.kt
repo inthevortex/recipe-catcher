@@ -68,6 +68,10 @@ interface ImportItemDao {
     @Query("UPDATE import_item SET status = 'queued', attempts = 0, last_error = null WHERE id = :id")
     suspend fun retry(id: Long)
 
+    /** Puts [id] back in the queue, keeping its attempt count. */
+    @Query("UPDATE import_item SET status = 'queued' WHERE id = :id")
+    suspend fun requeue(id: Long)
+
     @Query("UPDATE import_item SET status = 'queued', attempts = 0, last_error = null WHERE status = 'skipped' OR status = 'failed'")
     suspend fun retryAllSkippedAndFailed()
 

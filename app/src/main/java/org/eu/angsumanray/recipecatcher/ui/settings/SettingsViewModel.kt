@@ -116,7 +116,10 @@ class SettingsViewModel @Inject constructor(
 
     fun logoutInstagram() {
         viewModelScope.launch {
-            android.webkit.CookieManager.getInstance().removeAllCookies(null)
+            android.webkit.CookieManager.getInstance().apply {
+                removeAllCookies(null)
+                flush()
+            }
             settingsStore.setInstagramLoggedIn(false)
         }
     }

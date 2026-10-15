@@ -1,9 +1,11 @@
 package org.eu.angsumanray.recipecatcher.wear
 
 import android.content.Context
+import android.util.Log
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -16,6 +18,7 @@ import java.time.LocalDate
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** Wire format shared with the watch; keep it in step with `WearMealItem` in `:wear`. */
 @Serializable
 data class WearMealItem(
     val id: Long,
@@ -46,50 +49,47 @@ class WearSync @Inject constructor(
 
     suspend fun publishToday(): Boolean = withContext(Dispatchers.IO) {
         try {
-            val today = LocalDate.now()
-            val slots = plannerDao.getSlotsForDate(today)
-            val entries = plannerDao.getEntriesForDate(today)
-            val slotMap = slots.associateBy { it.id }
-
-            val items = entries.map { entry ->
-                val slot = slotMap[entry.slotId]
-                val recipe = entry.recipeId?.let { plannerRepository.getRecipe(it) }
-                val title = recipe?.title ?: entry.text
-                    ?: if (entry.kind == PlanEntryEntity.KIND_PREP) "Prep" else "Meal"
-                WearMealItem(
-                    id = entry.id,
-                    title = title,
-                    kind = entry.kind,
-                    slot = slot?.name ?: "Meal",
-                    time = slot?.time?.toString(),
-                    done = entry.doneAt != null
-                )
-            }
-
-            val snapshot = WearTodaySnapshot(
-                dateIso = today.toString(),
-                timestamp = System.currentTimeMillis(),
-                items = items
-            )
-            val encodedJson = json.encodeToString(WearTodaySnapshot.serializer(), snapshot)
-
+            val snapshot = buildSnapshot(LocalDate.now(), System.currentTimeMillis())
             val request = PutDataMapRequest.create(PATH_TODAY).apply {
-                dataMap.putString(KEY_MEALS_JSON, encodedJson)
-                dataMap.putLong(KEY_TIMESTAMP, System.currentTimeMillis())
+                dataMap.putString(KEY_MEALS_JSON, json.encodeToString(WearTodaySnapshot.serializer(), snapshot))
+                // A fresh value every time, so the Data Layer sees a change even when the list is unchanged.
+                dataMap.putLong(KEY_TIMESTAMP, snapshot.timestamp)
             }
-            val putDataReq = request.asPutDataRequest().setUrgent()
-            val dataClient = Wearable.getDataClient(context)
-            dataClient.putDataItem(putDataReq).await()
+            Wearable.getDataClient(context).putDataItem(request.asPutDataRequest().setUrgent()).await()
             true
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            // Wearable API may throw if Google Play Services is unavailable or not running on device
+            // Play Services may be missing, or no watch was ever paired.
+            Log.d(TAG, "Today snapshot not published to the watch", e)
             false
         }
+    }
+
+    /** The Today list the watch shows: [date]'s entries in slot order. */
+    suspend fun buildSnapshot(date: LocalDate, now: Long): WearTodaySnapshot {
+        val slotMap = plannerDao.getSlotsForDate(date).associateBy { it.id }
+        val items = plannerDao.getEntriesForDate(date).map { entry ->
+            val slot = slotMap[entry.slotId]
+            val recipe = entry.recipeId?.let { plannerRepository.getRecipe(it) }
+            val title = recipe?.title ?: entry.text
+                ?: if (entry.kind == PlanEntryEntity.KIND_PREP) "Prep" else "Meal"
+            WearMealItem(
+                id = entry.id,
+                title = title,
+                kind = entry.kind,
+                slot = slot?.name ?: "Meal",
+                time = slot?.time?.toString(),
+                done = entry.doneAt != null
+            )
+        }
+        return WearTodaySnapshot(dateIso = date.toString(), timestamp = now, items = items)
     }
 
     companion object {
         const val PATH_TODAY = "/today"
         const val KEY_MEALS_JSON = "meals_json"
         const val KEY_TIMESTAMP = "timestamp"
+        private const val TAG = "WearSync"
     }
 }

@@ -11,7 +11,11 @@ import androidx.wear.watchface.complications.data.ShortTextComplicationData
 import androidx.wear.watchface.complications.datasource.ComplicationRequest
 import androidx.wear.watchface.complications.datasource.SuspendingComplicationDataSourceService
 import org.eu.angsumanray.recipecatcher.wear.data.TodayRepository
+import org.eu.angsumanray.recipecatcher.wear.data.WearMealItem
 import org.eu.angsumanray.recipecatcher.wear.ui.MainActivity
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 open class TodayComplicationService : SuspendingComplicationDataSourceService() {
 
@@ -39,8 +43,7 @@ open class TodayComplicationService : SuspendingComplicationDataSourceService() 
     }
 
     override suspend fun onComplicationRequest(request: ComplicationRequest): ComplicationData? {
-        val repository = TodayRepository.getInstance(applicationContext)
-        val meals = repository.getMeals()
+        val meals = TodayRepository.getInstance(applicationContext).meals()
         val remaining = meals.filter { !it.done }
         val nextMeal = remaining.firstOrNull()
 
@@ -53,16 +56,19 @@ open class TodayComplicationService : SuspendingComplicationDataSourceService() 
 
         return when (request.complicationType) {
             ComplicationType.SHORT_TEXT -> {
-                val text = if (meals.isEmpty()) {
-                    "—"
-                } else if (remaining.isEmpty()) {
-                    "Done"
-                } else {
-                    "${remaining.size} left"
+                val text = when {
+                    meals.isEmpty() -> "—"
+                    remaining.isEmpty() -> "Done"
+                    else -> "${remaining.size} left"
+                }
+                val description = when {
+                    meals.isEmpty() -> "No meals planned today"
+                    remaining.isEmpty() -> "All meals done today"
+                    else -> "${remaining.size} meals left today"
                 }
                 ShortTextComplicationData.Builder(
                     text = PlainComplicationText.Builder(text).build(),
-                    contentDescription = PlainComplicationText.Builder("Meals remaining: $text").build()
+                    contentDescription = PlainComplicationText.Builder(description).build()
                 )
                     .setTitle(PlainComplicationText.Builder("Meals").build())
                     .setTapAction(tapIntent)
@@ -70,13 +76,10 @@ open class TodayComplicationService : SuspendingComplicationDataSourceService() 
             }
 
             ComplicationType.LONG_TEXT -> {
-                val text = if (meals.isEmpty()) {
-                    "No meals planned"
-                } else if (remaining.isEmpty()) {
-                    "All meals done"
-                } else {
-                    val timePrefix = nextMeal?.time?.let { "$it • " } ?: ""
-                    "$timePrefix${nextMeal?.slot}: ${nextMeal?.title}"
+                val text = when {
+                    nextMeal != null -> nextItemText(nextMeal)
+                    meals.isEmpty() -> "No meals planned"
+                    else -> "All meals done"
                 }
                 LongTextComplicationData.Builder(
                     text = PlainComplicationText.Builder(text).build(),
@@ -102,6 +105,21 @@ open class TodayComplicationService : SuspendingComplicationDataSourceService() 
             }
 
             else -> null
+        }
+    }
+
+    companion object {
+        /** "Prep oats, 9:00 pm" style: title first, then the slot's time when it has one. */
+        fun nextItemText(item: WearMealItem): String {
+            val title = if (item.kind == "prep" && !item.title.startsWith("Prep", ignoreCase = true)) "Prep ${item.title}" else item.title
+            val time = item.time?.let { formatTime(it) }
+            return if (time != null) "$title, $time" else "${item.slot}: $title"
+        }
+
+        private fun formatTime(isoTime: String): String? = try {
+            LocalTime.parse(isoTime).format(DateTimeFormatter.ofPattern("h:mm a", Locale.getDefault()))
+        } catch (_: Exception) {
+            null
         }
     }
 }

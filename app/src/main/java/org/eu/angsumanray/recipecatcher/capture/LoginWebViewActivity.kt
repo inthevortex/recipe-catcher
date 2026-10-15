@@ -40,6 +40,8 @@ class LoginWebViewActivity : ComponentActivity() {
         const val LOGIN_URL = "https://www.instagram.com/accounts/login/"
     }
 
+    private var loginDetected = false
+
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,9 +82,18 @@ class LoginWebViewActivity : ComponentActivity() {
         }
     }
 
+    override fun onPause() {
+        super.onPause()
+        // CookieManager writes to disk lazily; flush so the session survives the app being killed.
+        CookieManager.getInstance().flush()
+    }
+
     private fun checkAndPersistLogin() {
         val cookies = CookieManager.getInstance().getCookie(LOGIN_URL)
-        if (cookies != null && (cookies.contains("sessionid") || cookies.contains("ds_user_id"))) {
+        if (loginDetected || cookies == null) return
+        if (cookies.contains("sessionid=") || cookies.contains("ds_user_id=")) {
+            loginDetected = true
+            CookieManager.getInstance().flush()
             lifecycleScope.launch {
                 settingsStore.setInstagramLoggedIn(true)
                 Toast.makeText(this@LoginWebViewActivity, "Instagram login detected", Toast.LENGTH_SHORT).show()
@@ -119,6 +130,10 @@ private fun InstagramLoginWebView(
 
                 loadUrl(LoginWebViewActivity.LOGIN_URL)
             }
+        },
+        onRelease = { webView ->
+            webView.stopLoading()
+            webView.destroy()
         }
     )
 }

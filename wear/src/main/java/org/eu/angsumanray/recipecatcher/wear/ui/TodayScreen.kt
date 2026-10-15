@@ -84,7 +84,7 @@ fun TodayScreen(
                         meal = meal,
                         onToggle = {
                             scope.launch {
-                                repository.toggleMeal(meal.id)
+                                repository.markDone(meal.id)
                             }
                         }
                     )
@@ -100,10 +100,11 @@ private fun MealItemRow(
     onToggle: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Ticks only go one way: the phone owns un-ticking, so a done row stays done here.
     ToggleChip(
         modifier = modifier.fillMaxWidth(),
         checked = meal.done,
-        onCheckedChange = { onToggle() },
+        onCheckedChange = { checked -> if (checked) onToggle() },
         label = {
             Text(
                 text = meal.title,

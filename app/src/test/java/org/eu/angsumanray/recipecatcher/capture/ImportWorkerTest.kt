@@ -227,6 +227,151 @@ class ImportWorkerTest {
         // 4th item should still be queued because worker halted after 3 failures
         val f4 = database.importItemDao().getBySourceKey("F4")
         assertEquals(ImportItemEntity.STATUS_QUEUED, f4?.status)
+        assertEquals(0, f4?.attempts)
+
+        // The three that hit the rate limit go back in the queue for after the cooldown
+        for (key in listOf("F1", "F2", "F3")) {
+            val item = database.importItemDao().getBySourceKey(key)
+            assertEquals(ImportItemEntity.STATUS_QUEUED, item?.status)
+            assertEquals(1, item?.attempts)
+        }
+    }
+
+    @Test
+    fun doWork_cooldownStreak_givesUpOnPostsOutOfAttempts() = runBlocking {
+        database.importItemDao().insertAll(
+            listOf("G1", "G2", "G3").map {
+                ImportItemEntity(url = "https://instagram.com/p/$it/", sourceKey = it, attempts = ImportWorker.MAX_FETCH_ATTEMPTS - 1)
+            }
+        )
+
+        buildWorker(postFetcher = InstagramPostFetcher(emptyList())).doWork()
+
+        for (key in listOf("G1", "G2", "G3")) {
+            assertEquals(ImportItemEntity.STATUS_FAILED, database.importItemDao().getBySourceKey(key)?.status)
+        }
+    }
+
+    @Test
+    fun doWork_extractionFailureBreaksFetchFailureStreak() = runBlocking {
+        val readable = setOf("H2")
+        val fetcher = InstagramPostFetcher(listOf(object : PostFetchStrategy {
+            override val name = "mock"
+            override suspend fun fetch(shortcode: String) =
+                if (shortcode in readable) PostData(caption = "1 cup rice", author = "a", imageUrl = null) else null
+        }))
+        val brokenExtractor = object : RecipeExtractor {
+            override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> =
+                Result.failure(IllegalStateException("LLM down"))
+        }
+        database.importItemDao().insertAll(
+            listOf("H1", "H2", "H3", "H4").mapIndexed { i, key ->
+                ImportItemEntity(url = "https://instagram.com/p/$key/", sourceKey = key, createdAt = 1_000L + i)
+            }
+        )
+
+        buildWorker(fetcher, brokenExtractor).doWork()
+
+        assertEquals(0L, settingsStore.importCooldownUntilFlow.first())
+        assertEquals(ImportItemEntity.STATUS_FAILED, database.importItemDao().getBySourceKey("H2")?.status)
+        assertEquals(
+            RecipeEntity.STATUS_FAILED_EXTRACT,
+            database.recipeDao().getBySourceKey("H2")?.status
+        )
+        assertEquals(ImportItemEntity.STATUS_FAILED, database.importItemDao().getBySourceKey("H4")?.status)
+    }
+
+    @Test
+    fun doWork_underCooldown_leavesQueueAlone() = runBlocking {
+        settingsStore.setImportCooldownUntil(System.currentTimeMillis() + 60_000L)
+        database.importItemDao().insert(ImportItemEntity(url = "https://instagram.com/p/COOL/", sourceKey = "COOL"))
+
+        buildWorker().doWork()
+
+        assertEquals(ImportItemEntity.STATUS_QUEUED, database.importItemDao().getBySourceKey("COOL")?.status)
+        assertEquals(null, database.recipeDao().getBySourceKey("COOL"))
+    }
+
+    @Test
+    fun doWork_missingApiKey_leavesQueueAlone() = runBlocking {
+        settingsStore.saveApiKey("")
+        database.importItemDao().insert(ImportItemEntity(url = "https://instagram.com/p/NOKEY/", sourceKey = "NOKEY"))
+
+        buildWorker().doWork()
+
+        val item = database.importItemDao().getBySourceKey("NOKEY")
+        assertEquals(ImportItemEntity.STATUS_QUEUED, item?.status)
+        assertEquals(0, item?.attempts)
+    }
+
+    @Test
+    fun doWork_importedRecipeIsSearchableAndCollectionTagIsUserTag() = runBlocking {
+        settingsStore.setTagWithCollections(true)
+        database.importItemDao().insert(
+            ImportItemEntity(url = "https://instagram.com/p/FTS1/", sourceKey = "FTS1", collection = "Curry Night")
+        )
+
+        buildWorker(extractor = createMockExtractor(title = "Saffron Pulao")).doWork()
+
+        val recipe = database.recipeDao().getBySourceKey("FTS1")!!
+        assertEquals(listOf(recipe.id), recipeRepository.search("Saffron").map { it.id })
+        val collectionTag = database.tagDao().getByNameAndKind("Curry Night", TagEntity.KIND_TAG)!!
+        assertEquals(
+            listOf(collectionTag.id),
+            database.recipeTagDao().getTagIdsForRecipe(recipe.id, org.eu.angsumanray.recipecatcher.data.db.entity.RecipeTagEntity.SOURCE_USER)
+        )
+        assertEquals(recipe.id, database.importItemDao().getBySourceKey("FTS1")?.recipeId)
+    }
+
+    @Test
+    fun doWork_tagWithCollectionsOff_addsNoCollectionTag() = runBlocking {
+        settingsStore.setTagWithCollections(false)
+        database.importItemDao().insert(
+            ImportItemEntity(url = "https://instagram.com/p/NOTAG/", sourceKey = "NOTAG", collection = "Desserts")
+        )
+
+        buildWorker().doWork()
+
+        assertEquals(null, database.tagDao().getByNameAndKind("Desserts", TagEntity.KIND_TAG))
+    }
+
+    @Test
+    fun doWork_recipeWaitingInReview_isLeftUntouched() = runBlocking {
+        val recipeId = database.recipeDao().insert(
+            RecipeEntity(
+                sourceType = SourceType.INSTAGRAM.value,
+                sourceKey = "INREVIEW",
+                title = "Mine",
+                status = RecipeEntity.STATUS_NEEDS_REVIEW
+            )
+        )
+        database.importItemDao().insert(ImportItemEntity(url = "https://instagram.com/p/INREVIEW/", sourceKey = "INREVIEW"))
+
+        buildWorker(extractor = createMockExtractor(title = "Overwritten")).doWork()
+
+        val recipe = database.recipeDao().getById(recipeId)!!
+        assertEquals(RecipeEntity.STATUS_NEEDS_REVIEW, recipe.status)
+        assertEquals("Mine", recipe.title)
+        assertTrue(recipe.reviewed)
+        assertEquals(ImportItemEntity.STATUS_DONE, database.importItemDao().getBySourceKey("INREVIEW")?.status)
+    }
+
+    @Test
+    fun doWork_retriedSkippedItemIsProcessedAgain() = runBlocking {
+        database.importItemDao().insert(ImportItemEntity(url = "https://instagram.com/p/AGAIN/", sourceKey = "AGAIN"))
+        val noRecipe = object : RecipeExtractor {
+            override suspend fun extract(input: ExtractionInput): Result<ExtractedRecipe> =
+                Result.failure(NoRecipeFoundException("none", null))
+        }
+        buildWorker(extractor = noRecipe).doWork()
+        val skipped = database.importItemDao().getBySourceKey("AGAIN")!!
+        assertEquals(ImportItemEntity.STATUS_SKIPPED, skipped.status)
+
+        database.importItemDao().retry(skipped.id)
+        buildWorker().doWork()
+
+        assertEquals(ImportItemEntity.STATUS_DONE, database.importItemDao().getBySourceKey("AGAIN")?.status)
+        assertEquals(RecipeEntity.STATUS_SAVED, database.recipeDao().getBySourceKey("AGAIN")?.status)
     }
 
     @Test

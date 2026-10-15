@@ -1,16 +1,20 @@
 package org.eu.angsumanray.recipecatcher.ui.importer
 
 import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -20,7 +24,7 @@ import org.eu.angsumanray.recipecatcher.core.capture.SavedPostsImporter
 import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
 import org.eu.angsumanray.recipecatcher.data.db.entity.ImportItemEntity
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
-import java.io.InputStream
+import java.io.IOException
 import javax.inject.Inject
 
 data class ImportPreview(
@@ -40,6 +44,8 @@ data class ImportProgressState(
     val isUnderCooldown: Boolean = false,
     val cooldownRemainingSeconds: Long = 0L,
     val estimatedFinishMinutes: Int = 0,
+    /** Epoch millis the queue should empty at, or null when nothing is queued. */
+    val estimatedFinishAtMillis: Long? = null,
     val skippedAndFailedItems: List<ImportItemEntity> = emptyList()
 )
 
@@ -79,50 +85,47 @@ class ImportViewModel @Inject constructor(
         Triple(paused, cooldownUntil, skippedItems)
     }
 
+    // Re-evaluates the cooldown countdown and finish estimate while the screen is open.
+    private val clockFlow = flow {
+        while (true) {
+            emit(System.currentTimeMillis())
+            delay(CLOCK_TICK_MILLIS)
+        }
+    }
+
     val progressState: StateFlow<ImportProgressState> = combine(
         countsFlow,
-        statusFlow
-    ) { counts, status ->
-        val queued = counts[0]
-        val done = counts[1]
-        val skipped = counts[2]
-        val failed = counts[3]
+        statusFlow,
+        clockFlow
+    ) { counts, status, now ->
         val (paused, cooldownUntil, skippedItems) = status
-
-        val now = System.currentTimeMillis()
-        val underCooldown = now < cooldownUntil
-        val cooldownSeconds = if (underCooldown) (cooldownUntil - now) / 1000L else 0L
-        val estMinutes = (queued * 30 + 59) / 60
-
-        ImportProgressState(
-            queuedCount = queued,
-            doneCount = done,
-            skippedCount = skipped,
-            failedCount = failed,
-            isPaused = paused,
-            isUnderCooldown = underCooldown,
-            cooldownRemainingSeconds = cooldownSeconds,
-            estimatedFinishMinutes = estMinutes,
-            skippedAndFailedItems = skippedItems
-        )
+        computeProgress(
+            queued = counts[0],
+            done = counts[1],
+            skipped = counts[2],
+            failed = counts[3],
+            paused = paused,
+            cooldownUntil = cooldownUntil,
+            now = now
+        ).copy(skippedAndFailedItems = skippedItems)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ImportProgressState())
 
-    fun parseStream(inputStream: InputStream, isZip: Boolean) {
+    /** Opens [uri] here rather than in the picker callback, so a revoked or missing file shows an error instead of crashing. */
+    fun parseUri(uri: Uri) {
         viewModelScope.launch {
             _isParsing.value = true
             _parseError.value = null
             try {
                 val posts = withContext(Dispatchers.IO) {
-                    if (isZip) {
-                        SavedPostsImporter.parseZip(inputStream)
-                    } else {
-                        val text = inputStream.bufferedReader().use { it.readText() }
-                        SavedPostsImporter.parse(text)
-                    }
+                    val stream = context.contentResolver.openInputStream(uri)
+                        ?: throw IOException("Couldn't open the selected file")
+                    SavedPostsImporter.parseStream(stream)
                 }
                 preparePreview(posts)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _parseError.value = "Failed to parse file: ${e.message}"
+                _parseError.value = "Failed to parse file: ${e.message ?: "unreadable export"}"
             } finally {
                 _isParsing.value = false
             }
@@ -196,21 +199,35 @@ class ImportViewModel @Inject constructor(
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            val entities = posts.map { post ->
+            // Distinct timestamps keep the queue in export order, since it is taken by created_at.
+            val base = System.currentTimeMillis()
+            val entities = posts.mapIndexed { index, post ->
                 ImportItemEntity(
                     url = post.url,
                     sourceKey = post.shortcode,
                     collection = post.collection,
                     status = ImportItemEntity.STATUS_QUEUED,
-                    createdAt = System.currentTimeMillis()
+                    createdAt = base + index
                 )
             }
             database.importItemDao().insertAll(entities)
-            settingsStore.setImportPaused(false)
             withContext(Dispatchers.Main) {
                 _preview.value = null
-                ImportWorker.enqueue(context)
             }
+            startQueue()
+        }
+    }
+
+    /** Unpauses and starts the worker, or explains why the queue can't run yet. */
+    private suspend fun startQueue() {
+        settingsStore.setImportPaused(false)
+        if (settingsStore.getApiKey().isBlank()) {
+            _parseError.value = "Add your Anthropic API key in Settings; the queue starts when you tap Resume."
+            settingsStore.setImportPaused(true)
+            return
+        }
+        withContext(Dispatchers.Main) {
+            ImportWorker.enqueue(context)
         }
     }
 
@@ -228,28 +245,21 @@ class ImportViewModel @Inject constructor(
 
     fun resumeImport() {
         viewModelScope.launch {
-            settingsStore.setImportPaused(false)
-            ImportWorker.enqueue(context)
+            startQueue()
         }
     }
 
     fun retryItem(id: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             database.importItemDao().retry(id)
-            settingsStore.setImportPaused(false)
-            withContext(Dispatchers.Main) {
-                ImportWorker.enqueue(context)
-            }
+            startQueue()
         }
     }
 
     fun retryAllSkippedAndFailed() {
         viewModelScope.launch(Dispatchers.IO) {
             database.importItemDao().retryAllSkippedAndFailed()
-            settingsStore.setImportPaused(false)
-            withContext(Dispatchers.Main) {
-                ImportWorker.enqueue(context)
-            }
+            startQueue()
         }
     }
 
@@ -263,6 +273,36 @@ class ImportViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             database.importItemDao().deleteAll()
             ImportWorker.cancel(context)
+        }
+    }
+
+    companion object {
+        private const val CLOCK_TICK_MILLIS = 15_000L
+
+        /** Counts, cooldown and finish estimate for the progress card; [now] is passed in for tests. */
+        fun computeProgress(
+            queued: Int,
+            done: Int,
+            skipped: Int,
+            failed: Int,
+            paused: Boolean,
+            cooldownUntil: Long,
+            now: Long,
+            intervalMillis: Long = ImportWorker.DEFAULT_INTERVAL_MILLIS
+        ): ImportProgressState {
+            val cooldownRemaining = (cooldownUntil - now).coerceAtLeast(0L)
+            val remainingMillis = cooldownRemaining + queued * intervalMillis
+            return ImportProgressState(
+                queuedCount = queued,
+                doneCount = done,
+                skippedCount = skipped,
+                failedCount = failed,
+                isPaused = paused,
+                isUnderCooldown = cooldownRemaining > 0L,
+                cooldownRemainingSeconds = (cooldownRemaining + 999L) / 1000L,
+                estimatedFinishMinutes = ((remainingMillis + 59_999L) / 60_000L).toInt(),
+                estimatedFinishAtMillis = if (queued > 0) now + remainingMillis else null
+            )
         }
     }
 }

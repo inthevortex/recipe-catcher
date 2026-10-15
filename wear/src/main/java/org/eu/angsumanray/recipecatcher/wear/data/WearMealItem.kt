@@ -2,6 +2,7 @@ package org.eu.angsumanray.recipecatcher.wear.data
 
 import kotlinx.serialization.Serializable
 
+/** Wire format shared with the phone; keep it in step with `WearMealItem` in `:app`. */
 @Serializable
 data class WearMealItem(
     val id: Long,

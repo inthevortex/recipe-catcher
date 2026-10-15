@@ -27,7 +27,6 @@ import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
 import org.eu.angsumanray.recipecatcher.data.db.entity.ImportItemEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
-import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeTagEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.StepEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 import org.eu.angsumanray.recipecatcher.data.image.ImageStorageManager
@@ -51,45 +50,32 @@ class ImportWorker @AssistedInject constructor(
     companion object {
         const val UNIQUE_WORK_NAME = "instagram_bulk_import"
         const val KEY_INTERVAL_MILLIS = "key_interval_millis"
-        const val DEFAULT_INTERVAL_MILLIS = 30_000L // ~30 seconds interval
-        const val COOLDOWN_DURATION_MILLIS = 30 * 60 * 1000L // 30 minutes cooldown
+        const val DEFAULT_INTERVAL_MILLIS = 30_000L
+        const val COOLDOWN_DURATION_MILLIS = 30 * 60 * 1000L
+        const val MAX_CONSECUTIVE_FETCH_FAILURES = 3
+        /** A post whose fetch failed in a run that hit the cooldown goes back in the queue until it has this many attempts. */
+        const val MAX_FETCH_ATTEMPTS = 3
         private const val TAG = "ImportWorker"
-        private const val MAX_CONSECUTIVE_FAILURES = 3
 
+        /** Starts the queue now, unless a run (or its cooldown wait) is already scheduled. */
         fun enqueue(context: Context, intervalMillis: Long = DEFAULT_INTERVAL_MILLIS) {
-            val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build()
-
-            val request = OneTimeWorkRequestBuilder<ImportWorker>()
-                .setConstraints(constraints)
-                .setInputData(workDataOf(KEY_INTERVAL_MILLIS to intervalMillis))
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-                .build()
-
             WorkManager.getInstance(context).enqueueUniqueWork(
                 UNIQUE_WORK_NAME,
                 ExistingWorkPolicy.KEEP,
-                request
+                buildRequest(delayMillis = 0L, intervalMillis = intervalMillis)
             )
         }
 
+        /**
+         * Schedules the next run after [delayMillis]. Called from inside a running worker, so it
+         * appends to the unique chain instead of replacing (and so cancelling) the caller.
+         */
         fun scheduleWithDelay(context: Context, delayMillis: Long, intervalMillis: Long = DEFAULT_INTERVAL_MILLIS) {
             try {
-                val constraints = Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build()
-
-                val request = OneTimeWorkRequestBuilder<ImportWorker>()
-                    .setConstraints(constraints)
-                    .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
-                    .setInputData(workDataOf(KEY_INTERVAL_MILLIS to intervalMillis))
-                    .build()
-
                 WorkManager.getInstance(context).enqueueUniqueWork(
                     UNIQUE_WORK_NAME,
-                    ExistingWorkPolicy.REPLACE,
-                    request
+                    ExistingWorkPolicy.APPEND_OR_REPLACE,
+                    buildRequest(delayMillis, intervalMillis)
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to schedule delayed import worker", e)
@@ -99,6 +85,18 @@ class ImportWorker @AssistedInject constructor(
         fun cancel(context: Context) {
             WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_WORK_NAME)
         }
+
+        private fun buildRequest(delayMillis: Long, intervalMillis: Long) =
+            OneTimeWorkRequestBuilder<ImportWorker>()
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                )
+                .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
+                .setInputData(workDataOf(KEY_INTERVAL_MILLIS to intervalMillis))
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                .build()
     }
 
     override suspend fun doWork(): Result {
@@ -107,90 +105,84 @@ class ImportWorker @AssistedInject constructor(
             return Result.success()
         }
 
+        val intervalMillis = inputData.getLong(KEY_INTERVAL_MILLIS, DEFAULT_INTERVAL_MILLIS)
         val cooldownUntil = settingsStore.importCooldownUntilFlow.first()
         val now = System.currentTimeMillis()
         if (now < cooldownUntil) {
-            val remaining = cooldownUntil - now
-            Log.d(TAG, "Import is under cooldown for $remaining ms, rescheduling.")
-            scheduleWithDelay(applicationContext, remaining)
+            Log.d(TAG, "Import is under cooldown for ${cooldownUntil - now} ms, rescheduling.")
+            scheduleWithDelay(applicationContext, cooldownUntil - now, intervalMillis)
             return Result.success()
         }
 
-        val intervalMillis = inputData.getLong(KEY_INTERVAL_MILLIS, DEFAULT_INTERVAL_MILLIS)
-        var consecutiveFailures = 0
+        // Without a key every post would fail at extraction, so leave the queue untouched.
+        if (settingsStore.getApiKey().isBlank()) {
+            Log.w(TAG, "No Anthropic API key; import queue left as is.")
+            return Result.success()
+        }
+
+        val failedFetchIds = mutableListOf<Long>()
+        var processedAny = false
 
         while (!isStopped) {
+            if (processedAny && intervalMillis > 0) {
+                delay(intervalMillis)
+            }
             if (settingsStore.importPausedFlow.first()) {
                 Log.d(TAG, "Import paused during execution.")
                 break
             }
 
             val item = database.importItemDao().getNextQueued() ?: break
+            processedAny = true
             Log.d(TAG, "Processing import item ${item.id}: ${item.sourceKey}")
 
-            val outcome = processItem(item)
-            when (outcome) {
-                ItemOutcome.SUCCESS -> {
-                    consecutiveFailures = 0
+            if (processItem(item) == ItemOutcome.FETCH_FAILED) {
+                failedFetchIds += item.id
+                if (failedFetchIds.size >= MAX_CONSECUTIVE_FETCH_FAILURES) {
+                    startCooldown(failedFetchIds, intervalMillis)
+                    return Result.success()
                 }
-                ItemOutcome.SKIPPED -> {
-                    consecutiveFailures = 0
-                }
-                ItemOutcome.FAILURE -> {
-                    consecutiveFailures++
-                    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-                        Log.w(TAG, "3 consecutive fetch failures! Enforcing 30-minute cooldown.")
-                        val cooldownEnd = System.currentTimeMillis() + COOLDOWN_DURATION_MILLIS
-                        settingsStore.setImportCooldownUntil(cooldownEnd)
-                        scheduleWithDelay(applicationContext, COOLDOWN_DURATION_MILLIS, intervalMillis)
-                        return Result.success()
-                    }
-                }
-            }
-
-            if (intervalMillis > 0 && !isStopped) {
-                delay(intervalMillis)
+            } else {
+                failedFetchIds.clear()
             }
         }
 
         return Result.success()
     }
 
-    private enum class ItemOutcome { SUCCESS, SKIPPED, FAILURE }
+    /** Instagram is probably rate-limiting: pause 30 minutes and give the posts that just failed another go. */
+    private suspend fun startCooldown(failedFetchIds: List<Long>, intervalMillis: Long) {
+        Log.w(TAG, "$MAX_CONSECUTIVE_FETCH_FAILURES fetch failures in a row; pausing for 30 minutes.")
+        val importDao = database.importItemDao()
+        for (id in failedFetchIds) {
+            val item = importDao.getById(id) ?: continue
+            if (item.attempts < MAX_FETCH_ATTEMPTS) importDao.requeue(id)
+        }
+        settingsStore.setImportCooldownUntil(System.currentTimeMillis() + COOLDOWN_DURATION_MILLIS)
+        scheduleWithDelay(applicationContext, COOLDOWN_DURATION_MILLIS, intervalMillis)
+    }
+
+    private enum class ItemOutcome { SAVED, SKIPPED, FETCH_FAILED, EXTRACT_FAILED }
 
     private suspend fun processItem(item: ImportItemEntity): ItemOutcome {
         val importDao = database.importItemDao()
         val recipeDao = database.recipeDao()
 
-        // Check if already in recipe library
+        // A post already saved, or waiting in review from a normal capture, is left as it is.
         val existingRecipe = recipeDao.getBySourceKey(item.sourceKey)
-        if (existingRecipe != null && existingRecipe.status == RecipeEntity.STATUS_SAVED) {
+        if (existingRecipe != null &&
+            (existingRecipe.status == RecipeEntity.STATUS_SAVED || existingRecipe.status == RecipeEntity.STATUS_NEEDS_REVIEW)
+        ) {
             importDao.updateStatus(item.id, ImportItemEntity.STATUS_DONE, recipeId = existingRecipe.id)
-            return ItemOutcome.SUCCESS
+            return ItemOutcome.SAVED
         }
 
-        val recipeId = if (existingRecipe != null) {
-            existingRecipe.id
-        } else {
-            val initial = RecipeEntity(
-                sourceType = SourceType.INSTAGRAM.name.lowercase(),
-                sourceKey = item.sourceKey,
-                sourceUrl = item.url,
-                reviewed = false, // Bulk imported recipes are marked to review
-                status = RecipeEntity.STATUS_PENDING_FETCH,
-                createdAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis()
-            )
-            recipeDao.insert(initial)
-        }
+        val recipeId = existingRecipe?.id ?: recipeRepository.insertPendingRecipe(
+            sourceType = SourceType.INSTAGRAM.value,
+            sourceKey = item.sourceKey,
+            sourceUrl = item.url
+        )
 
-        // Apply collection tag if enabled
-        val tagWithCollections = settingsStore.tagWithCollectionsFlow.first()
-        if (tagWithCollections && !item.collection.isNullOrBlank()) {
-            attachCollectionTag(recipeId, item.collection)
-        }
-
-        // 1. Fetch Instagram post
         val postData = try {
             instagramPostFetcher.fetch(item.sourceKey)
         } catch (e: CancellationException) {
@@ -204,40 +196,31 @@ class ImportWorker @AssistedInject constructor(
             val errorMsg = "Couldn't read this post"
             importDao.updateStatus(item.id, ImportItemEntity.STATUS_FAILED, lastError = errorMsg, recipeId = recipeId)
             recipeRepository.updateRecipeStatus(recipeId, RecipeEntity.STATUS_FAILED_FETCH, errorMsg)
-            return ItemOutcome.FAILURE
+            return ItemOutcome.FETCH_FAILED
         }
 
-        // 2. Download image
         val imagePath = postData.imageUrl?.takeIf { it.isNotBlank() }?.let {
             imageStorageManager.downloadAndSave(recipeId, it)
         }
 
-        var currentRecipe = recipeDao.getById(recipeId) ?: return ItemOutcome.FAILURE
+        var currentRecipe = recipeDao.getById(recipeId) ?: return ItemOutcome.EXTRACT_FAILED
         currentRecipe = currentRecipe.copy(
             captionRaw = postData.caption,
             authorHandle = postData.author ?: currentRecipe.authorHandle,
             imagePath = imagePath ?: currentRecipe.imagePath,
+            reviewed = false,
             status = RecipeEntity.STATUS_PENDING_EXTRACT,
             errorMessage = null,
             updatedAt = System.currentTimeMillis()
         )
         recipeDao.update(currentRecipe)
 
-        // 3. Extract Recipe
-        val tagDao = database.tagDao()
-        val tagsByKind = tagDao.getAll().groupBy { it.kind }
+        val tagsByKind = database.tagDao().getAll().groupBy { it.kind }
         val activeModel = settingsStore.modelIdFlow.first()
-        val apiKey = settingsStore.getApiKey()
-
-        if (apiKey.isBlank()) {
-            val errorMsg = "Add Anthropic API key in Settings"
-            importDao.updateStatus(item.id, ImportItemEntity.STATUS_FAILED, lastError = errorMsg, recipeId = recipeId)
-            recipeRepository.updateRecipeStatus(recipeId, RecipeEntity.STATUS_PENDING_EXTRACT, errorMsg)
-            return ItemOutcome.FAILURE
-        }
 
         val captionRaw = currentRecipe.captionRaw.orEmpty()
         val cleanedCaption = InstagramPostFetcher.stripTrailingHashtags(captionRaw).ifBlank { captionRaw }
+        // Bulk imports never fetch comments, but a comment from an earlier foreground capture is still used.
         val input = ExtractionInput(
             sourceType = SourceType.INSTAGRAM,
             sourceText = cleanedCaption,
@@ -249,57 +232,54 @@ class ImportWorker @AssistedInject constructor(
             allowedConsumables = tagsByKind[TagEntity.KIND_CONSUMABLE].orEmpty().map { it.name }
         )
 
-        val extractionResult = recipeExtractor.extract(input)
-        val extracted = extractionResult.getOrElse { ex ->
+        val extracted = recipeExtractor.extract(input).getOrElse { ex ->
+            if (ex is CancellationException) throw ex
             if (ex is NoRecipeFoundException) {
                 ex.usage?.let { recipeRepository.logUsage(it.toExtractionUsageEntity(activeModel)) }
-                importDao.updateStatus(item.id, ImportItemEntity.STATUS_SKIPPED, lastError = "No recipe in caption", recipeId = recipeId)
-                recipeRepository.updateRecipeStatus(recipeId, RecipeEntity.STATUS_NO_RECIPE_FOUND, "No recipe in caption")
+                markSkipped(item, recipeId)
                 return ItemOutcome.SKIPPED
             }
             Log.w(TAG, "Extraction error for item ${item.id}", ex)
             val errorMsg = ex.message ?: "Extraction failed"
             importDao.updateStatus(item.id, ImportItemEntity.STATUS_FAILED, lastError = errorMsg, recipeId = recipeId)
             recipeRepository.updateRecipeStatus(recipeId, RecipeEntity.STATUS_FAILED_EXTRACT, errorMsg)
-            return ItemOutcome.FAILURE
+            return ItemOutcome.EXTRACT_FAILED
         }
 
         if (!extracted.isRecipe) {
-            importDao.updateStatus(item.id, ImportItemEntity.STATUS_SKIPPED, lastError = "No recipe in caption", recipeId = recipeId)
-            recipeRepository.updateRecipeStatus(recipeId, RecipeEntity.STATUS_NO_RECIPE_FOUND, "No recipe in caption")
+            recipeRepository.logUsage(extracted.usage.toExtractionUsageEntity(extracted.usage.model ?: activeModel))
+            markSkipped(item, recipeId)
             return ItemOutcome.SKIPPED
         }
 
+        val collectionName = item.collection?.trim()?.takeIf { it.isNotEmpty() && settingsStore.tagWithCollectionsFlow.first() }
         saveExtractedRecipe(
+            importItemId = item.id,
             currentRecipe = currentRecipe,
             extracted = extracted,
             activeModel = activeModel,
             tagsByKind = tagsByKind,
-            collectionName = if (tagWithCollections) item.collection else null
+            collectionName = collectionName
         )
-        importDao.updateStatus(item.id, ImportItemEntity.STATUS_DONE, recipeId = recipeId)
-        return ItemOutcome.SUCCESS
+        return ItemOutcome.SAVED
     }
 
-    private suspend fun attachCollectionTag(recipeId: Long, collectionName: String) {
-        val tagDao = database.tagDao()
-        val trimmed = collectionName.trim()
-        if (trimmed.isEmpty()) return
+    private suspend fun markSkipped(item: ImportItemEntity, recipeId: Long) {
+        val reason = "No recipe in caption"
+        database.importItemDao().updateStatus(item.id, ImportItemEntity.STATUS_SKIPPED, lastError = reason, recipeId = recipeId)
+        recipeRepository.updateRecipeStatus(recipeId, RecipeEntity.STATUS_NO_RECIPE_FOUND, reason)
+    }
 
-        val existingTag = tagDao.getByNameAndKind(trimmed, TagEntity.KIND_TAG)
-        val tagId = if (existingTag != null) {
-            existingTag.id
-        } else {
-            tagDao.insert(TagEntity(name = trimmed, kind = TagEntity.KIND_TAG))
-        }
-        if (tagId > 0) {
-            database.recipeTagDao().insertAll(
-                listOf(RecipeTagEntity(recipeId = recipeId, tagId = tagId, source = RecipeTagEntity.SOURCE_USER))
-            )
-        }
+    /** The collection's tag id, creating the tag on first use. */
+    private suspend fun collectionTagId(collectionName: String): Long? {
+        val tagDao = database.tagDao()
+        tagDao.getByNameAndKind(collectionName, TagEntity.KIND_TAG)?.let { return it.id }
+        val inserted = tagDao.insert(TagEntity(name = collectionName, kind = TagEntity.KIND_TAG))
+        return if (inserted > 0) inserted else tagDao.getByNameAndKind(collectionName, TagEntity.KIND_TAG)?.id
     }
 
     private suspend fun saveExtractedRecipe(
+        importItemId: Long,
         currentRecipe: RecipeEntity,
         extracted: ExtractedRecipe,
         activeModel: String,
@@ -326,8 +306,7 @@ class ImportWorker @AssistedInject constructor(
             makeAhead = extracted.makeAhead,
             freezerFriendly = extracted.freezerFriendly,
             llmModel = model,
-            status = RecipeEntity.STATUS_SAVED,
-            reviewed = false, // Marked to review for bulk-imported recipes
+            reviewed = false,
             savedAt = now,
             errorMessage = null,
             updatedAt = now
@@ -365,26 +344,21 @@ class ImportWorker @AssistedInject constructor(
             return names.mapNotNull { byName[it.trim().lowercase()]?.id }
         }
 
-        val collectionTagId = if (!collectionName.isNullOrBlank()) {
-            val trimmed = collectionName.trim()
-            val existing = database.tagDao().getByNameAndKind(trimmed, TagEntity.KIND_TAG)
-            existing?.id ?: database.tagDao().insert(TagEntity(name = trimmed, kind = TagEntity.KIND_TAG))
-        } else null
-
-        val matchedTagIds = (
+        val aiTagIds = (
             tagIds(TagEntity.KIND_TAG, extracted.tags) +
                 tagIds(TagEntity.KIND_DIET, extracted.contains) +
                 tagIds(TagEntity.KIND_EQUIPMENT, extracted.equipment) +
-                tagIds(TagEntity.KIND_CONSUMABLE, extracted.consumables) +
-                listOfNotNull(collectionTagId)
+                tagIds(TagEntity.KIND_CONSUMABLE, extracted.consumables)
             ).distinct()
 
-        recipeRepository.saveExtraction(
+        recipeRepository.saveImportedRecipe(
             recipe = savedRecipe,
             ingredients = ingredientEntities,
             steps = stepEntities,
-            tagIds = matchedTagIds,
-            usage = extracted.usage.toExtractionUsageEntity(model)
+            aiTagIds = aiTagIds,
+            userTagIds = listOfNotNull(collectionName?.let { collectionTagId(it) }),
+            usage = extracted.usage.toExtractionUsageEntity(model),
+            importItemId = importItemId
         )
     }
 }

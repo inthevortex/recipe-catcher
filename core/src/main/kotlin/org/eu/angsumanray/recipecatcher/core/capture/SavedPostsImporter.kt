@@ -5,7 +5,9 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.util.zip.ZipInputStream
 
@@ -22,191 +24,201 @@ object SavedPostsImporter {
         isLenient = true
     }
 
-    private const val MAX_ZIP_ENTRY_BYTES = 50 * 1024 * 1024 // 50MB per entry protection
+    private const val MAX_ENTRY_BYTES = 50 * 1024 * 1024
+    private const val MAX_TOTAL_BYTES = 100 * 1024 * 1024
+    private const val MAX_STRINGIFIED_JSON_DEPTH = 3
+
+    private val ZIP_MAGIC = byteArrayOf(0x50, 0x4B, 0x03, 0x04)
+
+    /**
+     * Reads an export zip, a `saved_posts.json` / `saved_collections.json` file, or any text,
+     * telling a zip apart by its signature rather than by file name or MIME type.
+     */
+    fun parseStream(inputStream: InputStream): List<ImportedPost> {
+        val buffered = BufferedInputStream(inputStream)
+        buffered.mark(ZIP_MAGIC.size)
+        val head = ByteArray(ZIP_MAGIC.size)
+        val headLength = buffered.readNBytes(head, 0, head.size)
+        buffered.reset()
+        return if (headLength == ZIP_MAGIC.size && head.contentEquals(ZIP_MAGIC)) {
+            parseZip(buffered)
+        } else {
+            buffered.use { parse(readCapped(it, MAX_ENTRY_BYTES)) }
+        }
+    }
 
     /**
      * Parses an Instagram export, which may be JSON (saved_posts.json or saved_collections.json)
      * or arbitrary plain text containing Instagram post/reel URLs.
      */
     fun parse(text: String): List<ImportedPost> {
-        val trimmed = text.trim()
+        val trimmed = text.trim().removePrefix("﻿").trim()
         if (trimmed.isEmpty()) return emptyList()
 
-        // Try JSON parsing first
-        val postsFromJson = tryParseJson(trimmed)
-        if (postsFromJson.isNotEmpty()) {
+        val postsFromJson = tryParseJson(trimmed, depth = 0)
+        if (!postsFromJson.isNullOrEmpty()) {
             return deduplicate(postsFromJson)
         }
-
-        // Fallback: extract any Instagram URLs from plain text
-        val postsFromText = parsePlainText(trimmed)
-        return deduplicate(postsFromText)
+        // Damaged or truncated JSON still has its links, though escaped slashes need undoing first.
+        return deduplicate(extractPosts(trimmed.replace("\\/", "/"), collection = null))
     }
 
     /**
-     * Reads an export ZIP stream, parses all JSON files inside it (e.g. saved_posts.json,
-     * saved_collections.json), and returns the deduplicated list of imported posts.
+     * Reads the saved-posts files of an export zip. Only entries named `saved_*` are read, since the
+     * rest of the export (likes, comments, messages) also holds post links that aren't saves.
+     * Entries are read in memory and never written to disk, so entry paths can't escape anywhere.
+     * A damaged archive keeps the posts read before the damage, or throws if there are none.
      */
     fun parseZip(inputStream: InputStream): List<ImportedPost> {
         val allPosts = mutableListOf<ImportedPost>()
-        val zis = ZipInputStream(inputStream)
-        try {
-            var entry = zis.nextEntry
-            while (entry != null) {
-                val name = entry.name.lowercase()
-                if (!entry.isDirectory && name.endsWith(".json")) {
-                    val content = readEntryString(zis)
-                    allPosts.addAll(parse(content))
+        var totalRead = 0
+        ZipInputStream(inputStream).use { zis ->
+            try {
+                var entry = zis.nextEntry
+                while (entry != null && totalRead < MAX_TOTAL_BYTES) {
+                    if (!entry.isDirectory && isSavedPostsEntry(entry.name)) {
+                        val limit = minOf(MAX_ENTRY_BYTES, MAX_TOTAL_BYTES - totalRead)
+                        val content = readCapped(zis, limit)
+                        totalRead += content.length
+                        allPosts.addAll(parse(content))
+                    }
+                    zis.closeEntry()
+                    entry = zis.nextEntry
                 }
-                zis.closeEntry()
-                entry = zis.nextEntry
+            } catch (e: IOException) {
+                if (allPosts.isEmpty()) throw e
             }
-        } finally {
-            zis.close()
         }
         return deduplicate(allPosts)
     }
 
-    private fun readEntryString(zis: ZipInputStream): String {
+    internal fun isSavedPostsEntry(entryName: String?): Boolean {
+        val baseName = entryName.orEmpty().replace('\\', '/').substringAfterLast('/').lowercase()
+        return baseName.startsWith("saved_") && (baseName.endsWith(".json") || baseName.endsWith(".html"))
+    }
+
+    private fun readCapped(input: InputStream, maxBytes: Int): String {
         val buffer = ByteArray(8192)
-        val baos = ByteArrayOutputStream()
-        var totalRead = 0
-        var bytesRead: Int
-        while (zis.read(buffer).also { bytesRead = it } != -1) {
-            totalRead += bytesRead
-            if (totalRead > MAX_ZIP_ENTRY_BYTES) {
-                break
-            }
-            baos.write(buffer, 0, bytesRead)
+        val out = ByteArrayOutputStream()
+        while (out.size() < maxBytes) {
+            val read = input.read(buffer, 0, minOf(buffer.size, maxBytes - out.size()))
+            if (read == -1) break
+            out.write(buffer, 0, read)
         }
-        return baos.toString(Charsets.UTF_8.name())
+        return out.toString(Charsets.UTF_8.name())
     }
 
-    private fun tryParseJson(jsonString: String): List<ImportedPost> {
-        return try {
-            val root = json.parseToJsonElement(jsonString)
-            val results = mutableListOf<ImportedPost>()
-            walkJsonElement(root, currentCollection = null, results = results)
-            results
+    /** Null when [jsonString] isn't JSON at all. */
+    private fun tryParseJson(jsonString: String, depth: Int): List<ImportedPost>? {
+        if (depth > MAX_STRINGIFIED_JSON_DEPTH) return null
+        val root = try {
+            json.parseToJsonElement(jsonString)
         } catch (_: Exception) {
-            emptyList()
+            return null
         }
+        val results = mutableListOf<ImportedPost>()
+        walk(root, collection = null, inCollections = false, depth = depth, results = results)
+        return results
     }
 
-    private fun walkJsonElement(
+    private fun walk(
         element: JsonElement,
-        currentCollection: String?,
+        collection: String?,
+        inCollections: Boolean,
+        depth: Int,
         results: MutableList<ImportedPost>
     ) {
         when (element) {
-            is JsonObject -> walkJsonObject(element, currentCollection, results)
             is JsonArray -> {
+                // Newer collection exports are flat: a "Collection" header row, then that collection's posts.
+                var current = collection
                 for (item in element) {
-                    walkJsonElement(item, currentCollection, results)
+                    val header = if (inCollections) collectionHeaderName(item) else null
+                    if (header != null) {
+                        current = header
+                    } else {
+                        walk(item, current, inCollections, depth, results)
+                    }
                 }
             }
-            is JsonPrimitive -> {
-                if (element.isString) {
-                    extractPostsFromString(element.content, currentCollection, results)
+            is JsonObject -> {
+                val effective = if (inCollections) nestedCollectionName(element) ?: collection else collection
+                for ((key, value) in element) {
+                    val childInCollections = inCollections || key.contains("collection", ignoreCase = true)
+                    walk(value, effective, childInCollections, depth, results)
+                }
+            }
+            is JsonPrimitive -> if (element.isString) {
+                val content = element.content.trim()
+                val nested = if (content.startsWith("{") || content.startsWith("[")) {
+                    tryParseJson(content, depth + 1)
+                } else null
+                if (nested != null) {
+                    results.addAll(nested.map { if (it.collection == null) it.copy(collection = collection) else it })
+                } else {
+                    results.addAll(extractPosts(content, collection))
                 }
             }
         }
     }
 
-    private fun walkJsonObject(
-        obj: JsonObject,
-        currentCollection: String?,
-        results: MutableList<ImportedPost>
-    ) {
-        // Detect collection containers: e.g. "title": "Dinner Recipes" or "name": "Baking"
-        // if this object also has "media" or "saved_media" or "items"
-        var effectiveCollection = currentCollection
-        val titleProp = obj["title"] as? JsonPrimitive
-        val nameProp = obj["name"] as? JsonPrimitive
-        val candidateTitle = (titleProp ?: nameProp)?.takeIf { it.isString }?.content?.trim()
+    /** `{"title": "Collection", "string_map_data": {"Name": {"value": "Desserts"}}}` with no post link. */
+    private fun collectionHeaderName(element: JsonElement): String? {
+        val obj = element as? JsonObject ?: return null
+        val title = obj.stringValue("title") ?: return null
+        if (!title.equals("Collection", ignoreCase = true)) return null
+        if (containsInstagramPost(obj)) return null
+        val nameField = (obj["string_map_data"] as? JsonObject)
+            ?.entries
+            ?.firstOrNull { it.key.equals("Name", ignoreCase = true) }
+            ?.value
+        val name = when (nameField) {
+            is JsonObject -> nameField.stringValue("value")
+            is JsonPrimitive -> nameField.takeIf { it.isString }?.content
+            else -> null
+        } ?: obj.stringValue("name")
+        return name?.trim()?.takeUnless { it.isEmpty() || isGenericTitle(it) }
+    }
 
-        val hasMediaArray = (obj["media"] is JsonArray) ||
-            (obj["saved_media"] is JsonArray) ||
-            (obj["items"] is JsonArray)
+    /** `{"title": "Desserts", "media": [...]}`: a collection that nests its posts. */
+    private fun nestedCollectionName(obj: JsonObject): String? {
+        val hasMediaArray = obj["media"] is JsonArray || obj["saved_media"] is JsonArray || obj["items"] is JsonArray
+        if (!hasMediaArray) return null
+        val candidate = (obj.stringValue("title") ?: obj.stringValue("name"))?.trim()
+        return candidate?.takeUnless { it.isEmpty() || isGenericTitle(it) }
+    }
 
-        if (!candidateTitle.isNullOrBlank() && hasMediaArray && !isGenericTitle(candidateTitle)) {
-            effectiveCollection = candidateTitle
-        }
+    private fun JsonObject.stringValue(key: String): String? =
+        (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 
-        // Special handling for saved_collections array
-        val savedCollections = obj["saved_collections"] as? JsonArray
-        if (savedCollections != null) {
-            for (colItem in savedCollections) {
-                if (colItem is JsonObject) {
-                    val colTitle = (colItem["title"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()
-                    val collectionName = if (!colTitle.isNullOrBlank() && !isGenericTitle(colTitle)) colTitle else effectiveCollection
-                    walkJsonObject(colItem, collectionName, results)
-                } else {
-                    walkJsonElement(colItem, effectiveCollection, results)
-                }
-            }
-        }
-
-        // Walk all key-value pairs
-        for ((key, value) in obj) {
-            if (key == "saved_collections") continue // Already handled above
-
-            if (value is JsonPrimitive && value.isString) {
-                extractPostsFromString(value.content, effectiveCollection, results)
-            } else {
-                walkJsonElement(value, effectiveCollection, results)
-            }
-        }
+    private fun containsInstagramPost(element: JsonElement): Boolean = when (element) {
+        is JsonObject -> element.values.any { containsInstagramPost(it) }
+        is JsonArray -> element.any { containsInstagramPost(it) }
+        is JsonPrimitive -> element.isString && extractPosts(element.content, null).isNotEmpty()
     }
 
     private fun isGenericTitle(title: String): Boolean {
         val lower = title.lowercase()
-        return lower == "saved" || lower == "saved posts" || lower == "saved media" || lower.startsWith("http")
+        return lower == "saved" || lower == "saved posts" || lower == "saved media" ||
+            lower == "collection" || lower.startsWith("http")
     }
 
-    private fun extractPostsFromString(
-        text: String,
-        collection: String?,
-        results: MutableList<ImportedPost>
-    ) {
-        val shortcode = UrlNormalizer.extractInstagramShortcode(text)
-        if (shortcode != null) {
-            val canonicalUrl = UrlNormalizer.canonicalizeInstagramUrl(shortcode)
-            results.add(ImportedPost(url = canonicalUrl, shortcode = shortcode, collection = collection))
-            return
-        }
-
-        val urls = UrlNormalizer.extractUrls(text)
-        for (url in urls) {
-            val sc = UrlNormalizer.extractInstagramShortcode(url)
-            if (sc != null) {
-                val canonicalUrl = UrlNormalizer.canonicalizeInstagramUrl(sc)
-                results.add(ImportedPost(url = canonicalUrl, shortcode = sc, collection = collection))
+    private fun extractPosts(text: String, collection: String?): List<ImportedPost> =
+        UrlNormalizer.extractUrls(text).mapNotNull { url ->
+            UrlNormalizer.extractInstagramShortcode(url)?.let { shortcode ->
+                ImportedPost(
+                    url = UrlNormalizer.canonicalizeInstagramUrl(shortcode),
+                    shortcode = shortcode,
+                    collection = collection
+                )
             }
         }
-    }
-
-    private fun parsePlainText(text: String): List<ImportedPost> {
-        val results = mutableListOf<ImportedPost>()
-        val urls = UrlNormalizer.extractUrls(text)
-        for (url in urls) {
-            val sc = UrlNormalizer.extractInstagramShortcode(url)
-            if (sc != null) {
-                val canonicalUrl = UrlNormalizer.canonicalizeInstagramUrl(sc)
-                results.add(ImportedPost(url = canonicalUrl, shortcode = sc, collection = null))
-            }
-        }
-        return results
-    }
 
     private fun deduplicate(posts: List<ImportedPost>): List<ImportedPost> {
         val map = linkedMapOf<String, ImportedPost>()
         for (post in posts) {
             val existing = map[post.shortcode]
-            if (existing == null) {
-                map[post.shortcode] = post
-            } else if (existing.collection.isNullOrBlank() && !post.collection.isNullOrBlank()) {
-                // Prefer item with a non-blank collection
+            if (existing == null || (existing.collection.isNullOrBlank() && !post.collection.isNullOrBlank())) {
                 map[post.shortcode] = post
             }
         }

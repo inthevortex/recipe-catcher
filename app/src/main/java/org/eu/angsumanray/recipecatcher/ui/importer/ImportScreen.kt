@@ -1,6 +1,7 @@
 package org.eu.angsumanray.recipecatcher.ui.importer
 
 import android.net.Uri
+import android.text.format.DateFormat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -23,7 +24,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
-import org.eu.angsumanray.recipecatcher.data.db.entity.ImportItemEntity
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -44,13 +44,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import org.eu.angsumanray.recipecatcher.data.db.entity.ImportItemEntity
+import java.util.Date
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -65,20 +67,14 @@ fun ImportScreen(
     val tagWithCollections by viewModel.tagWithCollections.collectAsState()
     val progressState by viewModel.progressState.collectAsState()
 
-    var pastedText by remember { mutableStateOf("") }
-    var showPasteSection by remember { mutableStateOf(false) }
+    var pastedText by rememberSaveable { mutableStateOf("") }
+    var showPasteSection by rememberSaveable { mutableStateOf(false) }
 
-    // SAF file picker for Instagram export ZIP or JSON
+    // The importer tells a zip from JSON or text by its content, so any picked file is accepted.
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
-        if (uri != null) {
-            val isZip = uri.lastPathSegment?.endsWith(".zip", ignoreCase = true) == true ||
-                context.contentResolver.getType(uri)?.contains("zip", ignoreCase = true) == true
-            context.contentResolver.openInputStream(uri)?.let { stream ->
-                viewModel.parseStream(stream, isZip)
-            }
-        }
+        if (uri != null) viewModel.parseUri(uri)
     }
 
     // Parsing Dialog
@@ -215,7 +211,7 @@ fun ImportScreen(
                                 when {
                                     progressState.isUnderCooldown -> {
                                         Text(
-                                            text = "Cooldown (${progressState.cooldownRemainingSeconds / 60}m)",
+                                            text = "Cooling down (${(progressState.cooldownRemainingSeconds + 59) / 60}m)",
                                             color = MaterialTheme.colorScheme.error,
                                             style = MaterialTheme.typography.labelMedium
                                         )
@@ -228,8 +224,12 @@ fun ImportScreen(
                                         )
                                     }
                                     progressState.queuedCount > 0 -> {
+                                        val finishAt = progressState.estimatedFinishAtMillis?.let {
+                                            DateFormat.getTimeFormat(context).format(Date(it))
+                                        }
                                         Text(
-                                            text = "Active (~${progressState.estimatedFinishMinutes}m left)",
+                                            text = "~${formatDuration(progressState.estimatedFinishMinutes)} left" +
+                                                (finishAt?.let { ", done by $it" } ?: ""),
                                             color = MaterialTheme.colorScheme.primary,
                                             style = MaterialTheme.typography.labelMedium
                                         )
@@ -245,7 +245,8 @@ fun ImportScreen(
                             }
 
                             val total = progressState.queuedCount + progressState.doneCount + progressState.skippedCount + progressState.failedCount
-                            val progress = if (total > 0) (progressState.doneCount + progressState.skippedCount).toFloat() / total.toFloat() else 0f
+                            val processed = progressState.doneCount + progressState.skippedCount + progressState.failedCount
+                            val progress = if (total > 0) processed.toFloat() / total.toFloat() else 0f
                             LinearProgressIndicator(
                                 progress = { progress },
                                 modifier = Modifier.fillMaxWidth()
@@ -430,6 +431,9 @@ fun ImportScreen(
         }
     }
 }
+
+private fun formatDuration(minutes: Int): String =
+    if (minutes < 60) "${minutes}m" else "${minutes / 60}h ${minutes % 60}m"
 
 @Composable
 private fun MetricItem(label: String, count: Int, color: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.onSurface) {

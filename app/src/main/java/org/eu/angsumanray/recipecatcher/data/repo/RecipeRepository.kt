@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.Flow
 import org.eu.angsumanray.recipecatcher.core.capture.SourceClassifier
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
+import org.eu.angsumanray.recipecatcher.data.db.entity.ImportItemEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.LlmUsageEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
@@ -169,6 +170,28 @@ class RecipeRepository @Inject constructor(
         recipeTagDao.deleteByRecipeId(recipe.id)
         recipeTagDao.insertAll(tagIds.map { RecipeTagEntity(recipeId = recipe.id, tagId = it, source = RecipeTagEntity.SOURCE_AI) })
         llmUsageDao.insert(usage)
+    }
+
+    /**
+     * Saves a bulk-imported recipe straight to the library with `reviewed = false`, attaches
+     * [userTagIds] (collection tags) as user tags and closes import item [importItemId], all in one
+     * transaction. A row the user already saved by hand keeps their version.
+     */
+    suspend fun saveImportedRecipe(
+        recipe: RecipeEntity,
+        ingredients: List<IngredientEntity>,
+        steps: List<StepEntity>,
+        aiTagIds: List<Long>,
+        userTagIds: List<Long>,
+        usage: LlmUsageEntity,
+        importItemId: Long
+    ) = database.withTransaction {
+        if (recipeDao.getById(recipe.id)?.status != RecipeEntity.STATUS_SAVED) {
+            saveFullRecipe(recipe.copy(reviewed = false), ingredients, steps, aiTagIds.distinct() - userTagIds.toSet())
+            recipeTagDao.insertAll(userTagIds.distinct().map { RecipeTagEntity(recipeId = recipe.id, tagId = it, source = RecipeTagEntity.SOURCE_USER) })
+        }
+        llmUsageDao.insert(usage)
+        database.importItemDao().updateStatus(importItemId, ImportItemEntity.STATUS_DONE, recipeId = recipe.id)
     }
 
     suspend fun logUsage(usage: LlmUsageEntity) {
