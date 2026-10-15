@@ -47,7 +47,7 @@ Rules:
 2. If the source contains no recipe (e.g. 'recipe in bio' with no ingredients/steps and no recipe in images), set is_recipe: false and empty/zero values.
 3. Quantities as decimals (½ -> 0.5); ranges use quantity_max; 'to taste' gives a 0 quantity with the phrase in note.
 4. Use metric units: g, kg, ml, l, plus tsp, tbsp, pinch and pc. Convert imperial and US units: oz -> g, lb -> g or kg, fl oz -> ml, cups -> ml (1 US cup = 240 ml), a stick of butter -> 113 g, inches -> cm, and °F -> °C inside steps. Round converted values sensibly. Keep unknown units as written; the original line always stays in raw.
-5. Write output in English, translating when the source is in another language. Keep Indian ingredient names common in English (paneer, ghee, jeera) as they are.
+5. Write every field in English, translating when the source is in another language: title, description, group names, each ingredient's name, base_name, unit and note, and every step. Only raw keeps the source wording (e.g. raw '2 Eier' gives name 'eggs'). Keep Indian ingredient names common in English (paneer, ghee, jeera) as they are.
 6. Split steps into single actions; set timer_seconds only when a duration is stated.
 7. Pick tags only from the allowed list; put other ideas in new_list_suggestions.
 8. List equipment and consumables from allowed lists; leave out basic kitchen tools (knife, spoon, chopping board, stove). Put non-list necessities into new_list_suggestions.
@@ -231,11 +231,17 @@ All fields must be present and non-null. Use 0 for unknown numbers, '' for unkno
                                     putJsonObject("quantity") { put("type", "number") }
                                     putJsonObject("quantity_max") { put("type", "number") }
                                     putJsonObject("unit") { put("type", "string") }
-                                    putJsonObject("name") { put("type", "string") }
+                                    putJsonObject("name") {
+                                        put("type", "string")
+                                        put("description", "Ingredient name in English, with descriptors")
+                                    }
                                     putJsonObject("base_name") { put("type", "string") }
                                     putJsonObject("category") { stringEnum(CATEGORY_VALUES) }
                                     putJsonObject("note") { put("type", "string") }
-                                    putJsonObject("raw") { put("type", "string") }
+                                    putJsonObject("raw") {
+                                        put("type", "string")
+                                        put("description", "The source line as written, untranslated")
+                                    }
                                 }
                                 putJsonArray("required") {
                                     add(JsonPrimitive("quantity"))
