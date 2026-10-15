@@ -226,7 +226,7 @@ class LibraryViewModel @Inject constructor(
             ) {
                 val url = recipe.sourceUrl ?: "https://www.instagram.com/p/${recipe.sourceKey}/"
                 try {
-                    commentFetcher.fetchTopComment(url)?.let {
+                    commentFetcher.fetchTopComment(url, recipe.captionRaw)?.let {
                         recipeRepository.updateCommentRaw(recipe.id, it)
                     }
                 } catch (e: Exception) {
@@ -245,6 +245,26 @@ class LibraryViewModel @Inject constructor(
     fun pastePageText(recipeId: Long, text: String) {
         viewModelScope.launch {
             val recipe = recipeRepository.getRecipe(recipeId) ?: return@launch
+            val trimmed = text.trim()
+
+            // If the user pasted an Instagram post or comment URL:
+            val isInstaUrl = (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) &&
+                (trimmed.contains("instagram.com", ignoreCase = true) || trimmed.contains("instagr.am", ignoreCase = true))
+
+            if (isInstaUrl && commentFetcher != null) {
+                val comment = try {
+                    commentFetcher.fetchTopComment(trimmed, recipe.captionRaw)
+                } catch (_: Exception) {
+                    null
+                }
+                if (!comment.isNullOrBlank()) {
+                    recipeRepository.updateCommentRaw(recipe.id, comment)
+                    recipeRepository.updateRecipeStatus(recipe.id, RecipeEntity.STATUS_PENDING_EXTRACT, null)
+                    CaptureWorker.enqueue(context, recipe.id)
+                    return@launch
+                }
+            }
+
             // Pasted page source goes through the same JSON-LD / readable-text pass as a fetch.
             val sourceText = if (recipe.sourceType == SourceType.WEB.value && HTML_MARKERS.containsMatchIn(text)) {
                 withContext(Dispatchers.Default) {

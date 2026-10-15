@@ -46,6 +46,20 @@ class UrlNormalizerTest {
     @Test
     fun canonicalizeInstagramUrl_returnsStandardUrl() {
         assertEquals("https://www.instagram.com/p/C123abc/", UrlNormalizer.canonicalizeInstagramUrl("C123abc"))
+        assertEquals("https://www.instagram.com/p/C123abc/c/18012345678901234/", UrlNormalizer.canonicalizeInstagramUrl("C123abc", "18012345678901234"))
+    }
+
+    @Test
+    fun extractInstagramCommentId_extractsFromCommentLinks() {
+        assertEquals(
+            "18012345678901234",
+            UrlNormalizer.extractInstagramCommentId("https://www.instagram.com/p/C123abc/c/18012345678901234/")
+        )
+        assertEquals(
+            "18012345678901234",
+            UrlNormalizer.extractInstagramCommentId("https://www.instagram.com/reel/C123abc/?comment_id=18012345678901234&igsh=xyz")
+        )
+        assertNull(UrlNormalizer.extractInstagramCommentId("https://www.instagram.com/p/C123abc/"))
     }
 
     @Test

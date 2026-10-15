@@ -31,8 +31,7 @@ object InstaSelectors {
     )
 
     val CAPTION_SELECTORS = listOf(
-        "h1",
-        "div._a9zs > span"
+        "h1"
     )
 
     /** Shorter texts are usually emoji reactions or usernames. */
@@ -60,11 +59,21 @@ object InstaSelectors {
      * JavaScript run inside the post's WebView. Returns the text of the first comment row that
      * isn't the caption, or null when the comments haven't rendered (or the markup changed).
      */
-    fun buildExtractionJs(): String {
+    fun buildExtractionJs(targetCommentId: String? = null, knownCaption: String? = null): String {
         fun jsArray(items: List<String>) = items.joinToString(prefix = "[", postfix = "]") { "'" + it.replace("'", "\\'") + "'" }
+        val targetIdJs = if (!targetCommentId.isNullOrBlank()) "'$targetCommentId'" else "null"
+        val knownCapJs = if (!knownCaption.isNullOrBlank()) {
+            "'" + knownCaption.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ").replace("\r", "") + "'"
+        } else {
+            "null"
+        }
+
         return """
             (function() {
                 try {
+                    var targetCommentId = $targetIdJs;
+                    var knownCaption = $knownCapJs;
+
                     // Try expanding collapsed comments on mobile web layout
                     var clickable = document.querySelectorAll('button, div[role="button"], a, span');
                     for (var b = 0; b < clickable.length; b++) {
@@ -74,22 +83,46 @@ object InstaSelectors {
                             break;
                         }
                     }
-                    var containers = ${jsArray(COMMENT_CONTAINER_SELECTORS)};
-                    var texts = ${jsArray(COMMENT_TEXT_SELECTORS)};
-                    var captionSelectors = ${jsArray(CAPTION_SELECTORS)};
-                    var captions = [];
-                    captionSelectors.forEach(function(sel) {
-                        document.querySelectorAll(sel).forEach(function(el) {
-                            var t = (el.innerText || el.textContent || '').trim();
-                            if (t) captions.push(t);
-                        });
-                    });
+
                     function isCaption(t) {
-                        for (var c = 0; c < captions.length; c++) {
-                            if (captions[c] === t || captions[c].indexOf(t) >= 0 || t.indexOf(captions[c]) >= 0) return true;
+                        if (!t) return true;
+                        if (knownCaption && (t === knownCaption || knownCaption.indexOf(t) >= 0 || t.indexOf(knownCaption) >= 0)) return true;
+                        var h1 = document.querySelector('h1');
+                        if (h1) {
+                            var h1Text = (h1.innerText || h1.textContent || '').trim();
+                            if (h1Text && (t === h1Text || h1Text.indexOf(t) >= 0 || t.indexOf(h1Text) >= 0)) return true;
                         }
                         return false;
                     }
+
+                    // 1. If a specific comment ID was targeted, search for elements referencing it
+                    if (targetCommentId) {
+                        var targetEl = document.querySelector('[data-comment-id="' + targetCommentId + '"]') ||
+                                       document.querySelector('a[href*="' + targetCommentId + '"]');
+                        if (targetEl) {
+                            var row = targetEl.closest('li') || targetEl.closest('div.x1lliihq') || targetEl.closest('div[role="presentation"]') || targetEl;
+                            var textEl = row.querySelector('span[dir="auto"], span._a9zs, span._aacl, span.x193iq5w') || row;
+                            var targetText = (textEl.innerText || textEl.textContent || '').trim();
+                            if (targetText.length >= 10 && !isCaption(targetText)) return targetText;
+                        }
+                    }
+
+                    // 2. Look for pinned comments
+                    var svgs = document.querySelectorAll('svg[aria-label*="Pin"], svg[aria-label*="pin"], [aria-label*="Pinned"], [aria-label*="pinned"]');
+                    for (var p = 0; p < svgs.length; p++) {
+                        var pinRow = svgs[p].closest('li') || svgs[p].closest('div.x1lliihq');
+                        if (pinRow) {
+                            var pinTextEl = pinRow.querySelector('span[dir="auto"], span._a9zs, span._aacl, span.x193iq5w');
+                            if (pinTextEl) {
+                                var pt = (pinTextEl.innerText || pinTextEl.textContent || '').trim();
+                                if (pt.length >= $MIN_COMMENT_LENGTH && !isCaption(pt)) return pt;
+                            }
+                        }
+                    }
+
+                    // 3. Search structured comment rows
+                    var containers = ${jsArray(COMMENT_CONTAINER_SELECTORS)};
+                    var texts = ${jsArray(COMMENT_TEXT_SELECTORS)};
                     for (var i = 0; i < containers.length; i++) {
                         var rows = document.querySelectorAll(containers[i]);
                         for (var r = 0; r < rows.length; r++) {
@@ -99,6 +132,16 @@ object InstaSelectors {
                                 var text = (el.innerText || el.textContent || '').trim();
                                 if (text.length >= $MIN_COMMENT_LENGTH && !isCaption(text)) return text;
                             }
+                        }
+                    }
+
+                    // 4. Fallback: all list items in article or dialog
+                    var allLis = document.querySelectorAll('article ul li, div[role="dialog"] ul li, ul li');
+                    for (var k = 0; k < allLis.length; k++) {
+                        var span = allLis[k].querySelector('span[dir="auto"], span._a9zs, span._aacl');
+                        if (span) {
+                            var st = (span.innerText || span.textContent || '').trim();
+                            if (st.length >= $MIN_COMMENT_LENGTH && !isCaption(st)) return st;
                         }
                     }
                 } catch (e) {}

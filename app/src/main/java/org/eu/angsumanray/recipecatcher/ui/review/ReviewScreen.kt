@@ -45,9 +45,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import org.eu.angsumanray.recipecatcher.capture.InstagramPostViewerActivity
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -78,21 +80,24 @@ fun ReviewScreen(
     }
 
     if (state.isFailed) {
+        val context = LocalContext.current
+        val canOpenInBrowser = state.sourceType == "instagram" && !state.sourceUrl.isNullOrBlank()
+
         if (showPasteDialog) {
             AlertDialog(
                 onDismissRequest = { showPasteDialog = false },
-                title = { Text("Paste Comment / Recipe Text") },
+                title = { Text("Paste Comment or Link") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "Paste the recipe comment from Instagram or any recipe text. Claude will extract ingredients, instructions, and details automatically.",
+                            text = "Paste the recipe comment, an Instagram comment link (from 'Copy link'), or any recipe text. Claude will extract ingredients, instructions, and details automatically.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         OutlinedTextField(
                             value = pasteInput,
                             onValueChange = { pasteInput = it },
-                            label = { Text("Recipe text / comment") },
+                            label = { Text("Comment text or Instagram link") },
                             modifier = Modifier.fillMaxWidth().height(160.dp),
                             maxLines = 10
                         )
@@ -125,6 +130,13 @@ fun ReviewScreen(
             errorMessage = state.errorMessage ?: "Failed to extract recipe",
             onRetry = { viewModel.retryCapture() },
             onPasteText = { showPasteDialog = true },
+            onOpenInBrowser = if (canOpenInBrowser) {
+                {
+                    context.startActivity(
+                        InstagramPostViewerActivity.createIntent(context, state.recipeId, state.sourceUrl!!)
+                    )
+                }
+            } else null,
             onFillManually = { viewModel.dismissFailure() },
             onNavigateBack = onNavigateBack
         )
@@ -418,6 +430,7 @@ private fun ExtractionFailedView(
     errorMessage: String,
     onRetry: () -> Unit,
     onPasteText: () -> Unit,
+    onOpenInBrowser: (() -> Unit)? = null,
     onFillManually: () -> Unit,
     onNavigateBack: () -> Unit
 ) {
@@ -481,7 +494,16 @@ private fun ExtractionFailedView(
                 onClick = onPasteText,
                 modifier = Modifier.fillMaxWidth(0.7f)
             ) {
-                Text("Paste Comment / Text")
+                Text("Paste Comment or Link")
+            }
+            if (onOpenInBrowser != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onOpenInBrowser,
+                    modifier = Modifier.fillMaxWidth(0.7f)
+                ) {
+                    Text("Open Post in App Browser")
+                }
             }
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedButton(

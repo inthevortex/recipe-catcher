@@ -46,6 +46,8 @@ data class ReviewUiState(
     val freezerFriendly: Boolean = false,
     val personalNote: String = "",
     val captionRaw: String = "",
+    val sourceUrl: String? = null,
+    val sourceType: String = "",
     val imagePath: String? = null,
     val ingredients: List<IngredientEntity> = emptyList(),
     val steps: List<StepEntity> = emptyList(),
@@ -132,6 +134,8 @@ class ReviewViewModel @Inject constructor(
                     extractionStage = stage,
                     isFailed = false,
                     errorMessage = null,
+                    sourceUrl = recipe.sourceUrl ?: recipe.sourceKey,
+                    sourceType = recipe.sourceType,
                     captionRaw = recipe.captionRaw.orEmpty(),
                     imagePath = recipe.imagePath ?: recipe.coverPhotoPath ?: current.imagePath
                 )
@@ -143,6 +147,8 @@ class ReviewViewModel @Inject constructor(
                     isLoading = false,
                     isExtracting = false,
                     isFailed = true,
+                    sourceUrl = recipe.sourceUrl ?: recipe.sourceKey,
+                    sourceType = recipe.sourceType,
                     errorMessage = recipe.errorMessage ?: "Failed to extract recipe"
                 )
             }
@@ -209,6 +215,8 @@ class ReviewViewModel @Inject constructor(
                 freezerFriendly = recipe.freezerFriendly,
                 personalNote = recipe.personalNote.orEmpty(),
                 captionRaw = recipe.captionRaw.orEmpty(),
+                sourceUrl = recipe.sourceUrl ?: recipe.sourceKey,
+                sourceType = recipe.sourceType,
                 imagePath = recipe.imagePath ?: recipe.coverPhotoPath,
                 ingredients = ingredients,
                 steps = steps,
@@ -238,8 +246,8 @@ class ReviewViewModel @Inject constructor(
             }
             if (recipe.sourceType == SourceType.INSTAGRAM.value && commentFetcher != null) {
                 try {
-                    val url = recipe.sourceUrl ?: recipe.sourceKey
-                    commentFetcher.fetchTopComment(url)?.let {
+                    val url = recipe.sourceUrl ?: "https://www.instagram.com/p/${recipe.sourceKey}/"
+                    commentFetcher.fetchTopComment(url, recipe.captionRaw)?.let {
                         recipeRepository.updateCommentRaw(recipe.id, it)
                     }
                 } catch (_: Exception) {}
@@ -263,6 +271,36 @@ class ReviewViewModel @Inject constructor(
         viewModelScope.launch {
             val recipe = recipeRepository.getRecipe(recipeId) ?: return@launch
             val trimmed = text.trim()
+
+            // If the user pasted an Instagram post or comment URL:
+            val isInstaUrl = (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) &&
+                (trimmed.contains("instagram.com", ignoreCase = true) || trimmed.contains("instagr.am", ignoreCase = true))
+
+            if (isInstaUrl && commentFetcher != null) {
+                wasExtracting = true
+                _uiState.update { current ->
+                    current.copy(
+                        isFailed = false,
+                        errorMessage = null,
+                        isExtracting = true,
+                        extractionStage = "Fetching recipe comment from Instagram..."
+                    )
+                }
+                val comment = try {
+                    commentFetcher.fetchTopComment(trimmed, recipe.captionRaw)
+                } catch (_: Exception) {
+                    null
+                }
+                if (!comment.isNullOrBlank()) {
+                    recipeRepository.updateCommentRaw(recipe.id, comment)
+                    recipeRepository.updateRecipeStatus(recipe.id, RecipeEntity.STATUS_PENDING_EXTRACT, null)
+                    try {
+                        CaptureWorker.enqueue(context, recipe.id)
+                    } catch (_: Exception) {}
+                    return@launch
+                }
+            }
+
             val updated = recipe.copy(
                 captionRaw = trimmed,
                 status = RecipeEntity.STATUS_PENDING_EXTRACT,

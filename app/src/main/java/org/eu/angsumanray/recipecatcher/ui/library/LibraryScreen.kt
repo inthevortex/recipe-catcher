@@ -84,6 +84,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import org.eu.angsumanray.recipecatcher.capture.InstagramPostViewerActivity
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.TagEntity
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeFilter
@@ -146,7 +147,7 @@ fun LibraryScreen(
                 Text(
                     when (recipeForPastingText?.sourceType) {
                         "web" -> "Paste Page Text"
-                        "instagram" -> "Paste Comment / Text"
+                        "instagram" -> "Paste Comment or Link"
                         else -> "Paste Text"
                     }
                 )
@@ -155,7 +156,7 @@ fun LibraryScreen(
                 Column {
                     Text(
                         text = if (recipeForPastingText?.sourceType == "instagram") {
-                            "Paste the recipe comment from Instagram or any recipe text. Claude will extract ingredients, instructions, and details automatically."
+                            "Paste the recipe comment, an Instagram comment link (from 'Copy link'), or any recipe text. Claude will extract ingredients, instructions, and details automatically."
                         } else {
                             "Paste recipe text or HTML directly from the page:"
                         },
@@ -167,7 +168,7 @@ fun LibraryScreen(
                         value = pastedContentText,
                         onValueChange = { pastedContentText = it },
                         label = {
-                            Text(if (recipeForPastingText?.sourceType == "instagram") "Recipe comment / text" else "Recipe text / HTML")
+                            Text(if (recipeForPastingText?.sourceType == "instagram") "Comment text or Instagram link" else "Recipe text / HTML")
                         },
                         modifier = Modifier.fillMaxWidth().height(160.dp),
                         maxLines = 10
@@ -319,6 +320,12 @@ fun LibraryScreen(
                                 onPastePageText = {
                                     recipeForPastingText = it
                                     pastedContentText = ""
+                                },
+                                onBrowsePost = { pending ->
+                                    val url = pending.sourceUrl ?: (pending.sourceKey?.let { "https://www.instagram.com/p/$it/" })
+                                    if (!url.isNullOrBlank()) {
+                                        context.startActivity(InstagramPostViewerActivity.createIntent(context, pending.id, url))
+                                    }
                                 }
                             )
                         }
@@ -434,6 +441,12 @@ fun LibraryScreen(
                                 onPastePageText = {
                                     recipeForPastingText = it
                                     pastedContentText = ""
+                                },
+                                onBrowsePost = { pending ->
+                                    val url = pending.sourceUrl ?: (pending.sourceKey?.let { "https://www.instagram.com/p/$it/" })
+                                    if (!url.isNullOrBlank()) {
+                                        context.startActivity(InstagramPostViewerActivity.createIntent(context, pending.id, url))
+                                    }
                                 }
                             )
                         }
@@ -989,7 +1002,8 @@ private fun PendingSectionCard(
     onReview: (Long) -> Unit,
     onRetry: (RecipeEntity) -> Unit,
     onDelete: (Long) -> Unit,
-    onPastePageText: (RecipeEntity) -> Unit
+    onPastePageText: (RecipeEntity) -> Unit,
+    onBrowsePost: ((RecipeEntity) -> Unit)? = null
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1040,7 +1054,8 @@ private fun PendingSectionCard(
                             onReview = { onReview(pending.id) },
                             onRetry = { onRetry(pending) },
                             onDelete = { onDelete(pending.id) },
-                            onPastePageText = { onPastePageText(pending) }
+                            onPastePageText = { onPastePageText(pending) },
+                            onBrowsePost = if (onBrowsePost != null) { { onBrowsePost(pending) } } else null
                         )
                     }
                 }
@@ -1334,13 +1349,15 @@ private fun RecipeGridCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PendingCard(
     recipe: RecipeEntity,
     onReview: () -> Unit,
     onRetry: () -> Unit,
     onDelete: () -> Unit,
-    onPastePageText: (() -> Unit)? = null
+    onPastePageText: (() -> Unit)? = null,
+    onBrowsePost: (() -> Unit)? = null
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1410,9 +1427,9 @@ private fun PendingCard(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            Row(
+            FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 val isFailed = recipe.status == RecipeEntity.STATUS_FAILED_FETCH ||
                     recipe.status == RecipeEntity.STATUS_FAILED_EXTRACT ||
@@ -1426,11 +1443,17 @@ private fun PendingCard(
                     }
                 }
 
+                if (isFailed && onBrowsePost != null && recipe.sourceType == "instagram") {
+                    OutlinedButton(onClick = onBrowsePost) {
+                        Text("Browse Post")
+                    }
+                }
+
                 if (isFailed && onPastePageText != null) {
                     OutlinedButton(onClick = onPastePageText) {
                         val label = when (recipe.sourceType) {
                             "web" -> "Paste page text"
-                            "instagram" -> "Paste comment / text"
+                            "instagram" -> "Paste comment / link"
                             else -> "Paste text"
                         }
                         Text(label)

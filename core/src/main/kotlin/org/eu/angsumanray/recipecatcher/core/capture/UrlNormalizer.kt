@@ -84,6 +84,23 @@ object UrlNormalizer {
         return if (kept.isEmpty()) base else "$base?${kept.joinToString("&")}"
     }
 
+    private val INSTAGRAM_COMMENT_PATH_REGEX = Pattern.compile("/c/([0-9]+)", Pattern.CASE_INSENSITIVE)
+    private val INSTAGRAM_COMMENT_QUERY_REGEX = Pattern.compile("[?&]comment_id=([0-9]+)", Pattern.CASE_INSENSITIVE)
+
+    /**
+     * Extracts an Instagram comment ID from a comment link, if present.
+     */
+    fun extractInstagramCommentId(url: String): String? {
+        val trimmed = url.trim()
+        val pathMatcher = INSTAGRAM_COMMENT_PATH_REGEX.matcher(trimmed)
+        if (pathMatcher.find()) return pathMatcher.group(1)
+
+        val queryMatcher = INSTAGRAM_COMMENT_QUERY_REGEX.matcher(trimmed)
+        if (queryMatcher.find()) return queryMatcher.group(1)
+
+        return null
+    }
+
     /**
      * Extracts an Instagram shortcode from a post/reel/tv URL.
      * Returns null if the URL is not an Instagram post.
@@ -98,8 +115,12 @@ object UrlNormalizer {
     /**
      * Canonicalizes an Instagram URL to https://www.instagram.com/p/<code>/
      */
-    fun canonicalizeInstagramUrl(shortcode: String): String {
-        return "https://www.instagram.com/p/$shortcode/"
+    fun canonicalizeInstagramUrl(shortcode: String, commentId: String? = null): String {
+        return if (!commentId.isNullOrBlank()) {
+            "https://www.instagram.com/p/$shortcode/c/$commentId/"
+        } else {
+            "https://www.instagram.com/p/$shortcode/"
+        }
     }
 
     /**
