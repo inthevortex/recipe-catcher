@@ -13,7 +13,7 @@ import org.eu.angsumanray.recipecatcher.MainActivity
 import org.eu.angsumanray.recipecatcher.data.db.RecipeDatabase
 import java.io.File
 import java.io.InputStream
-import java.util.zip.ZipInputStream
+import java.util.zip.ZipFile
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.system.exitProcess
@@ -43,6 +43,7 @@ class RestoreManager @Inject constructor(
      * Inspects and validates a backup ZIP from [sourceUri] without modifying live data.
      */
     suspend fun inspectBackup(sourceUri: Uri): BackupInspection = withContext(Dispatchers.IO) {
+        Log.d(TAG, "inspectBackup called with uri: $sourceUri")
         val inputStream = context.contentResolver.openInputStream(sourceUri)
             ?: throw IllegalArgumentException("Could not open input Uri: $sourceUri")
         inputStream.use { stream ->
@@ -235,31 +236,45 @@ class RestoreManager @Inject constructor(
 
     private fun unzipSafe(inputStream: InputStream, destinationDir: File) {
         val destinationPath = destinationDir.canonicalPath + File.separator
-        ZipInputStream(inputStream).use { zipIn ->
-            var entry = zipIn.nextEntry
-            while (entry != null) {
-                val name = entry.name
+        val tempZipFile = File.createTempFile("incoming_backup_", ".zip", destinationDir)
+        try {
+            tempZipFile.outputStream().use { out ->
+                inputStream.copyTo(out)
+            }
+            Log.d(TAG, "Copied backup stream to temp file, size: ${tempZipFile.length()} bytes")
 
-                // Zip-slip protection
-                if (name.contains("..") || name.startsWith("/") || name.startsWith("\\")) {
-                    throw SecurityException("Zip-slip security exception: rejected entry $name")
-                }
+            ZipFile(tempZipFile).use { zip ->
+                val entries = zip.entries()
+                var entryCount = 0
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    entryCount++
+                    val name = entry.name
+                    Log.d(TAG, "unzipSafe entry #$entryCount: $name, isDir=${entry.isDirectory}")
 
-                val outFile = File(destinationDir, name)
-                if (!outFile.canonicalPath.startsWith(destinationPath)) {
-                    throw SecurityException("Zip-slip security exception: rejected entry $name")
-                }
-                if (entry.isDirectory) {
-                    outFile.mkdirs()
-                } else {
-                    outFile.parentFile?.mkdirs()
-                    outFile.outputStream().use { out ->
-                        zipIn.copyTo(out)
+                    // Zip-slip protection
+                    if (name.contains("..") || name.startsWith("/") || name.startsWith("\\")) {
+                        throw SecurityException("Zip-slip security exception: rejected entry $name")
+                    }
+
+                    val outFile = File(destinationDir, name)
+                    if (!outFile.canonicalPath.startsWith(destinationPath)) {
+                        throw SecurityException("Zip-slip security exception: rejected entry $name")
+                    }
+                    if (entry.isDirectory) {
+                        outFile.mkdirs()
+                    } else {
+                        outFile.parentFile?.mkdirs()
+                        zip.getInputStream(entry).use { inStream ->
+                            outFile.outputStream().use { out ->
+                                inStream.copyTo(out)
+                            }
+                        }
                     }
                 }
-                zipIn.closeEntry()
-                entry = zipIn.nextEntry
             }
+        } finally {
+            tempZipFile.delete()
         }
     }
 }

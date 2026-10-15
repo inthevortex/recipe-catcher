@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,11 +25,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material3.AlertDialog
@@ -47,7 +51,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -293,6 +299,7 @@ fun PlanScreen(
         AddMealDialog(
             slot = slot,
             recipes = state.allRecipes,
+            recipeTags = state.recipeTags,
             availableLeftovers = state.availableLeftovers,
             onDismiss = { selectedSlotForAddMeal = null },
             onAddCook = { recipeId, portions, eatenNow ->
@@ -577,9 +584,206 @@ fun AddSlotDialog(
 }
 
 @Composable
+fun RecipePickerDialog(
+    slotName: String,
+    recipes: List<RecipeEntity>,
+    recipeTags: Map<Long, Set<String>>,
+    allowNoRecipe: Boolean = false,
+    onRecipeSelected: (RecipeEntity?) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    val targetTag = when {
+        slotName.contains("breakfast", ignoreCase = true) -> "breakfast"
+        slotName.contains("lunch", ignoreCase = true) -> "lunch"
+        slotName.contains("dinner", ignoreCase = true) -> "dinner"
+        else -> null
+    }
+
+    val filtered = remember(searchQuery, recipes) {
+        if (searchQuery.isBlank()) {
+            recipes
+        } else {
+            recipes.filter {
+                (it.title ?: "").contains(searchQuery.trim(), ignoreCase = true)
+            }
+        }
+    }
+
+    val (priorityRecipes, otherRecipes) = remember(filtered, targetTag, recipeTags) {
+        if (targetTag != null) {
+            filtered.partition { r ->
+                recipeTags[r.id]?.any { tag -> tag.contains(targetTag, ignoreCase = true) } == true
+            }
+        } else {
+            emptyList<RecipeEntity>() to filtered
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Select Recipe for $slotName",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+            ) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Search recipes by title...") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear search")
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (allowNoRecipe) {
+                        item(key = "no_recipe") {
+                            Surface(
+                                onClick = { onRecipeSelected(null) },
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "No recipe (free text only)",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (priorityRecipes.isNotEmpty()) {
+                        item(key = "priority_header") {
+                            Text(
+                                text = "Suggested for $slotName (${priorityRecipes.size})",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                            )
+                        }
+                        items(priorityRecipes, key = { "priority_${it.id}" }) { recipe ->
+                            val tags = recipeTags[recipe.id]?.toList() ?: emptyList()
+                            Surface(
+                                onClick = { onRecipeSelected(recipe) },
+                                shape = RoundedCornerShape(8.dp),
+                                tonalElevation = 2.dp,
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = recipe.title ?: "Untitled",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    if (tags.isNotEmpty()) {
+                                        Text(
+                                            text = tags.take(3).joinToString(" • "),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (otherRecipes.isNotEmpty()) {
+                        if (priorityRecipes.isNotEmpty()) {
+                            item(key = "other_header") {
+                                Text(
+                                    text = "All Recipes (${otherRecipes.size})",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+                                )
+                            }
+                        }
+                        items(otherRecipes, key = { "other_${it.id}" }) { recipe ->
+                            val tags = recipeTags[recipe.id]?.toList() ?: emptyList()
+                            Surface(
+                                onClick = { onRecipeSelected(recipe) },
+                                shape = RoundedCornerShape(8.dp),
+                                tonalElevation = 1.dp,
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = recipe.title ?: "Untitled",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    if (tags.isNotEmpty()) {
+                                        Text(
+                                            text = tags.take(3).joinToString(" • "),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (priorityRecipes.isEmpty() && otherRecipes.isEmpty()) {
+                        item {
+                            Text(
+                                text = if (searchQuery.isBlank()) "No recipes in library." else "No recipes found matching \"$searchQuery\"",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
 fun AddMealDialog(
     slot: PlanSlotEntity,
     recipes: List<RecipeEntity>,
+    recipeTags: Map<Long, Set<String>> = emptyMap(),
     availableLeftovers: List<org.eu.angsumanray.recipecatcher.core.planner.AvailableLeftover>,
     onDismiss: () -> Unit,
     onAddCook: (recipeId: Long, portions: Int, eatenNow: Int) -> Unit,
@@ -592,12 +796,14 @@ fun AddMealDialog(
     var selectedRecipeId by remember { mutableStateOf<Long?>(recipes.firstOrNull()?.id) }
     var cookPortions by remember { mutableIntStateOf(recipes.firstOrNull()?.servings?.coerceAtLeast(1) ?: 2) }
     var eatenNow by remember { mutableIntStateOf(1) }
+    var showCookRecipePicker by remember { mutableStateOf(false) }
 
     // Prep state
     var prepRecipeId by remember { mutableStateOf<Long?>(null) }
     var prepText by remember { mutableStateOf("") }
     var prepPortions by remember { mutableIntStateOf(1) }
     var prepNightBefore by remember { mutableStateOf(false) }
+    var showPrepRecipePicker by remember { mutableStateOf(false) }
 
     // Leftover state
     var selectedLeftoverEntryId by remember { mutableStateOf<Long?>(availableLeftovers.firstOrNull()?.cookEntryId) }
@@ -623,27 +829,58 @@ fun AddMealDialog(
                             Text("No recipes saved yet in library.")
                         } else {
                             Text("Select Recipe:", style = MaterialTheme.typography.labelMedium)
-                            var expanded by remember { mutableStateOf(false) }
                             val currentRecipe = recipes.firstOrNull { it.id == selectedRecipeId }
+                            val currentRecipeTags = currentRecipe?.let { recipeTags[it.id] } ?: emptySet()
 
-                            OutlinedButton(
-                                onClick = { expanded = true },
+                            Spacer(modifier = Modifier.height(4.dp))
+                            OutlinedCard(
+                                onClick = { showCookRecipePicker = true },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(currentRecipe?.title ?: "Select Recipe", maxLines = 1)
-                            }
-                            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                                recipes.forEach { r ->
-                                    DropdownMenuItem(
-                                        text = { Text(r.title ?: "Untitled") },
-                                        onClick = {
-                                            selectedRecipeId = r.id
-                                            cookPortions = r.servings?.coerceAtLeast(1) ?: 2
-                                            eatenNow = eatenNow.coerceAtMost(cookPortions)
-                                            expanded = false
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = currentRecipe?.title ?: "Select Recipe",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (currentRecipeTags.isNotEmpty()) {
+                                            Text(
+                                                text = currentRecipeTags.take(3).joinToString(" • "),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1
+                                            )
                                         }
-                                    )
+                                    }
+                                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Select Recipe")
                                 }
+                            }
+
+                            if (showCookRecipePicker) {
+                                RecipePickerDialog(
+                                    slotName = slot.name,
+                                    recipes = recipes,
+                                    recipeTags = recipeTags,
+                                    allowNoRecipe = false,
+                                    onRecipeSelected = { recipe ->
+                                        if (recipe != null) {
+                                            selectedRecipeId = recipe.id
+                                            cookPortions = recipe.servings?.coerceAtLeast(1) ?: 2
+                                            eatenNow = eatenNow.coerceAtMost(cookPortions)
+                                        }
+                                        showCookRecipePicker = false
+                                    },
+                                    onDismiss = { showCookRecipePicker = false }
+                                )
                             }
 
                             Spacer(modifier = Modifier.height(12.dp))
@@ -684,32 +921,47 @@ fun AddMealDialog(
                         // Prep: a recipe, free text, or both
                         if (recipes.isNotEmpty()) {
                             Text("Recipe (optional):", style = MaterialTheme.typography.labelMedium)
-                            var expanded by remember { mutableStateOf(false) }
                             val prepRecipe = recipes.firstOrNull { it.id == prepRecipeId }
-                            OutlinedButton(
-                                onClick = { expanded = true },
+
+                            Spacer(modifier = Modifier.height(4.dp))
+                            OutlinedCard(
+                                onClick = { showPrepRecipePicker = true },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(prepRecipe?.title ?: "No recipe", maxLines = 1)
-                            }
-                            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                                DropdownMenuItem(
-                                    text = { Text("No recipe") },
-                                    onClick = {
-                                        prepRecipeId = null
-                                        expanded = false
-                                    }
-                                )
-                                recipes.forEach { r ->
-                                    DropdownMenuItem(
-                                        text = { Text(r.title ?: "Untitled") },
-                                        onClick = {
-                                            prepRecipeId = r.id
-                                            prepPortions = r.servings?.coerceAtLeast(1) ?: 1
-                                            expanded = false
-                                        }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = prepRecipe?.title ?: "No recipe (free text only)",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
                                     )
+                                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Select Recipe")
                                 }
+                            }
+
+                            if (showPrepRecipePicker) {
+                                RecipePickerDialog(
+                                    slotName = slot.name,
+                                    recipes = recipes,
+                                    recipeTags = recipeTags,
+                                    allowNoRecipe = true,
+                                    onRecipeSelected = { recipe ->
+                                        prepRecipeId = recipe?.id
+                                        if (recipe != null) {
+                                            prepPortions = recipe.servings?.coerceAtLeast(1) ?: 1
+                                        }
+                                        showPrepRecipePicker = false
+                                    },
+                                    onDismiss = { showPrepRecipePicker = false }
+                                )
                             }
                             Spacer(modifier = Modifier.height(12.dp))
                         }

@@ -1,5 +1,6 @@
 package org.eu.angsumanray.recipecatcher.ui.plan
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -38,6 +39,7 @@ data class PlanUiState(
     val weekSlots: List<PlanSlotEntity> = emptyList(),
     val weekEntries: List<PlanEntryEntity> = emptyList(),
     val allRecipes: List<RecipeEntity> = emptyList(),
+    val recipeTags: Map<Long, Set<String>> = emptyMap(),
     val availableLeftovers: List<AvailableLeftover> = emptyList(),
     val pendingDelete: PendingDelete? = null,
     val snackbarMessage: String? = null,
@@ -102,11 +104,20 @@ class PlanViewModel @Inject constructor(
             // Looks past the week boundary, so Sunday's cook can feed Monday's lunch.
             val leftovers = plannerRepository.availableLeftovers(_uiState.value.selectedDate)
 
+            val allTags = database.tagDao().getAll().associateBy { it.id }
+            val allRecipeTags = database.recipeTagDao().getAll()
+            val recipeTagsMap = mutableMapOf<Long, MutableSet<String>>()
+            for (rt in allRecipeTags) {
+                val tagName = allTags[rt.tagId]?.name?.lowercase() ?: continue
+                recipeTagsMap.getOrPut(rt.recipeId) { mutableSetOf() }.add(tagName)
+            }
+
             _uiState.value = _uiState.value.copy(
                 isLoading = false,
                 weekSlots = slots,
                 weekEntries = entries,
                 allRecipes = recipes,
+                recipeTags = recipeTagsMap,
                 availableLeftovers = leftovers
             )
         }
@@ -297,6 +308,7 @@ class PlanViewModel @Inject constructor(
             return
         }
 
+        Log.d(TAG, "requestPlanSuggestions slotId=$slotId, targetSlots=${targetSlots.size}")
         _uiState.value = state.copy(isSuggesting = true)
 
         viewModelScope.launch {
@@ -348,6 +360,12 @@ class PlanViewModel @Inject constructor(
                 }
 
                 val suggestions = result.getOrNull()?.suggestions.orEmpty()
+                if (result.isFailure) {
+                    Log.e(TAG, "Meal suggestion failed", result.exceptionOrNull())
+                } else {
+                    Log.d(TAG, "Meal suggestion succeeded with ${suggestions.size} suggestions")
+                }
+
                 _uiState.value = when {
                     result.isFailure -> _uiState.value.copy(
                         isSuggesting = false,
@@ -377,6 +395,7 @@ class PlanViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                Log.e(TAG, "Exception requesting plan suggestions", e)
                 _uiState.value = _uiState.value.copy(
                     isSuggesting = false,
                     snackbarMessage = "Suggest failed: ${llmErrorMessage(e)}"
@@ -440,5 +459,9 @@ class PlanViewModel @Inject constructor(
             planSuggestions = emptyList(),
             suggestionSelection = emptyMap()
         )
+    }
+
+    private companion object {
+        const val TAG = "PlanViewModel"
     }
 }

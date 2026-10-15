@@ -78,4 +78,10 @@ interface RecipeTagDao {
 
     @Query("SELECT recipe_id FROM recipe_tag WHERE tag_id = :tagId")
     suspend fun getRecipeIdsForTag(tagId: Long): List<Long>
+
+    @Query("SELECT * FROM recipe_tag")
+    fun observeAll(): Flow<List<RecipeTagEntity>>
+
+    @Query("SELECT * FROM recipe_tag")
+    suspend fun getAll(): List<RecipeTagEntity>
 }
