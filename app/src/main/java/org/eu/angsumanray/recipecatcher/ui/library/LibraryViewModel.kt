@@ -21,7 +21,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.eu.angsumanray.recipecatcher.capture.CaptureWorker
 import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
-import org.eu.angsumanray.recipecatcher.core.insta.InstagramComments
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.eu.angsumanray.recipecatcher.core.web.WebRecipeFetcher
 import org.eu.angsumanray.recipecatcher.data.db.entity.RecipeEntity
@@ -59,10 +58,10 @@ class LibraryViewModel @Inject constructor(
     private val recipeRepository: RecipeRepository,
     private val tagRepository: TagRepository,
     private val settingsStore: org.eu.angsumanray.recipecatcher.data.settings.SettingsStore,
-    private val foregroundPageFetcher: org.eu.angsumanray.recipecatcher.capture.ForegroundPageFetcher,
     private val webRecipeFetcher: WebRecipeFetcher,
     @ApplicationContext private val context: Context,
-    private val commentFetcher: org.eu.angsumanray.recipecatcher.capture.CommentFetcher? = null
+    private val commentFetcher: org.eu.angsumanray.recipecatcher.capture.CommentFetcher? = null,
+    private val captureLauncher: org.eu.angsumanray.recipecatcher.capture.CaptureLauncher? = null
 ) : ViewModel() {
 
     val newRecipesSinceBackup: StateFlow<Int> = settingsStore.newRecipesSinceBackupFlow
@@ -216,36 +215,13 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    fun retryCapture(stored: RecipeEntity) {
+    fun retryCapture(recipe: RecipeEntity) {
+        if (captureLauncher != null) {
+            captureLauncher.retry(recipe.id)
+            return
+        }
         viewModelScope.launch {
-            val recipe = withoutLinkCaption(stored)
-            if (recipe.sourceType == SourceType.WEB.value &&
-                recipe.errorMessage == CaptureWorker.BLOCKED_MESSAGE
-            ) {
-                val result = foregroundPageFetcher.retryInWebView(recipe.id)
-                if (result.isSuccess) return@launch
-            }
-            if (recipe.sourceType == SourceType.INSTAGRAM.value && commentFetcher != null) {
-                val url = recipe.sourceUrl ?: recipe.sourceKey?.let { UrlNormalizer.canonicalizeInstagramUrl(it) }.orEmpty()
-                val fetched = try {
-                    commentFetcher.fetchTopComment(url, recipe.captionRaw)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    null
-                }
-                when {
-                    fetched != null -> recipeRepository.updateCommentRaw(recipe.id, fetched)
-                    recipe.commentRaw != null && !InstagramComments.looksLikeCommentText(recipe.commentRaw) ->
-                        recipeRepository.updateCommentRaw(recipe.id, null)
-                }
-            }
-            val nextStatus = if (recipe.captionRaw.isNullOrBlank()) {
-                RecipeEntity.STATUS_PENDING_FETCH
-            } else {
-                RecipeEntity.STATUS_PENDING_EXTRACT
-            }
-            recipeRepository.updateRecipeStatus(recipe.id, nextStatus, null)
+            recipeRepository.updateRecipeStatus(recipe.id, RecipeEntity.STATUS_PENDING_FETCH, null)
             CaptureWorker.enqueue(context, recipe.id)
         }
     }
@@ -304,14 +280,6 @@ class LibraryViewModel @Inject constructor(
             WorkManager.getInstance(context).cancelUniqueWork("capture_recipe_$recipeId")
             recipeRepository.deleteRecipe(recipeId)
         }
-    }
-
-    /** An earlier paste could store a bare Instagram link as the caption; clear it so the post is fetched again. */
-    private suspend fun withoutLinkCaption(recipe: RecipeEntity): RecipeEntity {
-        if (recipe.captionRaw == null || !UrlNormalizer.isInstagramPostLink(recipe.captionRaw)) return recipe
-        val cleared = recipe.copy(captionRaw = null, updatedAt = System.currentTimeMillis())
-        recipeRepository.updateRecipe(cleared)
-        return cleared
     }
 
     private companion object {

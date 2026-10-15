@@ -15,7 +15,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.eu.angsumanray.recipecatcher.capture.CaptureWorker
 import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
-import org.eu.angsumanray.recipecatcher.core.insta.InstagramComments
 import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.eu.angsumanray.recipecatcher.data.db.dao.TagDao
 import org.eu.angsumanray.recipecatcher.data.db.entity.IngredientEntity
@@ -66,7 +65,8 @@ class ReviewViewModel @Inject constructor(
     private val tagDao: TagDao,
     savedStateHandle: SavedStateHandle,
     @ApplicationContext private val context: Context,
-    private val commentFetcher: org.eu.angsumanray.recipecatcher.capture.CommentFetcher? = null
+    private val commentFetcher: org.eu.angsumanray.recipecatcher.capture.CommentFetcher? = null,
+    private val captureLauncher: org.eu.angsumanray.recipecatcher.capture.CaptureLauncher? = null
 ) : ViewModel() {
 
     // Secondary constructor for testing
@@ -179,14 +179,6 @@ class ReviewViewModel @Inject constructor(
         }
     }
 
-    /** An earlier paste could store a bare Instagram link as the caption; clear it so the post is fetched again. */
-    private suspend fun withoutLinkCaption(recipe: RecipeEntity): RecipeEntity {
-        if (recipe.captionRaw == null || !UrlNormalizer.isInstagramPostLink(recipe.captionRaw)) return recipe
-        val cleared = recipe.copy(captionRaw = null, updatedAt = System.currentTimeMillis())
-        recipeRepository.updateRecipe(cleared)
-        return cleared
-    }
-
     /** A URL the in-app viewer can open; Instagram rows saved without one fall back to the post URL. */
     private fun RecipeEntity.viewableSourceUrl(): String? = sourceUrl
         ?: if (sourceType == SourceType.INSTAGRAM.value) {
@@ -249,8 +241,7 @@ class ReviewViewModel @Inject constructor(
 
     fun retryCapture() {
         viewModelScope.launch {
-            val stored = recipeRepository.getRecipe(recipeId) ?: return@launch
-            val recipe = withoutLinkCaption(stored)
+            val recipe = recipeRepository.getRecipe(recipeId) ?: return@launch
             wasExtracting = true
             _uiState.update { current ->
                 current.copy(
@@ -264,26 +255,11 @@ class ReviewViewModel @Inject constructor(
                     }
                 )
             }
-            if (recipe.sourceType == SourceType.INSTAGRAM.value && commentFetcher != null) {
-                val fetched = try {
-                    commentFetcher.fetchTopComment(recipe.viewableSourceUrl().orEmpty(), recipe.captionRaw)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    null
-                }
-                when {
-                    fetched != null -> recipeRepository.updateCommentRaw(recipe.id, fetched)
-                    recipe.commentRaw != null && !InstagramComments.looksLikeCommentText(recipe.commentRaw) ->
-                        recipeRepository.updateCommentRaw(recipe.id, null)
-                }
+            if (captureLauncher != null) {
+                captureLauncher.retry(recipeId)
+                return@launch
             }
-            val nextStatus = if (recipe.captionRaw.isNullOrBlank()) {
-                RecipeEntity.STATUS_PENDING_FETCH
-            } else {
-                RecipeEntity.STATUS_PENDING_EXTRACT
-            }
-            recipeRepository.updateRecipeStatus(recipe.id, nextStatus, null)
+            recipeRepository.updateRecipeStatus(recipe.id, RecipeEntity.STATUS_PENDING_FETCH, null)
             try {
                 CaptureWorker.enqueue(context, recipe.id)
             } catch (e: Exception) {
