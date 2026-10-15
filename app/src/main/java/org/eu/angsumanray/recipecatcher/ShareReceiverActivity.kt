@@ -10,9 +10,8 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.eu.angsumanray.recipecatcher.capture.CaptureLauncher
 import org.eu.angsumanray.recipecatcher.capture.CaptureWorker
-import org.eu.angsumanray.recipecatcher.capture.CommentFetcher
-import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.eu.angsumanray.recipecatcher.data.repo.CaptureStart
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 import java.io.File
@@ -27,7 +26,7 @@ class ShareReceiverActivity : ComponentActivity() {
     lateinit var recipeRepository: RecipeRepository
 
     @Inject
-    lateinit var commentFetcher: CommentFetcher
+    lateinit var captureLauncher: CaptureLauncher
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -137,15 +136,7 @@ class ShareReceiverActivity : ComponentActivity() {
                 })
             }
             is CaptureStart.Created -> {
-                Toast.makeText(this, "Capturing recipe...", Toast.LENGTH_SHORT).show()
-                try {
-                    if (start.sourceType == SourceType.INSTAGRAM) {
-                        commentFetcher.fetchTopComment(text)?.let { recipeRepository.updateCommentRaw(start.recipeId, it) }
-                    }
-                } finally {
-                    // The capture starts even when the comment fetch is cut short.
-                    CaptureWorker.enqueue(applicationContext, start.recipeId)
-                }
+                captureLauncher.start(start.recipeId, start.sourceType, text)
                 startActivity(Intent(this, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                     putExtra(MainActivity.EXTRA_PENDING_RECIPE_ID, start.recipeId)

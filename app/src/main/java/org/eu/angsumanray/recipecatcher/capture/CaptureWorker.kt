@@ -69,7 +69,7 @@ class CaptureWorker @AssistedInject constructor(
         private const val MAX_CAROUSEL_SLIDES = 4
         private const val IMAGE_FAILED_MESSAGE = "Image processing failed or file too large"
 
-        fun enqueue(context: Context, recipeId: Long) {
+        fun enqueue(context: Context, recipeId: Long, initialDelayMillis: Long = 0) {
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
@@ -78,6 +78,7 @@ class CaptureWorker @AssistedInject constructor(
                 .setConstraints(constraints)
                 .setInputData(workDataOf(KEY_RECIPE_ID to recipeId))
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
+                .setInitialDelay(initialDelayMillis, TimeUnit.MILLISECONDS)
                 .build()
 
             WorkManager.getInstance(context).enqueueUniqueWork(

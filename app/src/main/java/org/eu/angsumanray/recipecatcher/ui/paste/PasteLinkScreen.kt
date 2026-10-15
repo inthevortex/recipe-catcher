@@ -32,11 +32,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import org.eu.angsumanray.recipecatcher.capture.CaptureLauncher
 import org.eu.angsumanray.recipecatcher.capture.CaptureWorker
-import org.eu.angsumanray.recipecatcher.capture.CommentFetcher
 import org.eu.angsumanray.recipecatcher.core.capture.SourceClassifier
 import org.eu.angsumanray.recipecatcher.core.capture.UrlNormalizer
-import org.eu.angsumanray.recipecatcher.core.model.SourceType
 import org.eu.angsumanray.recipecatcher.data.repo.CaptureStart
 import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 
@@ -44,7 +43,7 @@ import org.eu.angsumanray.recipecatcher.data.repo.RecipeRepository
 @Composable
 fun PasteLinkScreen(
     recipeRepository: RecipeRepository,
-    commentFetcher: CommentFetcher? = null,
+    captureLauncher: CaptureLauncher? = null,
     onNavigateBack: () -> Unit,
     onRecipeCaptured: (Long) -> Unit
 ) {
@@ -159,12 +158,9 @@ fun PasteLinkScreen(
                                 }
                                 is CaptureStart.Existing -> onRecipeCaptured(start.recipeId)
                                 is CaptureStart.Created -> {
-                                    try {
-                                        if (start.sourceType == SourceType.INSTAGRAM && commentFetcher != null) {
-                                            commentFetcher.fetchTopComment(trimmed)?.let { recipeRepository.updateCommentRaw(start.recipeId, it) }
-                                        }
-                                    } finally {
-                                        // The capture starts even when the comment fetch is cut short.
+                                    if (captureLauncher != null) {
+                                        captureLauncher.start(start.recipeId, start.sourceType, trimmed)
+                                    } else {
                                         CaptureWorker.enqueue(context, start.recipeId)
                                     }
                                     onRecipeCaptured(start.recipeId)
