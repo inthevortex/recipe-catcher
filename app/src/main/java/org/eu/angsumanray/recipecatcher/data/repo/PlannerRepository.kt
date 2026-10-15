@@ -201,31 +201,18 @@ class PlannerRepository @Inject constructor(
         return plannerDao.insertEntry(entry)
     }
 
+    /**
+     * Plans [portions] of a leftover. A negative [fromEntryId] names a cooked-food item (see
+     * [availableLeftovers]); its portions are taken from the item, which is removed once used up.
+     */
     suspend fun addLeftoverEntry(
         slotId: Long,
         fromEntryId: Long,
         portions: Int = 1
     ): Long {
-        val existing = plannerDao.getEntriesForSlot(slotId)
-        if (fromEntryId < 0) {
-            val cookedFoodId = -fromEntryId
-            val cooked = database.cookedFoodDao().getCookedFoodItemById(cookedFoodId)
-            if (cooked != null) {
-                val entry = PlanEntryEntity(
-                    slotId = slotId,
-                    kind = PlanEntryEntity.KIND_LEFTOVER,
-                    recipeId = cooked.recipeId,
-                    text = cooked.name,
-                    portions = portions.coerceAtLeast(1),
-                    fromEntryId = null,
-                    position = existing.size
-                )
-                val newPortions = (cooked.portions - portions).coerceAtLeast(0)
-                database.cookedFoodDao().updatePortions(cookedFoodId, newPortions)
-                return plannerDao.insertEntry(entry)
-            }
-        }
+        if (fromEntryId < 0) return addCookedFoodLeftover(slotId, -fromEntryId, portions)
 
+        val existing = plannerDao.getEntriesForSlot(slotId)
         val source = resolveCookSource(fromEntryId)
         requireNotNull(source) { "Leftovers must come from a cook entry" }
         val entry = PlanEntryEntity(
@@ -239,6 +226,28 @@ class PlannerRepository @Inject constructor(
         )
         return plannerDao.insertEntry(entry)
     }
+
+    private suspend fun addCookedFoodLeftover(slotId: Long, cookedFoodId: Long, portions: Int): Long =
+        database.withTransaction {
+            val cookedFoodDao = database.cookedFoodDao()
+            val cooked = requireNotNull(cookedFoodDao.getCookedFoodItemById(cookedFoodId)) {
+                "Cooked food $cookedFoodId no longer exists"
+            }
+            require(cooked.portions > 0) { "No portions of ${cooked.name} left" }
+            val taken = portions.coerceIn(1, cooked.portions)
+            val entry = PlanEntryEntity(
+                slotId = slotId,
+                kind = PlanEntryEntity.KIND_LEFTOVER,
+                recipeId = cooked.recipeId,
+                text = cooked.name,
+                portions = taken,
+                fromEntryId = null,
+                position = plannerDao.getEntriesForSlot(slotId).size
+            )
+            val left = cooked.portions - taken
+            if (left > 0) cookedFoodDao.updatePortions(cookedFoodId, left) else cookedFoodDao.deleteById(cookedFoodId)
+            plannerDao.insertEntry(entry)
+        }
 
     /** Follows leftover links from [entryId] back to the cook entry that made the food. */
     private suspend fun resolveCookSource(entryId: Long): PlanEntryEntity? {
@@ -273,23 +282,20 @@ class PlannerRepository @Inject constructor(
             } else emptyList()
         } else emptyList()
 
-        val cookedFoodLeftovers = try {
-            database.cookedFoodDao().getAllCookedFoodItems()
-                .filter { it.portions > 0 && it.dateCooked <= date.toString() }
-                .map { cooked ->
-                    AvailableLeftover(
-                        cookEntryId = -cooked.id,
-                        recipeId = cooked.recipeId,
-                        slotId = 0L,
-                        slotDate = cooked.dateCooked,
-                        slotName = cooked.notes ?: "Cooked Food: ${cooked.name}",
-                        initialPortions = cooked.portions,
-                        remainingPortions = cooked.portions
-                    )
-                }
-        } catch (e: Exception) {
-            emptyList()
-        }
+        // Cooked-food items carry a negated ID and their dish name in slotName.
+        val cookedFoodLeftovers = database.cookedFoodDao().getAllCookedFoodItems()
+            .filter { it.portions > 0 && it.dateCooked <= date.toString() }
+            .map { cooked ->
+                AvailableLeftover(
+                    cookEntryId = -cooked.id,
+                    recipeId = cooked.recipeId,
+                    slotId = 0L,
+                    slotDate = cooked.dateCooked,
+                    slotName = cooked.name,
+                    initialPortions = cooked.portions,
+                    remainingPortions = cooked.portions
+                )
+            }
 
         return planLeftovers + cookedFoodLeftovers
     }

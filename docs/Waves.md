@@ -165,6 +165,8 @@ Fine-tuned pantry reconciliation, plain text sharing, dual model selection, orph
   - Settings "Check for updates" + periodic WorkManager background check against GitHub Releases API (`/repos/angsuman/recipe-catcher/releases/latest`).
   - Dialog showing release notes, version tag, and "Download & Install" (downloads APK to cache, invokes package installer via `FileProvider`).
   - Wearable Data Layer notification: sends `/update_available` message to watch companion.
+- [x] Cooked food and leftovers: `cooked_food_item` table (schema v2 via `MIGRATION_1_2`, with a migration test), a Cooked Food tab in Lists with portion +/- controls, and cooked-food portions offered as leftovers in the week planner.
+- [x] Grocery image scanner: receipts, delivery-app screenshots or grocery photos from the camera or photo picker go through Claude Haiku 5.5 vision (`ClaudeGroceryImageScanner`), then a review dialog (edit name and category, delete, default status) upserts the items into the pantry. Each scan is logged to `llm_usage`.
 - [x] Tests: pantry reconciliation logic tests, image cleanup worker tests, plain text export formatter tests, update checker tests, and wear M3 UI tests.
 
 **Done when:** marking a recipe cooked updates pantry stock as chosen, sharing sends clean plain text, "Clean storage" removes unreferenced images, and the watch app runs on Wear Compose Material 3.

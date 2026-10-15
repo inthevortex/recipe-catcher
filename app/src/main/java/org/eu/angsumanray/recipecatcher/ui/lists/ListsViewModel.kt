@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -156,6 +157,8 @@ class ListsViewModel @Inject constructor(
                 val base64List = uris.mapNotNull { uri ->
                     try {
                         imagePreprocessor.processUri(uri)?.base64
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         null
                     }
@@ -170,7 +173,9 @@ class ListsViewModel @Inject constructor(
 
                 val result = groceryImageScanner.scanGroceryImages(base64List)
                 result.fold(
-                    onSuccess = { items ->
+                    onSuccess = { scan ->
+                        listsRepository.logScanUsage(scan.usage)
+                        val items = scan.items
                         if (items.isEmpty()) {
                             _uiState.value = _uiState.value.copy(
                                 isScanningGrocery = false,
@@ -190,6 +195,8 @@ class ListsViewModel @Inject constructor(
                         )
                     }
                 )
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isScanningGrocery = false,
@@ -226,16 +233,19 @@ class ListsViewModel @Inject constructor(
         recipeId: Long? = null
     ) {
         viewModelScope.launch {
-            listsRepository.addCookedFoodItem(
-                name = name,
-                portions = portions,
-                dateCooked = dateCooked,
-                notes = notes,
-                recipeId = recipeId
-            )
-            _uiState.value = _uiState.value.copy(
-                snackbarMessage = "Added '$name' ($portions portions) to Cooked Food!"
-            )
+            val message = try {
+                listsRepository.addCookedFoodItem(
+                    name = name,
+                    portions = portions,
+                    dateCooked = dateCooked,
+                    notes = notes,
+                    recipeId = recipeId
+                )
+                "Added '$name' ($portions portions) to Cooked Food!"
+            } catch (e: IllegalArgumentException) {
+                e.message ?: "Couldn't add '$name'"
+            }
+            _uiState.value = _uiState.value.copy(snackbarMessage = message)
         }
     }
 

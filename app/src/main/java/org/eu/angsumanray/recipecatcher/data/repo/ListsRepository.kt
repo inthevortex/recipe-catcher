@@ -2,6 +2,8 @@ package org.eu.angsumanray.recipecatcher.data.repo
 
 import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
+import org.eu.angsumanray.recipecatcher.core.llm.LlmUsage
+import org.eu.angsumanray.recipecatcher.core.llm.ScannedGroceryItem
 import org.eu.angsumanray.recipecatcher.core.model.GroceryItem
 import org.eu.angsumanray.recipecatcher.core.model.GrocerySource
 import org.eu.angsumanray.recipecatcher.core.model.Ingredient
@@ -16,9 +18,12 @@ import org.eu.angsumanray.recipecatcher.data.db.dao.IngredientDao
 import org.eu.angsumanray.recipecatcher.data.db.dao.ListsDao
 import org.eu.angsumanray.recipecatcher.data.db.dao.PlannerDao
 import org.eu.angsumanray.recipecatcher.data.db.dao.RecipeDao
+import org.eu.angsumanray.recipecatcher.data.db.entity.CookedFoodItemEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.GroceryItemEntity
 import org.eu.angsumanray.recipecatcher.data.db.entity.InventoryItemEntity
+import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
 import java.time.LocalDate
+import java.time.format.DateTimeParseException
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -290,12 +295,13 @@ class ListsRepository @Inject constructor(
 
     // --- Cooked Food / Leftovers ---
 
-    fun observeCookedFoodItems(): Flow<List<org.eu.angsumanray.recipecatcher.data.db.entity.CookedFoodItemEntity>> =
+    fun observeCookedFoodItems(): Flow<List<CookedFoodItemEntity>> =
         database.cookedFoodDao().getCookedFoodItemsFlow()
 
-    suspend fun getAllCookedFoodItems(): List<org.eu.angsumanray.recipecatcher.data.db.entity.CookedFoodItemEntity> =
+    suspend fun getAllCookedFoodItems(): List<CookedFoodItemEntity> =
         database.cookedFoodDao().getAllCookedFoodItems()
 
+    /** [dateCooked] must be an ISO date; leftover availability compares these dates as text. */
     suspend fun addCookedFoodItem(
         name: String,
         portions: Int = 1,
@@ -303,10 +309,12 @@ class ListsRepository @Inject constructor(
         notes: String? = null,
         recipeId: Long? = null
     ): Long {
-        val entity = org.eu.angsumanray.recipecatcher.data.db.entity.CookedFoodItemEntity(
-            name = name.trim(),
+        val cleanName = name.trim()
+        require(cleanName.isNotEmpty()) { "Cooked food needs a name" }
+        val entity = CookedFoodItemEntity(
+            name = cleanName,
             portions = portions.coerceAtLeast(1),
-            dateCooked = dateCooked,
+            dateCooked = parseIsoDate(dateCooked).toString(),
             notes = notes?.trim()?.ifEmpty { null },
             recipeId = recipeId,
             updatedAt = System.currentTimeMillis()
@@ -314,6 +322,7 @@ class ListsRepository @Inject constructor(
         return database.cookedFoodDao().insert(entity)
     }
 
+    /** Sets the portions left; zero or fewer removes the dish. */
     suspend fun updateCookedFoodPortions(id: Long, portions: Int) {
         if (portions <= 0) {
             database.cookedFoodDao().deleteById(id)
@@ -325,8 +334,9 @@ class ListsRepository @Inject constructor(
     suspend fun deleteCookedFoodItem(id: Long) =
         database.cookedFoodDao().deleteById(id)
 
+    /** Adds or updates (matched by base name) the reviewed scan results; returns how many were saved. */
     suspend fun upsertScannedInventoryItems(
-        items: List<org.eu.angsumanray.recipecatcher.core.llm.ScannedGroceryItem>,
+        items: List<ScannedGroceryItem>,
         defaultStatus: String = InventoryItemEntity.STATUS_IN_STOCK
     ): Int {
         var count = 0
@@ -342,5 +352,18 @@ class ListsRepository @Inject constructor(
             }
         }
         return count
+    }
+
+    suspend fun logScanUsage(usage: LlmUsage) {
+        if (usage.inputTokens == 0 && usage.outputTokens == 0) return
+        database.llmUsageDao().insert(usage.toExtractionUsageEntity(SettingsStore.DEFAULT_MODEL_ID))
+    }
+
+    companion object {
+        fun parseIsoDate(text: String): LocalDate = try {
+            LocalDate.parse(text.trim())
+        } catch (e: DateTimeParseException) {
+            throw IllegalArgumentException("Date must be YYYY-MM-DD: $text", e)
+        }
     }
 }

@@ -202,7 +202,11 @@ class PlanViewModel @Inject constructor(
 
     fun addLeftoverEntry(slotId: Long, fromEntryId: Long, portions: Int) {
         viewModelScope.launch {
-            plannerRepository.addLeftoverEntry(slotId, fromEntryId, portions)
+            try {
+                plannerRepository.addLeftoverEntry(slotId, fromEntryId, portions)
+            } catch (e: IllegalArgumentException) {
+                _uiState.value = _uiState.value.copy(snackbarMessage = e.message ?: "Those leftovers are no longer available")
+            }
             loadData()
         }
     }
@@ -321,7 +325,8 @@ class PlanViewModel @Inject constructor(
                     inStockIngredients = inventory.filter { it.status == InventoryItemEntity.STATUS_IN_STOCK }.map { it.name },
                     lowStockIngredients = inventory.filter { it.status == InventoryItemEntity.STATUS_LOW }.map { it.name },
                     availableLeftovers = leftovers.map {
-                        val title = it.recipeId?.let { rId -> recipesMap[rId]?.title } ?: it.slotName
+                        val title = it.recipeId?.let { rId -> recipesMap[rId]?.title }
+                            ?: if (it.cookEntryId < 0) it.slotName else "Leftover"
                         "$title (${it.remainingPortions} portions left, recipe_id ${it.recipeId ?: "none"})"
                     },
                     leftoverRecipeIds = leftoverRecipeIds,

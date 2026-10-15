@@ -11,12 +11,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import org.eu.angsumanray.recipecatcher.core.planner.GroceryCategories
+import java.util.Locale
 
 @Serializable
 data class ScannedGroceryItem(
@@ -30,8 +29,13 @@ internal data class ScannedGroceryResponse(
     val items: List<ScannedGroceryItem> = emptyList()
 )
 
+data class GroceryScanResult(
+    val items: List<ScannedGroceryItem>,
+    val usage: LlmUsage
+)
+
 interface GroceryImageScanner {
-    suspend fun scanGroceryImages(base64Images: List<String>): Result<List<ScannedGroceryItem>>
+    suspend fun scanGroceryImages(base64Images: List<String>): Result<GroceryScanResult>
 }
 
 class ClaudeGroceryImageScanner(
@@ -60,14 +64,13 @@ Rules:
 3. Clean up item names into concise, common grocery names:
    - Remove brand prefixes or store codes (e.g. "KS ORG BANANAS 3LB" -> "Bananas", "AMZ FRESH WHOLE MILK 1L" -> "Whole Milk").
    - Convert all-caps text to Title Case (e.g. "RED BELL PEPPER" -> "Red Bell Pepper").
-4. Assign each item a category from:
-   - produce
+4. Assign each item exactly one category from:
+   - vegetables
+   - fruit
    - dairy
    - meat & fish
    - grains & flours
    - spices
-   - bakery
-   - frozen
    - pantry
    - other
 5. If quantity is clearly visible (e.g. "1 kg", "2 packs", "1L"), include it in estimatedQuantity; otherwise leave it null.
@@ -76,7 +79,7 @@ Rules:
   "items": [
     {
       "name": "Tomatoes",
-      "category": "produce",
+      "category": "vegetables",
       "estimatedQuantity": "1 kg"
     }
   ]
@@ -84,9 +87,9 @@ Rules:
 Output ONLY the raw JSON object, without markdown code fences or conversational text."""
     }
 
-    override suspend fun scanGroceryImages(base64Images: List<String>): Result<List<ScannedGroceryItem>> {
+    override suspend fun scanGroceryImages(base64Images: List<String>): Result<GroceryScanResult> {
         if (base64Images.isEmpty()) {
-            return Result.success(emptyList())
+            return Result.success(GroceryScanResult(emptyList(), LlmUsage(0, 0, 0, model = null)))
         }
 
         val apiKey = apiKeyProvider().trim()
@@ -156,20 +159,33 @@ Output ONLY the raw JSON object, without markdown code fences or conversational 
         }
 
         return try {
-            val textContent = parseContentText(responseBody)
+            val anthropicResponse = json.decodeFromString(AnthropicMessageResponse.serializer(), responseBody)
+            val usage = LlmUsage(
+                inputTokens = anthropicResponse.usage?.inputTokens ?: 0,
+                outputTokens = anthropicResponse.usage?.outputTokens ?: 0,
+                cacheReadTokens = anthropicResponse.usage?.cacheReadInputTokens ?: 0,
+                model = anthropicResponse.model ?: modelId
+            )
+            val textContent = anthropicResponse.content.firstOrNull { it.type == "text" }?.text.orEmpty()
             val cleanedJson = sanitizeJsonText(textContent)
             val parsedResponse = json.decodeFromString(ScannedGroceryResponse.serializer(), cleanedJson)
-            Result.success(parsedResponse.items)
+            val items = parsedResponse.items
+                .filter { it.name.isNotBlank() }
+                .map { it.copy(name = it.name.trim(), category = normalizeCategory(it.category)) }
+            Result.success(GroceryScanResult(items, usage))
         } catch (e: Exception) {
             Result.failure(RuntimeException("Failed to parse grocery items from Claude vision response: ${e.message}", e))
         }
     }
 
-    private fun parseContentText(responseBody: String): String {
-        val root = json.parseToJsonElement(responseBody).jsonObject
-        val contentArray = root["content"]?.jsonArray
-        return contentArray?.firstOrNull { it.jsonObject["type"]?.jsonPrimitive?.content == "text" }
-            ?.jsonObject?.get("text")?.jsonPrimitive?.content ?: ""
+    /** Maps the model's category onto the app's grocery categories, so scanned items group like the rest. */
+    private fun normalizeCategory(raw: String): String {
+        val category = raw.trim().lowercase(Locale.ROOT)
+        return when {
+            category in GroceryCategories.ALL -> category
+            category == "produce" -> GroceryCategories.VEGETABLES
+            else -> GroceryCategories.OTHER
+        }
     }
 
     private fun sanitizeJsonText(raw: String): String {

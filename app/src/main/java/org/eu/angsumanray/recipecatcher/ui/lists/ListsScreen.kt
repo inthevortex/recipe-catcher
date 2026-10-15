@@ -717,6 +717,7 @@ fun AddCookedFoodDialog(
     var portions by remember { mutableIntStateOf(2) }
     var dateCooked by remember { mutableStateOf(LocalDate.now().toString()) }
     var notes by remember { mutableStateOf("") }
+    val dateValid = remember(dateCooked) { runCatching { LocalDate.parse(dateCooked.trim()) }.isSuccess }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -764,6 +765,8 @@ fun AddCookedFoodDialog(
                     value = dateCooked,
                     onValueChange = { dateCooked = it },
                     label = { Text("Date (YYYY-MM-DD)") },
+                    isError = !dateValid,
+                    singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -777,7 +780,7 @@ fun AddCookedFoodDialog(
         },
         confirmButton = {
             Button(
-                enabled = name.isNotBlank(),
+                enabled = name.isNotBlank() && dateValid,
                 onClick = { onConfirm(name.trim(), portions, dateCooked.trim(), notes.trim().ifBlank { null }) }
             ) {
                 Text("Add to Cooked Food")
@@ -804,7 +807,7 @@ fun ReviewScannedGroceryDialog(
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "Edit names or remove incorrect items before saving to inventory.",
+                    text = "Edit names and categories, or remove incorrect items, before saving to inventory.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -856,12 +859,26 @@ fun ReviewScannedGroceryDialog(
                                         modifier = Modifier.fillMaxWidth(),
                                         textStyle = MaterialTheme.typography.bodyMedium
                                     )
-                                    Text(
-                                        text = item.category.replaceFirstChar { it.uppercase() } + (item.estimatedQuantity?.let { " • $it" } ?: ""),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(start = 4.dp, top = 2.dp)
-                                    )
+                                    var categoryExpanded by remember { mutableStateOf(false) }
+                                    Box {
+                                        TextButton(onClick = { categoryExpanded = true }) {
+                                            Text(
+                                                text = item.category.replaceFirstChar { it.uppercase() } + (item.estimatedQuantity?.let { " • $it" } ?: ""),
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                        }
+                                        DropdownMenu(expanded = categoryExpanded, onDismissRequest = { categoryExpanded = false }) {
+                                            GroceryCategories.ALL.forEach { cat ->
+                                                DropdownMenuItem(
+                                                    text = { Text(cat.replaceFirstChar { it.uppercase() }) },
+                                                    onClick = {
+                                                        items[index] = item.copy(category = cat)
+                                                        categoryExpanded = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                                 IconButton(onClick = { items.removeAt(index) }) {
                                     Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(18.dp))
@@ -874,7 +891,7 @@ fun ReviewScannedGroceryDialog(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 OutlinedButton(
-                    onClick = { items.add(ScannedGroceryItem(name = "", category = "pantry")) },
+                    onClick = { items.add(ScannedGroceryItem(name = "", category = GroceryCategories.PANTRY)) },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))

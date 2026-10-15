@@ -475,4 +475,22 @@ class PlannerAndListsTest {
         val tomatoes = finalItems.first { it.name == "Roma Tomatoes" }
         assertEquals(InventoryItemEntity.STATUS_IN_STOCK, tomatoes.status)
     }
+
+    @Test
+    fun `planning cooked food caps portions at what is left and removes the used-up dish`() = runBlocking {
+        val today = LocalDate.of(2026, 10, 15)
+        val cookedId = listsRepository.addCookedFoodItem(name = "Pizza", portions = 2, dateCooked = today.toString())
+        val slotId = plannerRepository.insertSlot(PlanSlotEntity(date = today, name = "Lunch", time = LocalTime.of(13, 0)))
+
+        val entryId = plannerRepository.addLeftoverEntry(slotId = slotId, fromEntryId = -cookedId, portions = 5)
+
+        assertEquals(2, database.plannerDao().getEntryById(entryId)!!.portions)
+        assertTrue(listsRepository.getAllCookedFoodItems().isEmpty())
+        assertTrue(plannerRepository.availableLeftovers(today).none { it.cookEntryId == -cookedId })
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `cooked food rejects a date that is not ISO`() = runBlocking<Unit> {
+        listsRepository.addCookedFoodItem(name = "Rajma", dateCooked = "15/10/2026")
+    }
 }

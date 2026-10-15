@@ -69,17 +69,19 @@ class GroceryImageScannerTest {
 
         val result = scanner.scanGroceryImages(listOf("fakeBase64ImageData"))
         assertTrue(result.isSuccess)
-        val items = result.getOrThrow()
+        val items = result.getOrThrow().items
         assertEquals(3, items.size)
         assertEquals("Whole Milk", items[0].name)
         assertEquals("dairy", items[0].category)
         assertEquals("1 Gallon", items[0].estimatedQuantity)
 
         assertEquals("Roma Tomatoes", items[1].name)
-        assertEquals("produce", items[1].category)
+        assertEquals("vegetables", items[1].category)
 
         assertEquals("Sourdough Bread", items[2].name)
-        assertEquals("bakery", items[2].category)
+        assertEquals("other", items[2].category)
+        assertEquals(1500, result.getOrThrow().usage.inputTokens)
+        assertEquals(200, result.getOrThrow().usage.outputTokens)
     }
 
     @Test
@@ -95,7 +97,7 @@ class GroceryImageScannerTest {
 
         val result = scanner.scanGroceryImages(emptyList())
         assertTrue(result.isSuccess)
-        assertTrue(result.getOrThrow().isEmpty())
+        assertTrue(result.getOrThrow().items.isEmpty())
     }
 
     @Test
@@ -122,7 +124,7 @@ class GroceryImageScannerTest {
 
         val result = scanner.scanGroceryImages(listOf("fakeBase64"))
         assertTrue(result.isSuccess)
-        val items = result.getOrThrow()
+        val items = result.getOrThrow().items
         assertEquals(1, items.size)
         assertEquals("Cheddar Cheese", items[0].name)
         assertEquals("dairy", items[0].category)
