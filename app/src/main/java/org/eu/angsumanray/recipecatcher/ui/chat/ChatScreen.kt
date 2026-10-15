@@ -244,7 +244,7 @@ fun ChatScreen(
                                 onClick = { modelMenuExpanded = true },
                                 label = {
                                     Text(
-                                        text = if (state.chatModelId == SettingsStore.CHAT_MODEL_SONNET) "Claude 3.5 Sonnet" else "Claude Haiku 5.5",
+                                        text = if (state.chatModelId == SettingsStore.CHAT_MODEL_SONNET) "Claude Sonnet 5.5" else "Claude Haiku 5.5",
                                         style = MaterialTheme.typography.labelSmall
                                     )
                                 },
@@ -268,7 +268,7 @@ fun ChatScreen(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Claude 3.5 Sonnet") },
+                                    text = { Text("Claude Sonnet 5.5") },
                                     onClick = {
                                         viewModel.setChatModelId(SettingsStore.CHAT_MODEL_SONNET)
                                         modelMenuExpanded = false

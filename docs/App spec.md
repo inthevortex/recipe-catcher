@@ -210,7 +210,7 @@ Settings holds six groups: AI, Chat & Suggester, Tags, Instagram, Backup, Mainte
 | Start-cooking alerts | Toggle | on | For Cook entries in slots with a time |
 | API key | Secret text | empty | Anthropic API key; stored encrypted; AI features are blocked with a prompt until set |
 | Model ID | Text | `claude-haiku-5-5` | Primary model for recipe extraction (text, images, YouTube transcripts); "Test" button sends a tiny request |
-| Chat & Suggester model | Choice | `claude-haiku-5-5` | Dual model selector: choose between Claude Haiku 5.5 (fast, economical) and Claude 3.5 Sonnet (`claude-3-5-sonnet`) for Chat and Plan Suggester |
+| Chat & Suggester model | Choice | `claude-haiku-5-5` | Dual model selector: choose between Claude Haiku 5.5 (fast, economical) and Claude Sonnet 5.5 (`claude-sonnet-5-5`) for Chat and Plan Suggester |
 | Include web by default | Toggle | off | Default for the chat's "Include web" chip |
 | Max web searches per message | Number | 3 | Caps search charges for chat and Find with AI; passed as the web search tool's `max_uses` |
 | AI spend | Read-only panel | — | Running cost this month and all time, split into extraction, chat, planning and web search, with a "Reset" action |
@@ -229,7 +229,7 @@ Settings holds six groups: AI, Chat & Suggester, Tags, Instagram, Backup, Mainte
 **Dual Model selector**
 
 - Extraction tasks (Instagram captions/carousels, websites, YouTube transcripts, and camera/photo vision) always use Claude Haiku 5.5 (`claude-haiku-5-5`) for minimal latency and cost.
-- Recipe Chat and Meal Plan Suggester offer a choice between Claude Haiku 5.5 (default) and Claude 3.5 Sonnet (`claude-3-5-sonnet`). Selecting Sonnet provides deeper culinary reasoning, complex ingredient substitution advice, and nuanced week-plan suggestions, while leaving extraction costs untouched.
+- Recipe Chat and Meal Plan Suggester offer a choice between Claude Haiku 5.5 (default) and Claude Sonnet 5.5 (`claude-sonnet-5-5`). Selecting Sonnet provides deeper culinary reasoning, complex ingredient substitution advice, and nuanced week-plan suggestions, while leaving extraction costs untouched.
 
 **In-App GitHub Release Update Checker**
 

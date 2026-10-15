@@ -151,7 +151,7 @@ Images and video captions turned into structured recipes using Claude Haiku 5.5 
 
 Fine-tuned pantry reconciliation, plain text sharing, dual model selection, orphaned storage cleanup, Wear OS Compose Material 3 upgrade, and in-app update checks.
 
-- [x] Dual model selector in Settings: choice between `claude-haiku-5-5` (default) and `claude-3-5-sonnet` for `ChatPlanner` and `PlanSuggester`.
+- [x] Dual model selector in Settings: choice between `claude-haiku-5-5` (default) and `claude-sonnet-5-5` for `ChatPlanner` and `PlanSuggester`.
 - [x] Interactive Pantry reconciliation sheet/dialog on "Mark as cooked" (from Recipe viewer, Cooking mode, and Today screen):
   - Displays recipe ingredients matched to inventory items by base name.
   - Side-by-side dropdown/selector (`In Stock`, `Low`, `Out`, `Don't Change`).
@@ -162,7 +162,7 @@ Fine-tuned pantry reconciliation, plain text sharing, dual model selection, orph
 - [x] `ImageCleanupWorker` in `:app/storage`: periodic WorkManager job + manual "Clean storage" button in Settings; scans `filesDir/images/`, diffs against active database paths (`recipe.cover_image_path`, `cook_log.photo_path`), deletes orphaned files, and reports freed space and count.
 - [x] Wear OS Compose Material 3 upgrade: migrate `:wear` module to `androidx.wear.compose:compose-material3`, update UI cards, chips, typography, and responsive layouts.
 - [x] In-App GitHub Release Update Checker (`UpdateChecker` in `:app/updates`):
-  - Settings "Check for updates" + periodic WorkManager background check against GitHub Releases API (`/repos/angsuman/recipe-catcher/releases/latest`).
+  - Settings "Check for updates" + periodic WorkManager background check against GitHub Releases API (`/repos/inthevortex/recipe-catcher/releases/latest`).
   - Dialog showing release notes, version tag, and "Download & Install" (downloads APK to cache, invokes package installer via `FileProvider`).
   - Wearable Data Layer notification: sends `/update_available` message to watch companion.
 - [x] Cooked food and leftovers: `cooked_food_item` table (schema v2 via `MIGRATION_1_2`, with a migration test), a Cooked Food tab in Lists with portion +/- controls, and cooked-food portions offered as leftovers in the week planner.

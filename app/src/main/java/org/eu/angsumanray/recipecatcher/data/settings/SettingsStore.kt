@@ -58,7 +58,7 @@ class SettingsStore @Inject constructor(
 
         const val DEFAULT_CHAT_MODEL_ID = "claude-haiku-5-5"
         const val CHAT_MODEL_HAIKU = "claude-haiku-5-5"
-        const val CHAT_MODEL_SONNET = "claude-3-5-sonnet"
+        const val CHAT_MODEL_SONNET = "claude-sonnet-5-5"
 
         private val KEY_WEEK_STARTS_ON = stringPreferencesKey("week_starts_on")
         private val KEY_PREP_ALERT_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("prep_alert_enabled")
@@ -186,8 +186,12 @@ class SettingsStore @Inject constructor(
 
     /** Model for chat and plan suggestions; anything other than the two offered models reads as Haiku. */
     val chatModelIdFlow: Flow<String> = context.settingsDataStore.data.map { prefs ->
-        prefs[KEY_CHAT_MODEL_ID]?.takeIf { it == CHAT_MODEL_HAIKU || it == CHAT_MODEL_SONNET }
-            ?: DEFAULT_CHAT_MODEL_ID
+        val raw = prefs[KEY_CHAT_MODEL_ID]
+        when (raw) {
+            CHAT_MODEL_SONNET, "claude-3-5-sonnet" -> CHAT_MODEL_SONNET
+            CHAT_MODEL_HAIKU -> CHAT_MODEL_HAIKU
+            else -> DEFAULT_CHAT_MODEL_ID
+        }
     }
 
     val includeWebDefaultFlow: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->

@@ -61,9 +61,9 @@ class SettingsStoreTest {
         // Defaults to claude-haiku-5-5
         assertEquals(SettingsStore.DEFAULT_CHAT_MODEL_ID, settingsStore.chatModelIdFlow.first())
 
-        // Set to Claude 3.5 Sonnet
+        // Set to Claude Sonnet
         settingsStore.setChatModelId(SettingsStore.CHAT_MODEL_SONNET)
-        assertEquals("claude-3-5-sonnet", settingsStore.chatModelIdFlow.first())
+        assertEquals("claude-sonnet-5-5", settingsStore.chatModelIdFlow.first())
         assertEquals("claude-haiku-5-5", settingsStore.modelIdFlow.first())
 
         // Revert back to Haiku

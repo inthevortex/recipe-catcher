@@ -197,6 +197,34 @@ The `:wear` module puts today's meals on your wrist:
 - **Tile** (`TodayTileService`) with interactive meal ticks.
 - **Complication** (`TodayComplicationService`) for watch faces.
 - **Two-way sync** with the phone over the Google Play Services Wearable Data Layer. Ticks made on the watch reach `:app`, and plan changes on the phone reach the watch.
+- **Wear OS Material 3:** Modernized with `androidx.wear.compose:compose-material3` components, typography, and responsive layouts.
+
+### Pantry reconciliation & leftovers ✅
+
+- **Interactive pantry update on cook:** When marking a recipe as cooked (from Recipe Viewer, Cooking mode, or Today), a reconciliation sheet matches ingredients against your pantry stock so you can update them (`In Stock`, `Running Low`, `Out of Stock`, `Don't Change`).
+- **Cooked food & leftover inventory:** Track homemade dishes, takeout, or family food with individual portion `+`/`−` controls.
+- **Leftover planner integration:** Scheduling a leftover in the week planner automatically decrements remaining portions in your cooked food inventory.
+- **AI meal suggestions:** Leftovers in stock are automatically considered when asking Claude for meal ideas or filling plan slots.
+
+### Grocery scanner with Claude vision ✅
+
+- Scan printed store receipts, grocery app screenshots (Zepto, Blinkit, Instacart, Walmart), or grocery bags using Claude Haiku 5.5 multimodal vision.
+- An editable review dialog lets you verify item names, customize categories, and choose stock status before saving directly to pantry inventory.
+- Token consumption and cost are automatically tracked in `llm_usage` and visible in the AI spend panel.
+
+### Plain-text recipe sharing ✅
+
+- Share any recipe from the viewer formatted as clean, human-readable plain text (`text/plain`), scaled to your current portion count, ready for WhatsApp, SMS, or email.
+
+### Dual model selector ✅
+
+- Extraction tasks (links, photos, YouTube transcripts) stay pinned to Claude Haiku 5.5 for high speed and minimal cost.
+- Settings and Chat let you select between **Claude Haiku 5.5** (default) and **Claude Sonnet 5.5** for deeper culinary reasoning, complex substitutions, and nuanced meal planning.
+
+### In-app updates & storage cleanup ✅
+
+- **Update checker:** Queries GitHub Releases for new APKs (`app-release.apk` and `wear-release.apk`), displays changelogs, installs updates via `FileProvider`, and notifies the watch companion over the Wearable Data Layer (`/update_available`).
+- **Storage cleaner:** Scans `filesDir/images/` against database references (recipe covers and cook logs), deleting orphaned images to reclaim disk space.
 
 ### Privacy and security
 
@@ -291,7 +319,7 @@ Planner (`PortionLedger`, `GroceryBuilder`, `ReminderPlanner`) and backup-format
 | --- | --- |
 | UI | Jetpack Compose + Material 3, Navigation Compose. **Material You dynamic colour**, dark theme by default (Dark / Light / Follow system). |
 | DI | Hilt (`@AndroidEntryPoint`, `@HiltViewModel`, Hilt-injected workers) |
-| Persistence | Room + KSP, schema v1 with all 14 tables plus `recipe_fts`, `exportSchema = true` (schemas in `app/schemas/`) |
+| Persistence | Room + KSP, schema v2 (with `MIGRATION_1_2`) with all 15 tables plus `recipe_fts`, `exportSchema = true` (schemas in `app/schemas/`) |
 | Background | WorkManager `CoroutineWorker`s for capture, bulk import (`ImportWorker`) and image cleanup |
 | Settings & secrets | DataStore Preferences; AES-GCM in AndroidKeyStore for the API key |
 | Networking | Ktor client with the OkHttp engine, injected into `:core` as `HttpFetcher` |
@@ -395,6 +423,7 @@ erDiagram
 | Planner | `plan_slot` | Per-date meal slots with optional time |
 | | `plan_entry` | Cook / prep / leftover entries; `recipe_id` and `from_entry_id` use `ON DELETE SET NULL` |
 | Lists | `inventory_item` | In stock / low / out by `base_name` |
+| | `cooked_food_item` | Cooked food and leftovers with portion counts and cooked date |
 | | `grocery_item` | Grocery lines from plan, inventory or manual entry |
 | Chat | `chat_session`, `chat_message` | Chat history with stored suggestion cards |
 
@@ -526,10 +555,11 @@ Every wave ends with a tagged, signed release that installs over the previous on
 | **5** | Chat, Find with AI, Suggest | Recipe chat over your library with optional web search and citations, Find with AI on the edit form, `PlanSuggester` for empty plan slots | ✅ Done |
 | **6** | Bulk import, Wear OS | Instagram saves bulk import with collections and rate-limited background processing, top-comment fallback, `:wear` app with Today list, tile and complication | ✅ Done |
 | **7** | Media | Recipes from photos and screenshots via Haiku 5.5 vision, Instagram carousel slides, YouTube caption transcripts (no speech-to-text) | ✅ Done |
+| **8** | Polish, pantry & companion | Interactive pantry reconciliation, cooked food and leftovers inventory, grocery bill/photo scanner, plain text sharing, dual model selection (Haiku 5.5 + Sonnet 5.5), storage cleanup, Wear OS Material 3, in-app updates | ✅ Done |
 
 ```mermaid
 flowchart LR
-  W0["0 · Foundation"]:::done --> W1["1 · Instagram"]:::done --> W2["2 · Library & cooking"]:::done --> W3["3 · Web, YouTube, backup"]:::done --> W4["4 · Planner & widget"]:::done --> W5["5 · Chat & AI"]:::done --> W6["6 · Import & Wear OS"]:::done --> W7["7 · Media"]:::done
+  W0["0 · Foundation"]:::done --> W1["1 · Instagram"]:::done --> W2["2 · Library & cooking"]:::done --> W3["3 · Web, YouTube, backup"]:::done --> W4["4 · Planner & widget"]:::done --> W5["5 · Chat & AI"]:::done --> W6["6 · Import & Wear OS"]:::done --> W7["7 · Media"]:::done --> W8["8 · Polish & pantry"]:::done
   classDef done fill:#2e7d32,color:#fff,stroke:#1b5e20
   classDef wip fill:#f9a825,color:#000,stroke:#f57f17
 ```

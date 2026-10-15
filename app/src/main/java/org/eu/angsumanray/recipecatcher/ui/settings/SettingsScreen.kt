@@ -515,7 +515,7 @@ fun SettingsScreen(
 
                     var modelExpanded by remember { mutableStateOf(false) }
                     val currentChatModelLabel = when (chatModelId) {
-                        SettingsStore.CHAT_MODEL_SONNET -> "Claude 3.5 Sonnet"
+                        SettingsStore.CHAT_MODEL_SONNET -> "Claude Sonnet 5.5"
                         else -> "Claude Haiku 5.5"
                     }
 
@@ -545,7 +545,7 @@ fun SettingsScreen(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Claude 3.5 Sonnet") },
+                                text = { Text("Claude Sonnet 5.5") },
                                 onClick = {
                                     viewModel.setChatModelId(SettingsStore.CHAT_MODEL_SONNET)
                                     modelExpanded = false

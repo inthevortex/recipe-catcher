@@ -165,7 +165,7 @@ Preferences are stored in Jetpack DataStore (and AndroidKeyStore for secrets):
 | --- | --- | --- | --- |
 | `api_key` | Encrypted String | `""` | Anthropic API key; AES-GCM encrypted via AndroidKeyStore, ciphertext in DataStore |
 | `model_id` | String | `claude-haiku-5-5` | Model ID for recipe extraction (captions, websites, transcripts, vision) |
-| `chat_model_id` | String | `claude-haiku-5-5` | Model ID for Recipe Chat and Plan Suggester (allows selecting `claude-3-5-sonnet`) |
+| `chat_model_id` | String | `claude-haiku-5-5` | Model ID for Recipe Chat and Plan Suggester (allows selecting `claude-sonnet-5-5`) |
 | `include_web_by_default` | Boolean | `false` | Default state for "Include web" search chip in chat |
 | `max_web_searches` | Int | `3` | Max web searches per chat/find message |
 | `allow_new_tags` | Boolean | `false` | Allow Claude to suggest non-canonical tags |
@@ -338,10 +338,10 @@ Multiple image blocks (e.g. carousel slides 2–5 or multi-page cookbook photos)
   - Text captures: ~2,000 input tokens + 800 output tokens ≈ US$0.0006 per recipe.
   - Multimodal vision captures: Claude vision token calculation scales with resolution; an image downscaled to max 1,568 px long edge consumes ~1,600 input tokens. At Haiku 5.5 pricing (US$0.80 / MTok input), each image costs ~US$0.0013. A 4-slide carousel costs ~US$0.0052.
 - **Recipe Chat and Plan Suggester (dual model selection in Settings):**
-  - Uses `chat_model_id` from Settings: defaults to `claude-haiku-5-5`, with an option to select `claude-3-5-sonnet` (`claude-3-5-sonnet-latest`).
+  - Uses `chat_model_id` from Settings: defaults to `claude-haiku-5-5`, with an option to select `claude-sonnet-5-5`.
   - **Trade-offs:**
     - `claude-haiku-5-5`: US$0.80 / MTok input, US$4.00 / MTok output. Fast (~1.5 s), low cost. A library chat message with a 300-recipe index (~20,000 tokens) costs ~US$0.002.
-    - `claude-3-5-sonnet`: US$3.00 / MTok input, US$15.00 / MTok output. Higher latency (~3–5 s), but provides superior culinary reasoning: nuanced flavor balance, sophisticated ingredient substitutions, multi-day pantry leftover sequencing, and deep understanding of complex dietary restrictions. A 20k-token library chat message costs ~US$0.06 on Sonnet 3.5.
+    - `claude-sonnet-5-5`: US$3.00 / MTok input, US$15.00 / MTok output. Higher latency (~3–5 s), but provides superior culinary reasoning: nuanced flavor balance, sophisticated ingredient substitutions, multi-day pantry leftover sequencing, and deep understanding of complex dietary restrictions. A 20k-token library chat message costs ~US$0.06 on Sonnet.
   - Isolating the model choice to Chat and Plan Suggester ensures daily recipe captures never incur Sonnet pricing, giving the user control over when to spend on premium intelligence.
 
 **Response schema** (every field required and none nullable; see Schema limits below)
@@ -536,7 +536,7 @@ recipes-20260923-2130.zip
 
 Day-to-day development runs from Android Studio over wireless debugging; releases are built and signed by GitHub Actions and can be updated either in-app via `UpdateChecker` or installed by hand from GitHub Releases.
 
-- **Repo:** a private GitHub repository (`angsuman/recipe-catcher`).
+- **Repo:** a private GitHub repository (`inthevortex/recipe-catcher`).
 - **Signing key:** generate one release keystore at the start. Store it base64-encoded as an Actions secret with its passwords, and keep an offline copy in a password manager. Android only installs updates signed with the same key, so losing it means uninstalling and restoring from a backup.
 - **Release workflow:** pushing a tag like `v1.2.3` runs the unit tests, `:app:assembleRelease` (R8 on) and `:wear:assembleRelease`, signs both APKs (`app-release.apk`, `wear-release.apk`), and attaches them to a GitHub Release. `versionName` comes from the tag and `versionCode` from the workflow run number.
 - **CI on every push:** unit tests, plus the check that `:core` has no Android dependencies (`verifyCoreIsolation`).
@@ -546,7 +546,7 @@ Day-to-day development runs from Android Studio over wireless debugging; release
 **In-app update checker (`UpdateChecker` and `ApkInstaller` in `:app/updates`)**
 
 - **GitHub Releases API client:**
-  - Queries `GET https://api.github.com/repos/angsuman/recipe-catcher/releases/latest` with `Accept: application/vnd.github.v3+json` and `User-Agent: RecipeCatcher-Android`.
+  - Queries `GET https://api.github.com/repos/inthevortex/recipe-catcher/releases/latest` with `Accept: application/vnd.github.v3+json` and `User-Agent: RecipeCatcher-Android`.
   - Parses JSON fields: `tag_name` (e.g. `v1.2.0`), `name`, `body` (markdown release notes), and the `assets` list.
   - Strips leading `v` and compares the release tag against `BuildConfig.VERSION_NAME` using semantic version parsing (`major.minor.patch`).
   - Matches assets by filename pattern: `app-release.apk` (phone) and `wear-release.apk` (watch).

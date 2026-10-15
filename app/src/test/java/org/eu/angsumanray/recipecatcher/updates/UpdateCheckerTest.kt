@@ -80,11 +80,11 @@ class UpdateCheckerTest {
         assertEquals("1.2.0 - Polish, Pantry & Companion Enhancements", result.releaseName)
         assertTrue(result.releaseNotes.contains("Dual model selector"))
         assertEquals(
-            "https://github.com/angsuman/recipe-catcher/releases/download/v1.2.0/app-release.apk",
+            "https://github.com/inthevortex/recipe-catcher/releases/download/v1.2.0/app-release.apk",
             result.appApkUrl
         )
         assertEquals(
-            "https://github.com/angsuman/recipe-catcher/releases/download/v1.2.0/wear-release.apk",
+            "https://github.com/inthevortex/recipe-catcher/releases/download/v1.2.0/wear-release.apk",
             result.wearApkUrl
         )
 

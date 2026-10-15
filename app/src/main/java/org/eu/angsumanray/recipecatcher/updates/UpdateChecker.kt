@@ -116,7 +116,7 @@ class UpdateChecker @Inject constructor(
     }
 
     companion object {
-        const val LATEST_RELEASE_URL = "https://api.github.com/repos/angsuman/recipe-catcher/releases/latest"
+        const val LATEST_RELEASE_URL = "https://api.github.com/repos/inthevortex/recipe-catcher/releases/latest"
         const val APP_APK_NAME = "app-release.apk"
         const val WEAR_APK_NAME = "wear-release.apk"
         private const val TAG = "UpdateChecker"
