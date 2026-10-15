@@ -57,13 +57,14 @@ object InstagramComments {
         return trimmed.length >= MIN_COMMENT_LENGTH && trimmed.any { it.isWhitespace() }
     }
 
-    /** All comments in [responseJson], top-level comments first, then any preview replies. */
+    /** All comments in [responseJson], top-level comments first, then their replies. */
     fun parse(responseJson: String): List<Comment> = parseRoot(responseJson)?.let(::comments).orEmpty()
 
     private fun comments(root: JsonObject): List<Comment> {
         val topLevel = (root["comments"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
-        val replies = topLevel.flatMap { (it["preview_child_comments"] as? JsonArray).orEmpty() }
-            .mapNotNull { it as? JsonObject }
+        val replies = topLevel.flatMap {
+            (it["child_comments"] as? JsonArray).orEmpty() + (it["preview_child_comments"] as? JsonArray).orEmpty()
+        }.mapNotNull { it as? JsonObject }
         return (topLevel + replies).mapNotNull(::toComment)
     }
 

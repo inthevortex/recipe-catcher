@@ -63,9 +63,15 @@ class InstagramCommentReader(
             when (state?.string("state")) {
                 "done" -> {
                     apiPending = false
-                    val picked = state.string("body")?.let {
-                        InstagramComments.pickRecipeComment(it, targetCommentId, knownCaption)
-                    }
+                    val body = state.string("body").orEmpty()
+                    val comments = InstagramComments.parse(body)
+                    Log.d(
+                        TAG,
+                        "Comments endpoint: ${comments.size} comments, target " +
+                            (if (targetCommentId == null) "none" else if (comments.any { it.id == targetCommentId }) "found" else "missing") +
+                            " [${state.string("notes").orEmpty()}]"
+                    )
+                    val picked = InstagramComments.pickRecipeComment(body, targetCommentId, knownCaption)
                     if (picked != null) {
                         Log.d(TAG, "Comment read from comments endpoint")
                         finish(picked)
@@ -102,11 +108,12 @@ class InstagramCommentReader(
                 emptyList()
             }
             InstagramComments.mostRecipeLike(texts)?.let { best ->
-                if (InstagramComments.recipeScore(best) >= STRONG_RECIPE_SCORE) {
+                val score = InstagramComments.recipeScore(best)
+                if (score >= STRONG_RECIPE_SCORE) {
                     finish(best)
                     return@evaluateJavascript
                 }
-                bestDomText = best
+                if (score > 0) bestDomText = best
             }
             scheduleNext()
         }
@@ -115,7 +122,7 @@ class InstagramCommentReader(
     private fun scheduleNext() {
         if (done) return
         if (SystemClock.uptimeMillis() >= deadline) {
-            Log.d(TAG, if (bestDomText != null) "Deadline reached; using best page comment" else "Deadline reached without comment")
+            Log.d(TAG, if (bestDomText != null) "Deadline reached; using best page comment" else "Deadline reached without a recipe-like comment")
             finish(bestDomText)
         } else {
             handler.postDelayed({ poll() }, POLL_INTERVAL_MILLIS)

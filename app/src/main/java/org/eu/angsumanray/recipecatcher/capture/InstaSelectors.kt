@@ -49,9 +49,12 @@ object InstaSelectors {
     /** Mobile web App ID, used when the page doesn't expose its own. */
     private const val FALLBACK_IG_APP_ID = "1217981644879628"
 
-    /** Comment pages read when looking for a specific comment; one page is read otherwise. */
+    /** Comment pages read when looking for a specific comment, and otherwise. */
     private const val MAX_TARGET_PAGES = 5
     private const val MAX_UNTARGETED_PAGES = 2
+
+    /** Reply threads opened when the comment wanted isn't among the top-level comments. */
+    private const val MAX_REPLY_THREADS = 8
 
     val RECIPE_CUES = listOf(
         "recipe in comment",
@@ -84,8 +87,10 @@ object InstaSelectors {
 
     /**
      * Starts fetching the comments of [mediaId] from the page's own origin, with the session cookies.
-     * The outcome lands in `window.__rcApi` as `{state: 'pending'|'done'|'error', body?, error?}`,
-     * where `body` is the endpoint's JSON with every fetched page's comments merged.
+     * The outcome lands in `window.__rcApi` as `{state: 'pending'|'done'|'error', body?, error?, notes?}`,
+     * where `body` is the endpoint's JSON with every fetched page's comments merged and each opened
+     * reply thread under its parent's `child_comments`, and `notes` summarises the requests made.
+     * Integers too large for a JS number (comment and user ids) are kept as strings.
      */
     fun buildCommentsApiJs(mediaId: String, targetCommentId: String? = null): String {
         val targetJs = jsString(targetCommentId)
@@ -108,7 +113,15 @@ object InstaSelectors {
                     return m ? m[1] : '$FALLBACK_IG_APP_ID';
                 }
 
+                // Ids exceed 2^53, so JSON.parse would round them; quote long integers first.
+                function parseBody(text) {
+                    return JSON.parse(text.replace(/([:\[,]\s*)(-?\d{16,})(?=\s*[,\]}])/g, '$1"$2"'));
+                }
+
+                function isTarget(c) { return target && String(c.pk) === target; }
+
                 async function run() {
+                    var notes = [];
                     var headers = {
                         'Accept': 'application/json',
                         'X-IG-App-ID': appId(),
@@ -122,19 +135,39 @@ object InstaSelectors {
                                   (minId ? '&min_id=' + encodeURIComponent(minId) : '');
                         var res = await fetch(url, { credentials: 'include', headers: headers });
                         if (!res.ok) throw new Error('HTTP ' + res.status);
-                        var body = await res.json();
+                        var body = parseBody(await res.text());
                         var comments = body.comments || [];
+                        notes.push('page' + page + ':' + comments.length);
                         if (!merged) {
                             merged = body;
                             merged.comments = comments.slice();
                         } else {
                             merged.comments = merged.comments.concat(comments);
                         }
-                        if (target && comments.some(function(c) { return String(c.pk) === target; })) break;
+                        if (comments.some(isTarget)) break;
                         if (!body.has_more_comments || !body.next_min_id) break;
                         minId = body.next_min_id;
                     }
-                    window.__rcApi = { state: 'done', body: JSON.stringify(merged) };
+
+                    // The recipe is often the author's reply to a "recipe?" comment.
+                    if (!merged.comments.some(isTarget)) {
+                        var parents = merged.comments.filter(function(c) { return (c.child_comment_count || 0) > 0; })
+                                                     .slice(0, $MAX_REPLY_THREADS);
+                        for (var t = 0; t < parents.length; t++) {
+                            try {
+                                var threadUrl = '/api/v1/media/' + mediaId + '/comments/' + parents[t].pk + '/child_comments/';
+                                var threadRes = await fetch(threadUrl, { credentials: 'include', headers: headers });
+                                notes.push('thread' + t + ':' + threadRes.status);
+                                if (!threadRes.ok) continue;
+                                var thread = parseBody(await threadRes.text());
+                                parents[t].child_comments = thread.child_comments || [];
+                                if (parents[t].child_comments.some(isTarget)) break;
+                            } catch (e) {
+                                notes.push('thread' + t + ':' + e);
+                            }
+                        }
+                    }
+                    window.__rcApi = { state: 'done', body: JSON.stringify(merged), notes: notes.join(' ') };
                 }
 
                 run().catch(function(e) {

@@ -98,4 +98,13 @@ class InstagramCommentsTest {
         assertEquals("Looks lovely, saving this one", InstagramComments.mostRecipeLike(listOf("Looks lovely, saving this one", "Another nice comment here")))
         assertNull(InstagramComments.mostRecipeLike(emptyList()))
     }
+
+    @Test
+    fun `pickRecipeComment finds a targeted reply inside an opened thread`() {
+        val reply = comment("17954359997998162", recipe, userPk = "111", username = "chef")
+        val json = response(
+            comment("20", "Recipe please, this looks so good", extra = """, "child_comment_count":1, "child_comments":[$reply]""")
+        )
+        assertEquals(recipe, InstagramComments.pickRecipeComment(json, "17954359997998162"))
+    }
 }
