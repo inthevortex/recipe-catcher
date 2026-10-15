@@ -40,6 +40,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -72,13 +73,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import org.eu.angsumanray.recipecatcher.core.llm.LibraryEditProposal
+import org.eu.angsumanray.recipecatcher.core.llm.RecipeEdit
 import org.eu.angsumanray.recipecatcher.core.llm.RecipeSuggestion
 import org.eu.angsumanray.recipecatcher.core.llm.WebRecipeSuggestion
 import org.eu.angsumanray.recipecatcher.core.model.ChatMessage
 import org.eu.angsumanray.recipecatcher.data.settings.SettingsStore
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -181,6 +184,7 @@ fun ChatScreen(
                                 viewModel = viewModel,
                                 recipeTitles = state.recipeTitles,
                                 savingUrls = state.savingUrls,
+                                editBusy = message.id in state.editBusyMessageIds,
                                 onNavigateToViewer = onNavigateToViewer,
                                 onNavigateToReview = onNavigateToReview
                             )
@@ -195,7 +199,8 @@ fun ChatScreen(
                 "Quick 20-min dinner",
                 "Something with paneer",
                 "Use up my ingredients",
-                "Healthy high-protein meal"
+                "Healthy high-protein meal",
+                "Tag my air fryer recipes"
             )
             Row(
                 modifier = Modifier
@@ -347,7 +352,7 @@ private fun EmptyChatGreeting(onPromptSelected: (String) -> Unit) {
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "Ask for recipe ideas from your library, suggest variations, or search the web for new dishes.",
+            text = "Ask for recipe ideas from your library, suggest variations, search the web for new dishes, or ask to update tags, allergens and diet across your recipes.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp)
@@ -361,6 +366,7 @@ private fun ChatMessageItem(
     viewModel: ChatViewModel,
     recipeTitles: Map<Long, String>,
     savingUrls: Set<String>,
+    editBusy: Boolean,
     onNavigateToViewer: (Long) -> Unit,
     onNavigateToReview: (Long) -> Unit
 ) {
@@ -463,6 +469,19 @@ private fun ChatMessageItem(
                             }
                         }
 
+                        planResult.edits?.let { proposal ->
+                            Spacer(modifier = Modifier.height(10.dp))
+                            LibraryEditCard(
+                                proposal = proposal,
+                                recipeTitles = recipeTitles,
+                                busy = editBusy,
+                                onApply = { skipped -> viewModel.applyEdits(message.id, skipped) },
+                                onUndo = { viewModel.undoEdits(message.id) },
+                                onDismiss = { viewModel.dismissEdits(message.id) },
+                                onOpenRecipe = onNavigateToViewer
+                            )
+                        }
+
                         if (planResult.webNote.isNotBlank()) {
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
@@ -509,6 +528,151 @@ private fun ChatMessageItem(
                 }
             }
         }
+    }
+}
+
+/** Library changes proposed by chat, for the user to check, apply, dismiss or undo. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LibraryEditCard(
+    proposal: LibraryEditProposal,
+    recipeTitles: Map<Long, String>,
+    busy: Boolean,
+    onApply: (skipped: Set<Long>) -> Unit,
+    onUndo: () -> Unit,
+    onDismiss: () -> Unit,
+    onOpenRecipe: (Long) -> Unit
+) {
+    val isProposed = proposal.status == LibraryEditProposal.STATUS_PROPOSED
+    var skipped by remember(proposal.edits) { mutableStateOf(emptySet<Long>()) }
+    var showAll by remember { mutableStateOf(false) }
+    val visibleEdits = if (showAll) proposal.edits else proposal.edits.take(COLLAPSED_EDIT_ROWS)
+    val selectedCount = proposal.edits.count { it.recipeId !in skipped }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = "Proposed changes · ${proposal.edits.size} recipe${if (proposal.edits.size == 1) "" else "s"}",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
+            )
+            if (proposal.summary.isNotBlank()) {
+                Text(
+                    text = proposal.summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+
+            visibleEdits.forEach { edit ->
+                val title = recipeTitles[edit.recipeId]
+                Row(verticalAlignment = Alignment.Top, modifier = Modifier.fillMaxWidth()) {
+                    if (isProposed) {
+                        Checkbox(
+                            checked = edit.recipeId !in skipped,
+                            onCheckedChange = { checked ->
+                                skipped = if (checked) skipped - edit.recipeId else skipped + edit.recipeId
+                            },
+                            enabled = !busy
+                        )
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(vertical = if (isProposed) 10.dp else 4.dp)
+                    ) {
+                        Text(
+                            text = title ?: "Recipe no longer in your library",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = if (title != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = if (title != null) Modifier.clickable { onOpenRecipe(edit.recipeId) } else Modifier
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            editLabels(edit).forEach { label ->
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier
+                                        .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(6.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        if (edit.reason.isNotBlank()) {
+                            Text(
+                                text = edit.reason,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+            if (proposal.edits.size > COLLAPSED_EDIT_ROWS) {
+                TextButton(onClick = { showAll = !showAll }) {
+                    Text(if (showAll) "Show fewer" else "Show all ${proposal.edits.size}")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+            when (proposal.status) {
+                LibraryEditProposal.STATUS_PROPOSED -> Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Button(onClick = { onApply(skipped) }, enabled = !busy && selectedCount > 0) {
+                        Text(if (busy) "Applying..." else "Apply to $selectedCount")
+                    }
+                    TextButton(onClick = onDismiss, enabled = !busy) { Text("Dismiss") }
+                }
+                LibraryEditProposal.STATUS_APPLIED -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "Applied to ${proposal.applied.size} recipe${if (proposal.applied.size == 1) "" else "s"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onUndo, enabled = !busy) { Text(if (busy) "Undoing..." else "Undo") }
+                }
+                else -> Text(
+                    text = if (proposal.status == LibraryEditProposal.STATUS_UNDONE) "Undone" else "Dismissed",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontStyle = FontStyle.Italic,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+private const val COLLAPSED_EDIT_ROWS = 8
+
+/** Short labels for each change in [edit], e.g. "+ dairy (contains)" or "Diet → vegetarian". */
+private fun editLabels(edit: RecipeEdit): List<String> {
+    fun kindSuffix(kind: String) = when (kind) {
+        LibraryEditProposal.KIND_CONTAINS -> " (contains)"
+        LibraryEditProposal.KIND_EQUIPMENT -> " (equipment)"
+        LibraryEditProposal.KIND_CONSUMABLE -> " (consumable)"
+        else -> ""
+    }
+    return buildList {
+        edit.add.forEach { add("+ ${it.name}${kindSuffix(it.kind)}") }
+        edit.remove.forEach { add("− ${it.name}${kindSuffix(it.kind)}") }
+        edit.dietType?.let { add("Diet → $it") }
+        edit.complexity?.let { add("Complexity → $it") }
+        edit.spiceLevel?.let { add("Spice → $it") }
+        edit.makeAhead?.let { add(if (it) "Make-ahead" else "Not make-ahead") }
+        edit.freezerFriendly?.let { add(if (it) "Freezer-friendly" else "Not freezer-friendly") }
     }
 }
 

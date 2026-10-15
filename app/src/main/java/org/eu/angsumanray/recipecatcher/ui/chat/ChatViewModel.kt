@@ -30,7 +30,9 @@ data class ChatUiState(
     val savingUrls: Set<String> = emptySet(),
     val errorMessage: String? = null,
     /** Titles of saved recipes; a cited ID missing here is no longer in the library. */
-    val recipeTitles: Map<Long, String> = emptyMap()
+    val recipeTitles: Map<Long, String> = emptyMap(),
+    /** Messages whose proposed library changes are being applied or undone. */
+    val editBusyMessageIds: Set<Long> = emptySet()
 )
 
 @HiltViewModel
@@ -139,6 +141,34 @@ class ChatViewModel @Inject constructor(
                 )
             }
             if (recipeId != null) onRecipeSaved(recipeId)
+        }
+    }
+
+    /** Applies the changes proposed in [messageId], leaving out [skippedRecipeIds]. */
+    fun applyEdits(messageId: Long, skippedRecipeIds: Set<Long>) =
+        runEditAction(messageId) { chatRepository.applyEdits(messageId, skippedRecipeIds) }
+
+    fun undoEdits(messageId: Long) = runEditAction(messageId) { chatRepository.undoEdits(messageId) }
+
+    fun dismissEdits(messageId: Long) = runEditAction(messageId) { chatRepository.dismissEdits(messageId) }
+
+    private fun runEditAction(messageId: Long, action: suspend () -> Result<Int>) {
+        if (messageId in _uiState.value.editBusyMessageIds) return
+        _uiState.update { it.copy(editBusyMessageIds = it.editBusyMessageIds + messageId) }
+        viewModelScope.launch {
+            val result = try {
+                action()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            _uiState.update {
+                it.copy(
+                    editBusyMessageIds = it.editBusyMessageIds - messageId,
+                    errorMessage = result.exceptionOrNull()?.let { e -> e.message ?: "Couldn't update the library" } ?: it.errorMessage
+                )
+            }
         }
     }
 

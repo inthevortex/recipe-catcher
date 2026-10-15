@@ -73,6 +73,12 @@ interface RecipeTagDao {
     @Query("DELETE FROM recipe_tag WHERE tag_id = :tagId")
     suspend fun deleteByTagId(tagId: Long)
 
+    @Query("DELETE FROM recipe_tag WHERE recipe_id = :recipeId AND tag_id = :tagId")
+    suspend fun delete(recipeId: Long, tagId: Long)
+
+    @Query("SELECT * FROM recipe_tag WHERE recipe_id = :recipeId")
+    suspend fun getLinksForRecipe(recipeId: Long): List<RecipeTagEntity>
+
     @Query("SELECT tag_id FROM recipe_tag WHERE recipe_id = :recipeId AND source = :source")
     suspend fun getTagIdsForRecipe(recipeId: Long, source: String): List<Long>
 

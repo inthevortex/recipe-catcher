@@ -421,4 +421,65 @@ class ChatPlannerTest {
         assertEquals("[1, 2]", AnthropicSupport.extractJsonBlock("Here you go [see below]:\n```json\n[1, 2]\n```\nEnjoy"))
         assertEquals("{\"a\": 1}", AnthropicSupport.extractJsonBlock("prefix {\"a\": 1} suffix"))
     }
+
+    private fun toolUseResponse(id: String, name: String, input: String, text: String = "") = """
+        {"id":"msg_$id","type":"message","role":"assistant","model":"claude-sonnet-5-5","stop_reason":"tool_use",
+         "content":[{"type":"thinking","thinking":"Checking ingredients","signature":"sig_$id"},${if (text.isNotEmpty()) "{\"type\":\"text\",\"text\":\"$text\"}," else ""}{"type":"tool_use","id":"$id","name":"$name","input":$input}],
+         "usage":{"input_tokens":100,"output_tokens":20}}
+    """.trimIndent()
+
+    @Test
+    fun testEditToolsLookUpIngredientsThenProposeValidatedChanges() = runBlocking {
+        val bodies = mutableListOf<String>()
+        val responses = ArrayDeque(
+            listOf(
+                toolUseResponse("tu_1", ChatPlanner.TOOL_GET_INGREDIENTS, """{"recipe_ids":[1,2,99]}"""),
+                toolUseResponse(
+                    "tu_2",
+                    ChatPlanner.TOOL_PROPOSE_CHANGES,
+                    """{"summary":"Mark dairy recipes","edits":[
+                        {"recipe_id":1,"add":[{"kind":"diet","name":"dairy"},{"kind":"allergens","name":" lactose "}],"diet_type":"Vegetarian","reason":"has paneer"},
+                        {"recipe_id":2,"add":[{"kind":"tag","name":"rich"}],"remove":[{"kind":"tag","name":"rich"}]},
+                        {"recipe_id":99,"add":[{"kind":"diet","name":"dairy"}]},
+                        {"recipe_id":1,"add":[{"kind":"tag","name":"duplicate"}]}
+                    ]}"""
+                )
+            )
+        )
+        var lookedUp: List<Long> = emptyList()
+        val planner = ChatPlanner(createClient { _, body -> bodies += body; HttpStatusCode.OK to responses.removeFirst() }, { "key" })
+        val tools = LibraryEditTools(tagNames = mapOf("diet" to listOf("dairy", "gluten"))) { ids ->
+            lookedUp = ids
+            mapOf(1L to listOf("paneer", "cream"), 2L to listOf("chicken", "rice"))
+        }
+
+        val result = planner.planChat("mark recipes with dairy", libraryRecipes = sampleLibrary, editTools = tools).getOrThrow()
+
+        assertEquals(listOf(1L, 2L), lookedUp)
+        val second = Json.parseToJsonElement(bodies[1]).jsonObject["messages"]!!.jsonArray
+        val toolResult = second.last().jsonObject["content"]!!.jsonArray.first().jsonObject
+        assertEquals("tu_1", toolResult["tool_use_id"]!!.jsonPrimitive.content)
+        assertTrue(toolResult["content"]!!.jsonPrimitive.content.contains("1: paneer; cream"))
+        // The assistant turn is echoed back verbatim, thinking signature included.
+        val echoed = second[second.size - 2].toString()
+        assertTrue(echoed.contains("\"signature\":\"sig_tu_1\""))
+        assertFalse(echoed.contains("null"))
+        assertTrue(Json.parseToJsonElement(bodies[0]).jsonObject["system"].toString().contains("diet: dairy, gluten"))
+
+        val edits = result.edits!!
+        assertEquals("Mark dairy recipes", edits.summary)
+        assertEquals(listOf(1L), edits.edits.map { it.recipeId })
+        assertEquals(listOf(TagRef("diet", "dairy"), TagRef("diet", "lactose")), edits.edits.single().add)
+        assertEquals("vegetarian", edits.edits.single().dietType)
+        assertEquals(LibraryEditProposal.STATUS_PROPOSED, edits.status)
+        assertEquals(200, result.usage.inputTokens)
+    }
+
+    @Test
+    fun testLibraryCallWithoutEditToolsSendsNoTools() = runBlocking {
+        var sentBody = ""
+        val planner = ChatPlanner(createClient { _, body -> sentBody = body; HttpStatusCode.OK to libraryJson }, { "key" })
+        planner.planChat("dinner ideas", libraryRecipes = sampleLibrary).getOrThrow()
+        assertNull(Json.parseToJsonElement(sentBody).jsonObject["tools"])
+    }
 }

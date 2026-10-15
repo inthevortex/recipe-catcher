@@ -12,7 +12,10 @@ import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.eu.angsumanray.recipecatcher.capture.CaptureWorker
+import org.eu.angsumanray.recipecatcher.core.llm.ChatPlanResult
 import org.eu.angsumanray.recipecatcher.core.llm.ChatPlanner
+import org.eu.angsumanray.recipecatcher.core.llm.LibraryEditProposal
+import org.eu.angsumanray.recipecatcher.core.llm.LibraryEditTools
 import org.eu.angsumanray.recipecatcher.core.llm.LlmUsage
 import org.eu.angsumanray.recipecatcher.core.llm.WebPicks
 import org.eu.angsumanray.recipecatcher.core.llm.llmErrorMessage
@@ -33,7 +36,8 @@ class ChatRepository @Inject constructor(
     private val chatPlanner: ChatPlanner,
     private val settingsStore: SettingsStore,
     private val recipeRepository: RecipeRepository,
-    private val recipeIndexBuilder: RecipeIndexBuilder
+    private val recipeIndexBuilder: RecipeIndexBuilder,
+    private val libraryEditor: LibraryEditor
 ) {
     private val chatDao = database.chatDao()
     private val llmUsageDao = database.llmUsageDao()
@@ -104,7 +108,8 @@ class ChatRepository @Inject constructor(
                 history = history,
                 libraryRecipes = index,
                 ftsHits = ftsHits,
-                today = LocalDate.now().toString()
+                today = LocalDate.now().toString(),
+                editTools = editTools()
             )
         } catch (e: CancellationException) {
             throw e
@@ -156,6 +161,46 @@ class ChatRepository @Inject constructor(
         Result.success(
             assistantEntity.copy(id = assistantMsgId, suggestionsJson = json.encodeToString(finalPlan)).toModel()
         )
+    }
+
+    /** Lets chat read ingredients and see existing tag names when proposing library changes. */
+    private suspend fun editTools(): LibraryEditTools {
+        val tagNames = database.tagDao().getAll()
+            .groupBy { it.kind }
+            .mapValues { (_, tags) -> tags.map { it.name } }
+        val ingredientDao = database.ingredientDao()
+        return LibraryEditTools(tagNames) { ids ->
+            ids.associateWith { id -> ingredientDao.getByRecipeId(id).map { it.name } }
+        }
+    }
+
+    /** Applies the changes proposed in message [messageId], except for [skippedRecipeIds]. */
+    suspend fun applyEdits(messageId: Long, skippedRecipeIds: Set<Long>): Result<Int> =
+        updateProposal(messageId, LibraryEditProposal.STATUS_PROPOSED) { libraryEditor.apply(it, skippedRecipeIds) }
+            .map { it.applied.size }
+
+    /** Reverts the changes applied from message [messageId]. */
+    suspend fun undoEdits(messageId: Long): Result<Int> =
+        updateProposal(messageId, LibraryEditProposal.STATUS_APPLIED) { libraryEditor.undo(it) }
+            .map { 0 }
+
+    suspend fun dismissEdits(messageId: Long): Result<Int> =
+        updateProposal(messageId, LibraryEditProposal.STATUS_PROPOSED) { it.copy(status = LibraryEditProposal.STATUS_DISMISSED) }
+            .map { 0 }
+
+    /** Runs [change] on the proposal in [messageId] when it is in [expectedStatus], and stores the result. */
+    private suspend fun updateProposal(
+        messageId: Long,
+        expectedStatus: String,
+        change: suspend (LibraryEditProposal) -> LibraryEditProposal
+    ): Result<LibraryEditProposal> {
+        val message = chatDao.getMessage(messageId) ?: return Result.failure(IllegalStateException("Message not found"))
+        val plan = message.suggestionsJson?.let { runCatching { json.decodeFromString<ChatPlanResult>(it) }.getOrNull() }
+        val proposal = plan?.edits ?: return Result.failure(IllegalStateException("No changes in this message"))
+        if (proposal.status != expectedStatus) return Result.failure(IllegalStateException("Changes are already ${proposal.status}"))
+        val updated = change(proposal)
+        chatDao.updateSuggestions(messageId, json.encodeToString(plan.copy(edits = updated)))
+        return Result.success(updated)
     }
 
     suspend fun clearMessages(sessionId: Long) {

@@ -16,6 +16,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -100,7 +101,9 @@ data class ChatPlanResult(
     val webNote: String = "",
     /** Library call usage. */
     val usage: LlmUsage = LlmUsage(0, 0, 0),
-    val webUsage: LlmUsage? = null
+    val webUsage: LlmUsage? = null,
+    /** Library changes the user asked for, shown for review before anything is written. */
+    val edits: LibraryEditProposal? = null
 )
 
 /** Web picks plus the usage of the call that found them. */
@@ -128,6 +131,14 @@ class ChatPlanner(
         private const val MAX_PAUSE_CONTINUATIONS = 4
         private const val FALLBACK_RESULT_COUNT = 8
         private const val MAX_SEARCH_TERMS = 12
+        private const val MAX_TOOL_ROUNDS = 5
+        private const val MAX_INGREDIENT_LOOKUP = 60
+        private const val SUGGEST_MAX_TOKENS = 1500
+        /** A proposal touching most of a library needs room for a line per recipe. */
+        private const val EDIT_MAX_TOKENS = 8000
+
+        const val TOOL_GET_INGREDIENTS = "get_recipe_ingredients"
+        const val TOOL_PROPOSE_CHANGES = "propose_library_changes"
 
         private val VIDEO_HOSTS = listOf("youtube.com", "youtu.be", "vimeo.com", "tiktok.com", "instagram.com")
 
@@ -154,7 +165,7 @@ List missing ingredients for suggested recipes.
 If the user's request is too vague, ask ONE concise follow-up question.
 If the user asks a question about cooking techniques, ingredients, or variations, answer clearly and constructively in the reply.
 
-You MUST respond strictly with a valid JSON object adhering to this schema:
+Unless you are calling a tool, you MUST respond strictly with a valid JSON object adhering to this schema:
 {
   "reply": "Assistant message answering the user's question and introducing suggestions...",
   "suggestions": [
@@ -166,6 +177,14 @@ You MUST respond strictly with a valid JSON object adhering to this schema:
   ],
   "follow_up_question": ""
 }"""
+
+        const val LIBRARY_EDIT_PROMPT = """You can also change recipe data when the user asks, e.g. "tag every air fryer recipe as quick", "mark recipes with paneer as containing dairy", "set these to vegetarian".
+- Editable: tags (kind "tag"), allergens / contains (kind "diet"), equipment (kind "equipment"), consumables (kind "consumable"), diet_type (vegan, vegetarian, eggetarian, non-veg), complexity (easy, medium, hard), spice_level (mild, medium, hot), make_ahead and freezer_friendly.
+- Pick the matching recipes from the index. When that depends on ingredients beyond the index's main ingredients (allergens, a specific ingredient), call get_recipe_ingredients for the candidates first.
+- Reuse an existing tag name when one fits; a new name creates a new tag.
+- Then call propose_library_changes once, listing every recipe that needs a change with a short reason. Leave out recipes that already have it.
+- The user reviews the proposal and applies it; never say the changes are already made.
+For any other request, answer with the JSON above."""
 
         const val WEB_SYSTEM_PROMPT = """You are a culinary web search assistant.
 Find up to 3 candidate web recipes that best match the user's request.
@@ -198,10 +217,11 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
         includeWeb: Boolean = false,
         maxWebSearches: Int = 3,
         ftsHits: Map<Long, Int> = emptyMap(),
-        today: String? = null
+        today: String? = null,
+        editTools: LibraryEditTools? = null
     ): Result<ChatPlanResult> = coroutineScope {
         val web = if (includeWeb) async { searchWeb(userMessage, maxWebSearches) } else null
-        val library = planLibrary(userMessage, history, libraryRecipes, ftsHits, today)
+        val library = planLibrary(userMessage, history, libraryRecipes, ftsHits, today, editTools)
         if (library.isFailure) {
             web?.cancel()
             return@coroutineScope library
@@ -210,13 +230,17 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
         Result.success(if (web == null) plan else plan.withWeb(web.await()))
     }
 
-    /** The library call: suggestions validated against the index sent, capped at [MAX_SUGGESTIONS]. */
+    /**
+     * The library call: suggestions validated against the index sent, capped at [MAX_SUGGESTIONS].
+     * With [editTools], Claude may also read ingredients and propose library changes.
+     */
     suspend fun planLibrary(
         userMessage: String,
         history: List<ChatMessage> = emptyList(),
         libraryRecipes: List<RecipeIndexEntry>,
         ftsHits: Map<Long, Int> = emptyMap(),
-        today: String? = null
+        today: String? = null,
+        editTools: LibraryEditTools? = null
     ): Result<ChatPlanResult> {
         val apiKey = apiKeyProvider().trim()
         if (apiKey.isEmpty()) {
@@ -230,7 +254,7 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
             ?: turns.dropLast(1).lastOrNull { it.first == "user" }?.second
             ?: userMessage
         val recipes = prefilterRecipes(libraryRecipes, filterQuery, ftsHits)
-        return callLibraryLlm(apiKey, modelId, turns, recipes, today)
+        return callLibraryLlm(apiKey, modelId, turns, recipes, today, editTools)
     }
 
     /** The web call on its own, for chat. */
@@ -313,95 +337,250 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
         modelId: String,
         turns: List<Pair<String, String>>,
         recipes: List<RecipeIndexEntry>,
-        today: String?
+        today: String?,
+        editTools: LibraryEditTools?
     ): Result<ChatPlanResult> {
         val validIds = recipes.map { it.id }.toSet()
         val systemText = buildString {
             append(LIBRARY_SYSTEM_PROMPT)
+            if (editTools != null) {
+                append("\n\n")
+                append(LIBRARY_EDIT_PROMPT)
+            }
             if (today != null) append("\n\nToday is $today.")
+            if (editTools != null && editTools.tagNames.isNotEmpty()) {
+                append("\n\nExisting tags by kind:\n")
+                editTools.tagNames.forEach { (kind, names) -> appendLine("$kind: ${names.joinToString(", ")}") }
+            }
             append("\n\nRecipe Index (${recipes.size} recipes):\n")
             appendLine(RecipeIndexEntry.HEADER)
             recipes.forEach { appendLine(it.toIndexLine()) }
         }
 
-        val requestPayload = buildJsonObject {
-            put("model", modelId)
-            put("max_tokens", 1500)
-            putJsonArray("system") {
-                add(buildJsonObject {
-                    put("type", "text")
-                    put("text", systemText)
-                    // The index repeats on every message of a conversation.
-                    putJsonObject("cache_control") { put("type", "ephemeral") }
-                })
+        val messages = turns.map { (role, text) ->
+            buildJsonObject {
+                put("role", role)
+                put("content", text)
             }
-            putJsonArray("messages") {
-                for ((role, text) in turns) {
-                    add(buildJsonObject {
-                        put("role", role)
-                        put("content", text)
-                    })
-                }
-            }
-        }.toString()
+        }.toMutableList<JsonElement>()
+
+        var inputTokens = 0
+        var outputTokens = 0
+        var cacheReadTokens = 0
+        var responseModel: String? = null
+        fun usage() = LlmUsage(inputTokens, outputTokens, cacheReadTokens, model = responseModel ?: modelId)
 
         return try {
-            val response = httpClient.post(ClaudeExtractor.ANTHROPIC_MESSAGES_URL) {
-                contentType(ContentType.Application.Json)
-                header("x-api-key", apiKey)
-                header("anthropic-version", ClaudeExtractor.ANTHROPIC_VERSION)
-                setBody(requestPayload)
+            repeat(MAX_TOOL_ROUNDS) {
+                val requestPayload = buildJsonObject {
+                    put("model", modelId)
+                    put("max_tokens", if (editTools != null) EDIT_MAX_TOKENS else SUGGEST_MAX_TOKENS)
+                    if (editTools != null) put("tools", editToolDefinitions())
+                    putJsonArray("system") {
+                        add(buildJsonObject {
+                            put("type", "text")
+                            put("text", systemText)
+                            // The index repeats on every message of a conversation.
+                            putJsonObject("cache_control") { put("type", "ephemeral") }
+                        })
+                    }
+                    put("messages", JsonArray(messages))
+                }.toString()
+
+                val response = httpClient.post(ClaudeExtractor.ANTHROPIC_MESSAGES_URL) {
+                    contentType(ContentType.Application.Json)
+                    header("x-api-key", apiKey)
+                    header("anthropic-version", ClaudeExtractor.ANTHROPIC_VERSION)
+                    setBody(requestPayload)
+                }
+
+                val statusCode = response.status.value
+                val responseBody = response.bodyAsText()
+                if (statusCode !in 200..299) {
+                    return Result.failure(AnthropicSupport.httpError(statusCode, responseBody, modelId))
+                }
+
+                val anthropicResponse = json.decodeFromString<AnthropicMessageResponse>(responseBody)
+                inputTokens += anthropicResponse.usage?.inputTokens ?: 0
+                outputTokens += anthropicResponse.usage?.outputTokens ?: 0
+                cacheReadTokens += anthropicResponse.usage?.cacheReadInputTokens ?: 0
+                responseModel = anthropicResponse.model ?: responseModel
+
+                val toolUses = anthropicResponse.content.filter { it.type == "tool_use" }
+                if (editTools == null || toolUses.isEmpty()) {
+                    return parseLibraryReply(AnthropicSupport.responseText(anthropicResponse), validIds, usage())
+                }
+
+                toolUses.firstOrNull { it.name == TOOL_PROPOSE_CHANGES }?.let { proposeCall ->
+                    val raw = json.decodeFromJsonElement(RawEditProposal.serializer(), proposeCall.input ?: JsonObject(emptyMap()))
+                    val proposal = LibraryEditProposal.validated(raw.summary, raw.edits, validIds)
+                    val text = AnthropicSupport.responseText(anthropicResponse).trim()
+                    val reply = when {
+                        proposal.edits.isEmpty() -> text.ifEmpty { "No recipes need that change." }
+                        else -> text.ifEmpty { proposal.summary.ifEmpty { "Here are the changes I'd make." } }
+                    }
+                    return Result.success(
+                        ChatPlanResult(
+                            reply = reply,
+                            edits = proposal.takeIf { it.edits.isNotEmpty() },
+                            usage = usage()
+                        )
+                    )
+                }
+
+                // Echoed back verbatim: thinking blocks must keep every field, signature included.
+                val rawContent = json.parseToJsonElement(responseBody).jsonObject["content"] ?: JsonArray(emptyList())
+                messages += buildJsonObject {
+                    put("role", "assistant")
+                    put("content", rawContent)
+                }
+                val results = toolUses.map { runEditTool(it, editTools, validIds) }
+                messages += buildJsonObject {
+                    put("role", "user")
+                    put("content", JsonArray(results))
+                }
             }
-
-            val statusCode = response.status.value
-            val responseBody = response.bodyAsText()
-            if (statusCode !in 200..299) {
-                return Result.failure(AnthropicSupport.httpError(statusCode, responseBody, modelId))
-            }
-
-            val anthropicResponse = json.decodeFromString<AnthropicMessageResponse>(responseBody)
-            val textContent = AnthropicSupport.responseText(anthropicResponse)
-            if (textContent.isBlank()) {
-                return Result.failure(RuntimeException("No text content returned from Claude"))
-            }
-
-            val usage = LlmUsage(
-                inputTokens = anthropicResponse.usage?.inputTokens ?: 0,
-                outputTokens = anthropicResponse.usage?.outputTokens ?: 0,
-                cacheReadTokens = anthropicResponse.usage?.cacheReadInputTokens ?: 0,
-                model = anthropicResponse.model ?: modelId
-            )
-
-            // A plain-prose answer (no JSON at all) is still a usable reply.
-            if ('{' !in textContent) {
-                return Result.success(ChatPlanResult(reply = textContent.trim(), usage = usage))
-            }
-
-            val rawResult = json.decodeFromString<RawChatPlanResponse>(AnthropicSupport.extractJsonBlock(textContent))
-            val validatedSuggestions = rawResult.suggestions
-                .filter { it.recipeId in validIds }
-                .distinctBy { it.recipeId }
-                .take(MAX_SUGGESTIONS)
-                .map { s -> s.copy(reason = s.reason.trim(), missing = s.missing.map { it.trim() }.filter { it.isNotEmpty() }) }
-            var followUp = rawResult.followUpQuestion.trim()
-            val reply = rawResult.reply.trim().ifEmpty {
-                // A bare follow-up question becomes the reply rather than an empty bubble.
-                followUp.ifEmpty { DEFAULT_REPLY }.also { if (it == followUp) followUp = "" }
-            }
-
-            Result.success(
-                ChatPlanResult(
-                    reply = reply,
-                    suggestions = validatedSuggestions,
-                    followUpQuestion = followUp,
-                    usage = usage
-                )
-            )
+            Result.failure(RuntimeException("Claude didn't finish after $MAX_TOOL_ROUNDS tool calls"))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    private fun parseLibraryReply(textContent: String, validIds: Set<Long>, usage: LlmUsage): Result<ChatPlanResult> {
+        if (textContent.isBlank()) {
+            return Result.failure(RuntimeException("No text content returned from Claude"))
+        }
+        // A plain-prose answer (no JSON at all) is still a usable reply.
+        if ('{' !in textContent) {
+            return Result.success(ChatPlanResult(reply = textContent.trim(), usage = usage))
+        }
+
+        val rawResult = json.decodeFromString<RawChatPlanResponse>(AnthropicSupport.extractJsonBlock(textContent))
+        val validatedSuggestions = rawResult.suggestions
+            .filter { it.recipeId in validIds }
+            .distinctBy { it.recipeId }
+            .take(MAX_SUGGESTIONS)
+            .map { s -> s.copy(reason = s.reason.trim(), missing = s.missing.map { it.trim() }.filter { it.isNotEmpty() }) }
+        var followUp = rawResult.followUpQuestion.trim()
+        val reply = rawResult.reply.trim().ifEmpty {
+            // A bare follow-up question becomes the reply rather than an empty bubble.
+            followUp.ifEmpty { DEFAULT_REPLY }.also { if (it == followUp) followUp = "" }
+        }
+
+        return Result.success(
+            ChatPlanResult(
+                reply = reply,
+                suggestions = validatedSuggestions,
+                followUpQuestion = followUp,
+                usage = usage
+            )
+        )
+    }
+
+    /** Answers one read-only tool call with a `tool_result` block. */
+    private suspend fun runEditTool(
+        call: AnthropicContentBlock,
+        editTools: LibraryEditTools,
+        validIds: Set<Long>
+    ): JsonObject {
+        val (text, isError) = when (call.name) {
+            TOOL_GET_INGREDIENTS -> {
+                val ids = try {
+                    json.decodeFromJsonElement(RawIngredientLookup.serializer(), call.input ?: JsonObject(emptyMap())).recipeIds
+                } catch (e: Exception) {
+                    emptyList()
+                }.filter { it in validIds }.distinct().take(MAX_INGREDIENT_LOOKUP)
+                if (ids.isEmpty()) {
+                    "No known recipe_ids given." to true
+                } else {
+                    val found = editTools.ingredients(ids)
+                    ids.joinToString("\n") { id ->
+                        "$id: " + (found[id]?.joinToString("; ")?.ifEmpty { null } ?: "no ingredients stored")
+                    } to false
+                }
+            }
+            else -> "Unknown tool ${call.name}" to true
+        }
+        return buildJsonObject {
+            put("type", "tool_result")
+            put("tool_use_id", call.id.orEmpty())
+            put("content", text)
+            if (isError) put("is_error", true)
+        }
+    }
+
+    private fun editToolDefinitions(): JsonArray = buildJsonArray {
+        add(buildJsonObject {
+            put("name", TOOL_GET_INGREDIENTS)
+            put("description", "Full ingredient lists of recipes in the index, for deciding allergens, diet or ingredient-based tags. Up to $MAX_INGREDIENT_LOOKUP ids per call.")
+            putJsonObject("input_schema") {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("recipe_ids") {
+                        put("type", "array")
+                        putJsonObject("items") { put("type", "integer") }
+                    }
+                }
+                putJsonArray("required") { add(JsonPrimitive("recipe_ids")) }
+            }
+        })
+        add(buildJsonObject {
+            put("name", TOOL_PROPOSE_CHANGES)
+            put("description", "Propose changes to recipes for the user to review and apply. Call once with every recipe that needs a change.")
+            putJsonObject("input_schema") {
+                put("type", "object")
+                putJsonObject("properties") {
+                    putJsonObject("summary") {
+                        put("type", "string")
+                        put("description", "One sentence describing the change, e.g. 'Tag 12 air fryer recipes as quick'.")
+                    }
+                    putJsonObject("edits") {
+                        put("type", "array")
+                        putJsonObject("items") {
+                            put("type", "object")
+                            putJsonObject("properties") {
+                                putJsonObject("recipe_id") { put("type", "integer") }
+                                putJsonObject("add") { tagRefArray() }
+                                putJsonObject("remove") { tagRefArray() }
+                                putJsonObject("diet_type") { stringEnum(ClaudeExtractor.DIET_TYPE_VALUES) }
+                                putJsonObject("complexity") { stringEnum(ClaudeExtractor.COMPLEXITY_VALUES) }
+                                putJsonObject("spice_level") { stringEnum(ClaudeExtractor.SPICE_LEVEL_VALUES) }
+                                putJsonObject("make_ahead") { put("type", "boolean") }
+                                putJsonObject("freezer_friendly") { put("type", "boolean") }
+                                putJsonObject("reason") { put("type", "string") }
+                            }
+                            putJsonArray("required") { add(JsonPrimitive("recipe_id")) }
+                        }
+                    }
+                }
+                putJsonArray("required") {
+                    add(JsonPrimitive("summary"))
+                    add(JsonPrimitive("edits"))
+                }
+            }
+        })
+    }
+
+    private fun JsonObjectBuilder.tagRefArray() {
+        put("type", "array")
+        putJsonObject("items") {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("kind") { stringEnum(LibraryEditProposal.TAG_KINDS.toList()) }
+                putJsonObject("name") { put("type", "string") }
+            }
+            putJsonArray("required") {
+                add(JsonPrimitive("kind"))
+                add(JsonPrimitive("name"))
+            }
+        }
+    }
+
+    private fun JsonObjectBuilder.stringEnum(values: List<String>) {
+        put("type", "string")
+        putJsonArray("enum") { values.forEach { add(JsonPrimitive(it)) } }
     }
 
     private suspend fun callWebSearch(
@@ -658,6 +837,24 @@ Output ONLY a JSON array in a ```json ... ``` code fence with this schema:
         }
     }
 }
+
+/** What the edit tools need from the app: tag names to reuse, and ingredient lists on request. */
+class LibraryEditTools(
+    /** Existing tag names by kind ("tag", "diet", "equipment", "consumable"). */
+    val tagNames: Map<String, List<String>>,
+    val ingredients: suspend (List<Long>) -> Map<Long, List<String>>
+)
+
+@Serializable
+private data class RawEditProposal(
+    val summary: String = "",
+    val edits: List<RecipeEdit> = emptyList()
+)
+
+@Serializable
+private data class RawIngredientLookup(
+    @SerialName("recipe_ids") val recipeIds: List<Long> = emptyList()
+)
 
 @Serializable
 private data class RawChatPlanResponse(

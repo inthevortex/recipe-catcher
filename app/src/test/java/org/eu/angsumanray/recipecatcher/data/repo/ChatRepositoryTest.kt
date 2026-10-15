@@ -117,7 +117,8 @@ class ChatRepositoryTest {
             chatPlanner = chatPlanner,
             settingsStore = settingsStore,
             recipeRepository = recipeRepository,
-            recipeIndexBuilder = RecipeIndexBuilder(database)
+            recipeIndexBuilder = RecipeIndexBuilder(database),
+            libraryEditor = LibraryEditor(database)
         )
     }
 
@@ -213,7 +214,7 @@ class ChatRepositoryTest {
              ],
              "usage": {"input_tokens": 900, "output_tokens": 60, "server_tool_use": {"web_search_requests": 2}}}
         """.trimIndent()
-        responder = { body -> if (body.contains("\"tools\"")) HttpStatusCode.OK to webResponse else null }
+        responder = { body -> if (body.contains(ChatPlanner.WEB_SEARCH_TOOL_TYPE)) HttpStatusCode.OK to webResponse else null }
         val sessionId = chatRepository.getOrCreateDefaultSession()
 
         val result = chatRepository.sendMessage(sessionId, userText = "pasta please", includeWeb = true)

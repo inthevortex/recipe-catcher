@@ -22,6 +22,9 @@ interface ChatDao {
     @Query("UPDATE chat_message SET suggestions_json = :suggestionsJson WHERE id = :id")
     suspend fun updateSuggestions(id: Long, suggestionsJson: String?)
 
+    @Query("SELECT * FROM chat_message WHERE id = :id")
+    suspend fun getMessage(id: Long): ChatMessageEntity?
+
     @Query("UPDATE chat_session SET updated_at = :updatedAt WHERE id = :id")
     suspend fun touchSession(id: Long, updatedAt: Long)
 
